@@ -95,7 +95,7 @@ fn default_resize_run_id() -> String {
     format!("resize-{}", std::process::id())
 }
 
-fn screen_mode_str(mode: ScreenMode) -> &'static str {
+pub(crate) fn screen_mode_str(mode: ScreenMode) -> &'static str {
     match mode {
         ScreenMode::Inline { .. } => "inline",
         ScreenMode::InlineAuto { .. } => "inline_auto",

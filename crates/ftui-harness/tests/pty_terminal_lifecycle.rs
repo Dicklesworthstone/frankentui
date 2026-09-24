@@ -556,3 +556,158 @@ fn raw_log_emits_mode_and_byte_count_trace() {
         }]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Job control (bd-d4dtr, docs/spec/suspend-resume.md §10)
+// ---------------------------------------------------------------------------
+
+/// The PTY's line discipline, as the shell would find it.
+fn pty_is_cooked(session: &ftui_pty::PtySession) -> bool {
+    let termios = session
+        .master()
+        .get_termios()
+        .expect("PTY termios readable from the master");
+    // Canonical input and signal generation are what raw mode turns off and
+    // what a usable shell needs back.
+    let flags = format!("{:?}", termios.local_flags);
+    flags.contains("ICANON") && flags.contains("ISIG")
+}
+
+fn process_state(pid: u32) -> String {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .expect("run ps");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+fn send_signal(pid: u32, signal: &str) {
+    let status = std::process::Command::new("kill")
+        .args([signal, &pid.to_string()])
+        .status()
+        .expect("run kill");
+    assert!(status.success(), "kill {signal} {pid} failed");
+}
+
+/// Poll until `predicate` holds, reading PTY output meanwhile.
+fn wait_for(
+    session: &mut ftui_pty::PtySession,
+    what: &str,
+    mut predicate: impl FnMut(&mut ftui_pty::PtySession) -> bool,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !predicate(session) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        let _ = session.read_output();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn pty_suspend_resume(screen_mode: &str) {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    // Retained on purpose (no deletion); the name is unique per run.
+    let evidence = std::env::temp_dir().join(format!(
+        "ftui-suspend-resume-{screen_mode}-{}-{stamp}.jsonl",
+        std::process::id()
+    ));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_ftui-harness"));
+    cmd.env("FTUI_HARNESS_EXIT_AFTER_MS", "6000");
+    cmd.env("FTUI_HARNESS_SCREEN_MODE", screen_mode);
+    cmd.env("FTUI_HARNESS_UI_HEIGHT", "6");
+    cmd.env("FTUI_HARNESS_LOG_LINES", "3");
+    cmd.env("FTUI_HARNESS_SUPPRESS_WELCOME", "1");
+    cmd.env("FTUI_HARNESS_EVIDENCE_JSONL", &evidence);
+    let config = PtyConfig::default()
+        .with_size(80, 24)
+        .with_test_name(format!("harness_{screen_mode}_suspend_resume"))
+        .logging(false);
+    let mut session = spawn_command(config, cmd).expect("spawn harness in PTY");
+    let pid = session.child_pid().expect("child pid");
+
+    // Running: the program has taken the terminal raw and drawn a frame.
+    wait_for(&mut session, "raw mode and a first frame", |s| {
+        !pty_is_cooked(s) && s.output().len() > 200
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let before_stop = session.read_output().len();
+
+    // kill -TSTP: the terminal is handed back, then the process stops.
+    //
+    // Without job control this times out rather than finding a raw terminal:
+    // the child is a session leader here, so its process group is orphaned and
+    // the kernel discards a default-action SIGTSTP. Under a real shell the
+    // same signal stops the process with the terminal raw. Handled, the
+    // program stops itself with SIGSTOP, which is never discarded.
+    send_signal(pid, "-TSTP");
+    wait_for(&mut session, "the process to stop", |_| {
+        process_state(pid).starts_with('T')
+    });
+    let _ = session.read_output();
+    assert!(
+        pty_is_cooked(&session),
+        "{screen_mode}: stopped with the terminal still raw"
+    );
+    let released = session.output()[before_stop..].to_vec();
+    assert!(
+        find_sequence(&released, b"\x1b[?25h").is_some(),
+        "{screen_mode}: cursor not shown before the stop: {:?}",
+        String::from_utf8_lossy(&released)
+    );
+    if screen_mode == "alt" {
+        assert!(
+            find_sequence(&released, b"\x1b[?1049l").is_some(),
+            "alt: alternate screen not left before the stop"
+        );
+    }
+
+    // kill -CONT: raw again, and a full repaint rather than a diff.
+    let before_continue = session.output().len();
+    send_signal(pid, "-CONT");
+    wait_for(&mut session, "raw mode after continue", |s| {
+        !pty_is_cooked(s)
+    });
+    wait_for(&mut session, "a repaint after continue", |s| {
+        s.output().len() > before_continue + 200
+    });
+    let repainted = session.output()[before_continue..].to_vec();
+    if screen_mode == "alt" {
+        assert!(
+            find_sequence(&repainted, b"\x1b[?1049h").is_some(),
+            "alt: alternate screen not re-entered"
+        );
+    }
+
+    let status = session
+        .wait_and_drain(Duration::from_secs(10))
+        .expect("wait for exit");
+    assert!(
+        status.success(),
+        "{screen_mode}: harness failed after resume: {status:?}"
+    );
+
+    let rows = std::fs::read_to_string(&evidence).expect("evidence written");
+    for event in ["suspend", "resume"] {
+        assert!(
+            rows.lines()
+                .any(|line| line.contains(&format!("\"event\":\"{event}\""))),
+            "{screen_mode}: no {event} evidence row in {}",
+            evidence.display()
+        );
+    }
+}
+
+#[test]
+fn pty_stop_signal_hands_back_the_terminal_and_continue_takes_it_again_alt() {
+    pty_suspend_resume("alt");
+}
+
+#[test]
+fn pty_stop_signal_hands_back_the_terminal_and_continue_takes_it_again_inline() {
+    pty_suspend_resume("inline");
+}

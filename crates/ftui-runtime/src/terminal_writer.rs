@@ -2901,6 +2901,23 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Internal cleanup on drop.
     fn cleanup(&mut self) {
+        self.release_terminal_state();
+        if let Some(ref mut trace) = self.render_trace {
+            let _ = trace.finish(None);
+        }
+    }
+
+    /// Hand the terminal back ahead of a job-control stop: the same bytes as
+    /// the drop-time cleanup, but the writer stays usable. The caller must
+    /// then [`set_size`](Self::set_size) on resume, which drops the diff
+    /// baseline and inline-region cache: the screen is not ours after a stop.
+    pub(crate) fn release_for_suspend(&mut self) {
+        self.release_terminal_state();
+    }
+
+    /// Close an open sync block, reset the scroll region, restore the saved
+    /// cursor and show it, then flush.
+    fn release_terminal_state(&mut self) {
         // Teardown bytes must not interleave with another thread's emission
         // batch (bd-kdn7n item 2); reentrant so Drop-under-lock is safe.
         let _output_guard = terminal_output_lock();
@@ -2941,10 +2958,6 @@ impl<W: Write> TerminalWriter<W> {
 
         // Flush
         let _ = writer.flush();
-
-        if let Some(ref mut trace) = self.render_trace {
-            let _ = trace.finish(None);
-        }
     }
 }
 

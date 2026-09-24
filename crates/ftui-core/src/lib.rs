@@ -176,6 +176,196 @@ pub mod shutdown_signal {
     }
 }
 
+pub mod job_control {
+    //! Process-wide job-control state: SIGTSTP, SIGTTIN and SIGTTOU.
+    //!
+    //! By default those signals stop the process on the spot, which leaves a
+    //! raw-mode terminal behind for the shell. A live session holds a
+    //! [`JobControlClaim`]; while any claim is held the signals are only
+    //! recorded, the runtime hands the terminal back, and then calls
+    //! [`stop_process`] itself. Design: `docs/spec/suspend-resume.md`.
+    //!
+    //! With no claim held the signals keep their default action. That fallback
+    //! is load-bearing: signal-hook never removes a handler once installed, so
+    //! without it a program that had exited would leave its process impossible
+    //! to suspend for the rest of its life.
+
+    #[cfg(unix)]
+    use std::sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    /// Handlers installed once per process: the stop signal last recorded
+    /// while a claim was held, and whether no claim is held.
+    #[cfg(unix)]
+    struct Handlers {
+        pending: Arc<AtomicUsize>,
+        unclaimed: Arc<AtomicBool>,
+        claims: AtomicUsize,
+    }
+
+    #[cfg(unix)]
+    fn handlers() -> Option<&'static Handlers> {
+        use signal_hook::consts::signal::{SIGTSTP, SIGTTIN, SIGTTOU};
+        static HANDLERS: OnceLock<Option<Handlers>> = OnceLock::new();
+        HANDLERS
+            .get_or_init(|| {
+                let pending = Arc::new(AtomicUsize::new(0));
+                let unclaimed = Arc::new(AtomicBool::new(true));
+                for signal in [SIGTSTP, SIGTTIN, SIGTTOU] {
+                    // Default action first, so a partial installation still
+                    // stops the process rather than swallowing the signal.
+                    signal_hook::flag::register_conditional_default(signal, Arc::clone(&unclaimed))
+                        .ok()?;
+                    let value = usize::try_from(signal).ok()?;
+                    signal_hook::flag::register_usize(signal, Arc::clone(&pending), value).ok()?;
+                }
+                Some(Handlers {
+                    pending,
+                    unclaimed,
+                    claims: AtomicUsize::new(0),
+                })
+            })
+            .as_ref()
+    }
+
+    /// SIGTSTP, the signal a terminal's Ctrl-Z would send: 18 on macOS and
+    /// the BSDs, 20 on Linux. A non-zero placeholder where there is no job
+    /// control, so a keyboard stop request still reads as a request.
+    #[cfg(unix)]
+    pub const KEYBOARD_STOP_SIGNAL: i32 = signal_hook::consts::signal::SIGTSTP;
+    /// SIGTSTP, the signal a terminal's Ctrl-Z would send.
+    #[cfg(not(unix))]
+    pub const KEYBOARD_STOP_SIGNAL: i32 = 20;
+
+    /// A live session's hold on the stop signals; released on drop.
+    #[derive(Debug)]
+    pub struct JobControlClaim {
+        _private: (),
+    }
+
+    impl JobControlClaim {
+        /// Claim the stop signals for a live session.
+        ///
+        /// Returns `None` where they cannot be intercepted: non-Unix targets,
+        /// or when the handlers failed to install.
+        #[must_use]
+        pub fn acquire() -> Option<Self> {
+            #[cfg(unix)]
+            {
+                let handlers = handlers()?;
+                if handlers.claims.fetch_add(1, Ordering::SeqCst) == 0 {
+                    // A signal recorded while unclaimed already stopped the
+                    // process through the default action; it is not a request
+                    // for this session.
+                    handlers.pending.store(0, Ordering::SeqCst);
+                    handlers.unclaimed.store(false, Ordering::SeqCst);
+                }
+                Some(Self { _private: () })
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        }
+
+        /// Take the stop signal that arrived since the last call, if any.
+        #[must_use]
+        pub fn take_pending(&self) -> Option<i32> {
+            #[cfg(unix)]
+            {
+                let signal = handlers()?.pending.swap(0, Ordering::SeqCst);
+                i32::try_from(signal).ok().filter(|&signal| signal != 0)
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        }
+    }
+
+    impl Drop for JobControlClaim {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            if let Some(handlers) = handlers()
+                && handlers.claims.fetch_sub(1, Ordering::SeqCst) == 1
+            {
+                handlers.unclaimed.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Stop the process the way `signal`'s default action would, returning
+    /// once it has been continued (SIGCONT).
+    ///
+    /// For the stop signals this raises SIGSTOP, which cannot be caught, so a
+    /// supervisor reading `WSTOPSIG` sees SIGSTOP rather than `signal`. Call it
+    /// only after the terminal has been handed back.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `signal` is unknown or cannot be raised, and on non-Unix
+    /// targets, which have no job control.
+    pub fn stop_process(signal: i32) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            signal_hook::low_level::emulate_default_handler(signal)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = signal;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "job control is Unix-only",
+            ))
+        }
+    }
+
+    #[cfg(all(test, unix))]
+    mod tests {
+        use super::*;
+        use std::sync::{Mutex, MutexGuard};
+
+        /// The claim count is process-global; `cargo test` runs these in threads.
+        fn serial() -> MutexGuard<'static, ()> {
+            static LOCK: Mutex<()> = Mutex::new(());
+            LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+        }
+
+        #[test]
+        fn claims_are_counted_and_the_default_returns_with_the_last() {
+            let _serial = serial();
+            // Never raise a stop signal here: a stopped test process hangs the
+            // suite. This checks the bookkeeping that decides whether one would.
+            let handlers = handlers().expect("handlers install on unix");
+            let before = handlers.claims.load(Ordering::SeqCst);
+            let first = JobControlClaim::acquire().expect("claim");
+            let second = JobControlClaim::acquire().expect("claim");
+            assert!(!handlers.unclaimed.load(Ordering::SeqCst));
+            drop(first);
+            assert!(
+                !handlers.unclaimed.load(Ordering::SeqCst),
+                "one claim still held"
+            );
+            drop(second);
+            if before == 0 {
+                assert!(handlers.unclaimed.load(Ordering::SeqCst));
+            }
+        }
+
+        #[test]
+        fn pending_signal_is_taken_once() {
+            let _serial = serial();
+            let claim = JobControlClaim::acquire().expect("claim");
+            let handlers = handlers().expect("handlers");
+            handlers.pending.store(20, Ordering::SeqCst);
+            assert_eq!(claim.take_pending(), Some(20));
+            assert_eq!(claim.take_pending(), None);
+        }
+    }
+}
+
 #[cfg(feature = "caps-probe")]
 pub mod caps_probe;
 

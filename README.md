@@ -1431,6 +1431,19 @@ FTUI_DEMO_MOUSE=on cargo run -p ftui-demo-showcase
 
 For tmux, enable mouse forwarding with `set -g mouse on` in your tmux configuration.
 
+### “Ctrl-Z does nothing” / suspending with `kill -TSTP`
+
+On the native backend, `kill -TSTP` (and SIGTTIN/SIGTTOU) hands the terminal
+back before the process stops: input modes off, alternate screen left, cooked
+mode restored, so the shell works. After `fg`, the program re-arms raw mode and
+repaints the whole screen. `ProgramConfig::with_job_control(false)` turns this
+off.
+
+Ctrl-Z is not a suspend key by default: raw mode delivers it as an ordinary key
+event, and it is undo in `TextArea` and the showcase editors. Opt in with
+`ProgramConfig::default().with_ctrl_z_suspend(true)`. The crossterm backend
+does not support suspend yet. Design and limits: `docs/spec/suspend-resume.md`.
+
 ### “output flickers”
 
 Inline mode uses synchronized output where supported: allowlisted terminals get
@@ -3213,6 +3226,7 @@ Evidence events actually written by the runtime (grep for the `"event"` value):
 - `inline_strategy`: which inline strategy the writer selected from those capabilities (`scroll_region`, `hybrid`, `overlay_redraw`)
 - `fairness_config` / `fairness_decision`: the input-fairness guard's Jain-index decisions
 - `effect_queue_select`: scheduler job selection when the `EffectQueue` executor backend is enabled
+- `suspend` / `resume`: a job-control stop served (signal, size) and the resume after it (`size_changed`)
 - `widget_refresh`, `certificate_decision`, `task_executor_*`: widget refresh plans, presenter certificates, and executor lifecycle
 
 **Why evidence?** When a frame is slow, operators can `grep` the JSONL for that frame index and see exactly which decisions were made and what statistical state drove them. No black boxes.

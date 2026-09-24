@@ -200,6 +200,13 @@ impl<W: Write + Send> BackendPresenter for TerminalPresenter<W> {
         self.writer.flush()
     }
 
+    fn suspend(&mut self) -> Result<(), Self::Error> {
+        // Best-effort by design, like the drop-time cleanup it shares: a
+        // write error here must not stop the terminal being handed back.
+        self.writer.release_for_suspend();
+        Ok(())
+    }
+
     fn take_render_buffer(&mut self, width: u16, height: u16) -> Buffer {
         self.writer.take_render_buffer(width, height)
     }

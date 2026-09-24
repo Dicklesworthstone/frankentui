@@ -3354,6 +3354,22 @@ pub struct ProgramConfig {
     /// Defaults to `true` for application safety. Set to `false` in tests or
     /// when the embedding application manages signals.
     pub intercept_signals: bool,
+    /// Handle job-control stops (SIGTSTP, SIGTTIN, SIGTTOU): hand the terminal
+    /// back to the shell before the process stops and restore it, with a full
+    /// repaint, when it is continued (`docs/spec/suspend-resume.md`).
+    ///
+    /// Defaults to `true`. Takes effect only with [`intercept_signals`](Self::intercept_signals)
+    /// and a backend that can release its terminal session (the native TTY
+    /// backend); elsewhere the signals keep their default action, which stops
+    /// the process with the terminal still in raw mode.
+    pub job_control: bool,
+    /// Treat a Ctrl-Z key press as a request to suspend (default: `false`).
+    ///
+    /// Raw mode turns off the terminal's own Ctrl-Z handling, so the key
+    /// arrives as an ordinary event. It is off by default because Ctrl-Z is
+    /// undo in `TextArea` and in the showcase's editors; with it on, the key
+    /// never reaches the model. Requires [`job_control`](Self::job_control).
+    pub ctrl_z_suspends: bool,
     /// Optional tick strategy for selective background screen ticking.
     ///
     /// When `None` (default), all screens tick every frame (current behavior).
@@ -3417,6 +3433,8 @@ impl Default for ProgramConfig {
             effect_queue: EffectQueueConfig::default(),
             guardrails: GuardrailsConfig::default(),
             intercept_signals: true,
+            job_control: true,
+            ctrl_z_suspends: false,
             tick_strategy: None,
             runtime_lane: RuntimeLane::default(),
             rollout_policy: RolloutPolicy::default(),
@@ -3695,6 +3713,22 @@ impl ProgramConfig {
     #[must_use]
     pub fn with_signal_interception(mut self, enabled: bool) -> Self {
         self.intercept_signals = enabled;
+        self
+    }
+
+    /// Enable or disable job-control handling (SIGTSTP/SIGTTIN/SIGTTOU).
+    /// See [`ProgramConfig::job_control`].
+    #[must_use]
+    pub fn with_job_control(mut self, enabled: bool) -> Self {
+        self.job_control = enabled;
+        self
+    }
+
+    /// Make a Ctrl-Z key press suspend the program instead of reaching the
+    /// model. See [`ProgramConfig::ctrl_z_suspends`].
+    #[must_use]
+    pub fn with_ctrl_z_suspend(mut self, enabled: bool) -> Self {
+        self.ctrl_z_suspends = enabled;
         self
     }
 
@@ -5243,6 +5277,20 @@ pub struct Program<
     /// Whether `observed_termination_signal` also reads the process-global
     /// slot written by the installed OS signal handler.
     global_signal_slot: bool,
+    /// Job-control stop requested for this instance (0 = none): a Ctrl-Z key
+    /// with `ctrl_z_suspends`, or [`Program::inject_suspend_signal`]. OS stop
+    /// signals arrive through `job_control_claim` instead.
+    pending_suspend: Arc<std::sync::atomic::AtomicI32>,
+    /// Whether a stop request suspends at all: job control is configured on
+    /// and the event source can release its terminal session.
+    suspend_enabled: bool,
+    /// Whether a Ctrl-Z key press requests a suspend instead of reaching the model.
+    ctrl_z_suspends: bool,
+    /// This program's hold on the OS stop signals; interactive programs only.
+    job_control_claim: Option<ftui_core::job_control::JobControlClaim>,
+    /// Stops the process after the terminal is handed back. Tests replace it:
+    /// a test process that really stopped would hang the suite.
+    stop_process: fn(i32) -> io::Result<()>,
     /// Immediate drain policy for bursty input handling.
     immediate_drain_config: ImmediateDrainConfig,
     /// Runtime counters for immediate-drain behavior.
@@ -5482,6 +5530,11 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
             config.rollout_policy.label(),
         );
 
+        let suspend_enabled = config.job_control && events.supports_suspend();
+        let job_control_claim = (suspend_enabled && config.intercept_signals)
+            .then(ftui_core::job_control::JobControlClaim::acquire)
+            .flatten();
+
         Ok(Self {
             model,
             presenter: TerminalPresenter::new(writer),
@@ -5515,6 +5568,11 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
             intercept_signals: config.intercept_signals,
             pending_signal: Arc::new(std::sync::atomic::AtomicI32::new(0)),
             global_signal_slot: true,
+            pending_suspend: Arc::new(std::sync::atomic::AtomicI32::new(0)),
+            suspend_enabled,
+            ctrl_z_suspends: config.ctrl_z_suspends,
+            job_control_claim,
+            stop_process: ftui_core::job_control::stop_process,
             immediate_drain_config: config.immediate_drain,
             immediate_drain_stats: ImmediateDrainStats::default(),
             budget,
@@ -5650,6 +5708,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             config.rollout_policy.label(),
         );
 
+        let suspend_enabled = config.job_control && events.supports_suspend();
+        let job_control_claim = (suspend_enabled && config.intercept_signals)
+            .then(ftui_core::job_control::JobControlClaim::acquire)
+            .flatten();
+
         Ok(Self {
             model,
             presenter,
@@ -5683,6 +5746,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             intercept_signals: config.intercept_signals,
             pending_signal: Arc::new(std::sync::atomic::AtomicI32::new(0)),
             global_signal_slot: true,
+            pending_suspend: Arc::new(std::sync::atomic::AtomicI32::new(0)),
+            suspend_enabled,
+            ctrl_z_suspends: config.ctrl_z_suspends,
+            job_control_claim,
+            stop_process: ftui_core::job_control::stop_process,
             immediate_drain_config: config.immediate_drain,
             immediate_drain_stats: ImmediateDrainStats::default(),
             budget,
@@ -5891,6 +5959,105 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         );
     }
 
+    /// Request a job-control stop for this program instance, as if `signal`
+    /// (SIGTSTP, SIGTTIN or SIGTTOU) had been delivered. The run loop hands the
+    /// terminal back, stops the process and restores the terminal when it is
+    /// continued. Ignored unless job control is enabled and the event source
+    /// supports suspend.
+    pub fn inject_suspend_signal(&self, signal: i32) {
+        self.pending_suspend
+            .store(signal, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The pending stop request: this instance's own first (Ctrl-Z key,
+    /// injection), then the OS signal recorded against this program's claim.
+    fn take_suspend_request(&mut self) -> Option<i32> {
+        if !self.suspend_enabled {
+            return None;
+        }
+        match self
+            .pending_suspend
+            .swap(0, std::sync::atomic::Ordering::SeqCst)
+        {
+            0 => self
+                .job_control_claim
+                .as_ref()
+                .and_then(ftui_core::job_control::JobControlClaim::take_pending),
+            signal => Some(signal),
+        }
+    }
+
+    /// Serve a pending stop request (`docs/spec/suspend-resume.md` §5-6):
+    /// release the presenter's and then the backend's terminal state, stop
+    /// the process, and on continue re-arm the backend, re-read the size and
+    /// force a full repaint. Coalesces: requests that arrive meanwhile are
+    /// taken with this one's.
+    fn service_suspend(&mut self) -> io::Result<()> {
+        let Some(signal) = self.take_suspend_request() else {
+            return Ok(());
+        };
+        // Termination outranks suspension (§2 invariant 3); the caller's next
+        // termination check ends the loop.
+        if self.observed_termination_signal().is_some() {
+            return Ok(());
+        }
+        self.presenter.suspend()?;
+        if !self.events.suspend()? {
+            // Nothing was released, so stopping would strand a raw terminal.
+            // The presenter did let go of its state, so repaint in full.
+            self.presenter.resize(self.width, self.height);
+            self.mark_dirty();
+            return Ok(());
+        }
+        self.write_job_control_evidence("suspend", signal, None);
+        let stopped = (self.stop_process)(signal);
+
+        // Continued, or the stop failed: take the terminal back either way.
+        self.events.resume()?;
+        let _ = self.take_suspend_request();
+        let (width, height) = self
+            .forced_size
+            .unwrap_or_else(|| self.events.size().unwrap_or((self.width, self.height)));
+        let (width, height) = (width.max(1), height.max(1));
+        let size_changed = (width, height) != (self.width, self.height);
+        if size_changed {
+            // Resize first, so layout runs once, at the new size (§6j).
+            self.resize_coalescer
+                .record_external_apply(width, height, Instant::now());
+            self.apply_resize(width, height, Duration::ZERO, false)?;
+        } else {
+            // Drops the diff baseline: the shell may have drawn anything.
+            self.presenter.resize(width, height);
+            self.mark_dirty();
+        }
+        self.write_job_control_evidence("resume", signal, Some(size_changed));
+        if let Err(error) = stopped {
+            tracing::warn!(signal, %error, "job-control stop failed; resumed without stopping");
+        }
+        Ok(())
+    }
+
+    /// One `suspend` or `resume` evidence row (schema in
+    /// `docs/spec/telemetry-events.md`).
+    fn write_job_control_evidence(&self, event: &str, signal: i32, size_changed: Option<bool>) {
+        let Some(ref sink) = self.evidence_sink else {
+            return;
+        };
+        let size_changed = size_changed.map_or(String::new(), |changed| {
+            format!(r#","size_changed":{changed}"#)
+        });
+        let _ = sink.write_jsonl(&format!(
+            r#"{{"schema_version":"{}","event":"{}","signal":{},"screen_mode":"{}","cols":{},"rows":{}{}}}"#,
+            crate::evidence_sink::EVIDENCE_SCHEMA_VERSION,
+            event,
+            signal,
+            crate::resize_coalescer::screen_mode_str(self.presenter.screen_mode()),
+            self.width,
+            self.height,
+            size_changed,
+        ));
+    }
+
     /// The termination signal pending for this program instance, if any.
     #[must_use]
     pub fn pending_termination_signal(&self) -> Option<i32> {
@@ -5993,6 +6160,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 self.running = false;
                 break;
             }
+            // A stop signal lands here within one poll interval: signal-hook
+            // handlers only set a flag, and poll(2) is not interrupted early.
+            self.service_suspend()?;
 
             loop_count += 1;
             // Log heartbeat every 100 iterations to avoid flooding stderr
@@ -6021,6 +6191,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 self.running = false;
                 break;
             }
+            // Before rendering: a Ctrl-Z from the batch just drained must not
+            // draw a frame first.
+            self.service_suspend()?;
 
             // Process subscription messages
             self.process_subscription_messages()?;
@@ -6480,6 +6653,27 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         // Record event before processing (no-op when recorder is None or idle).
         if let Some(recorder) = &mut self.event_recorder {
             recorder.record(&event);
+        }
+
+        // Raw mode turns off the terminal's own ^Z, so with `ctrl_z_suspends`
+        // the key stands in for SIGTSTP and never reaches the model.
+        if self.ctrl_z_suspends
+            && self.suspend_enabled
+            && let Event::Key(key) = &event
+            && key.kind == ftui_core::event::KeyEventKind::Press
+            && key.code == ftui_core::event::KeyCode::Char('z')
+            && key.modifiers == ftui_core::event::Modifiers::CTRL
+        {
+            self.pending_suspend.store(
+                ftui_core::job_control::KEYBOARD_STOP_SIGNAL,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            self.fairness_guard.event_processed(
+                fairness_event_type,
+                event_start.elapsed(),
+                Instant::now(),
+            );
+            return Ok(());
         }
 
         let event = match event {
@@ -12866,6 +13060,14 @@ mod tests {
             // they must not read (or clear) the process-global slot: that is
             // exactly the cross-test race that used to hang this binary.
             global_signal_slot: false,
+            // Headless: no terminal to release and no OS handler, so stop
+            // requests are ignored; tests that need the sequence build a
+            // program over an event source that supports suspend.
+            pending_suspend: Arc::new(std::sync::atomic::AtomicI32::new(0)),
+            suspend_enabled: false,
+            ctrl_z_suspends: config.ctrl_z_suspends,
+            job_control_claim: None,
+            stop_process: ftui_core::job_control::stop_process,
             immediate_drain_config: config.immediate_drain,
             immediate_drain_stats: ImmediateDrainStats::default(),
             budget,
@@ -20069,5 +20271,343 @@ mod tests {
             TerminalCapabilities::basic(),
         );
         assert_eq!(presenter.writer.screen_mode(), ScreenMode::AltScreen);
+    }
+
+    // =========================================================================
+    // Job control: suspend and resume (bd-d4dtr, docs/spec/suspend-resume.md)
+    // =========================================================================
+    //
+    // None of these raise a real stop signal: a stopped test process hangs the
+    // suite. `stop_process` is replaced with a recorder, and every step of the
+    // sequence writes to a per-thread log so the ORDER is asserted, which is
+    // the part that breaks silently (§10).
+
+    thread_local! {
+        static JOB_LOG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+        /// Terminal size the source reports once the process is "continued".
+        static SIZE_AFTER_STOP: std::cell::Cell<Option<(u16, u16)>> = const { std::cell::Cell::new(None) };
+    }
+
+    fn job_log(entry: impl Into<String>) {
+        JOB_LOG.with(|log| log.borrow_mut().push(entry.into()));
+    }
+
+    fn take_job_log() -> Vec<String> {
+        JOB_LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
+    }
+
+    fn recording_stop(signal: i32) -> io::Result<()> {
+        job_log(format!("stop({signal})"));
+        Ok(())
+    }
+
+    fn stop_while_the_terminal_is_resized(signal: i32) -> io::Result<()> {
+        SIZE_AFTER_STOP.with(|size| size.set(Some((100, 30))));
+        recording_stop(signal)
+    }
+
+    struct SuspendableSource {
+        size: (u16, u16),
+        releases_terminal: bool,
+    }
+
+    impl BackendEventSource for SuspendableSource {
+        type Error = io::Error;
+
+        fn size(&self) -> Result<(u16, u16), io::Error> {
+            Ok(SIZE_AFTER_STOP
+                .with(std::cell::Cell::get)
+                .unwrap_or(self.size))
+        }
+
+        fn set_features(&mut self, _features: BackendFeatures) -> Result<(), io::Error> {
+            Ok(())
+        }
+
+        fn poll_event(&mut self, _timeout: Duration) -> Result<bool, io::Error> {
+            Ok(false)
+        }
+
+        fn read_event(&mut self) -> Result<Option<Event>, io::Error> {
+            Ok(None)
+        }
+
+        fn supports_suspend(&self) -> bool {
+            true
+        }
+
+        fn suspend(&mut self) -> Result<bool, io::Error> {
+            job_log("events.suspend");
+            Ok(self.releases_terminal)
+        }
+
+        fn resume(&mut self) -> Result<(), io::Error> {
+            job_log("events.resume");
+            Ok(())
+        }
+    }
+
+    struct RecordingPresenter(CountingPresenter);
+
+    impl BackendPresenter for RecordingPresenter {
+        type Error = io::Error;
+
+        fn capabilities(&self) -> &TerminalCapabilities {
+            self.0.capabilities()
+        }
+
+        fn write_log(&mut self, text: &str) -> Result<(), Self::Error> {
+            self.0.write_log(text)
+        }
+
+        fn present_ui(
+            &mut self,
+            buf: &Buffer,
+            diff: Option<&ftui_render::diff::BufferDiff>,
+            full_repaint_hint: bool,
+        ) -> Result<(), Self::Error> {
+            self.0.present_ui(buf, diff, full_repaint_hint)
+        }
+
+        fn resize(&mut self, cols: u16, rows: u16) {
+            job_log(format!("presenter.resize({cols}x{rows})"));
+        }
+
+        fn suspend(&mut self) -> Result<(), Self::Error> {
+            job_log("presenter.suspend");
+            Ok(())
+        }
+
+        fn pool_and_links_mut(
+            &mut self,
+        ) -> (
+            &mut ftui_render::grapheme_pool::GraphemePool,
+            &mut ftui_render::link_registry::LinkRegistry,
+        ) {
+            self.0.pool_and_links_mut()
+        }
+
+        fn pool_mut(&mut self) -> &mut ftui_render::grapheme_pool::GraphemePool {
+            self.0.pool_mut()
+        }
+    }
+
+    /// Records every event the model receives, by name.
+    #[derive(Default)]
+    struct SeenEvents {
+        seen: Vec<String>,
+    }
+
+    struct SeenEvent(Event);
+
+    impl From<Event> for SeenEvent {
+        fn from(event: Event) -> Self {
+            Self(event)
+        }
+    }
+
+    impl Model for SeenEvents {
+        type Message = SeenEvent;
+
+        fn update(&mut self, msg: SeenEvent) -> Cmd<SeenEvent> {
+            self.seen.push(match msg.0 {
+                Event::Resize { width, height } => format!("resize({width}x{height})"),
+                Event::Key(key) => format!("key({:?},{:?})", key.code, key.modifiers),
+                other => format!("{other:?}"),
+            });
+            Cmd::none()
+        }
+
+        fn view(&self, _frame: &mut Frame) {}
+    }
+
+    fn suspendable_program(
+        config: ProgramConfig,
+        releases_terminal: bool,
+    ) -> Program<SeenEvents, SuspendableSource, RecordingPresenter> {
+        SIZE_AFTER_STOP.with(|size| size.set(None));
+        let mut program = Program::with_event_source(
+            SeenEvents::default(),
+            SuspendableSource {
+                size: (80, 24),
+                releases_terminal,
+            },
+            BackendFeatures::default(),
+            RecordingPresenter(CountingPresenter::new()),
+            // No OS handlers: stop requests come only from injection.
+            config.with_signal_interception(false),
+        )
+        .expect("program over a suspendable source");
+        program.stop_process = recording_stop;
+        take_job_log();
+        program
+    }
+
+    #[test]
+    fn stop_request_releases_stops_and_restores_in_order() {
+        let mut program = suspendable_program(ProgramConfig::default(), true);
+        program.dirty = false;
+        program.inject_suspend_signal(20);
+        program.service_suspend().expect("suspend and resume");
+
+        assert_eq!(
+            take_job_log(),
+            [
+                "presenter.suspend",
+                "events.suspend",
+                "stop(20)",
+                "events.resume",
+                "presenter.resize(80x24)",
+            ],
+            "presenter before backend on the way down, backend before repaint on the way up"
+        );
+        assert!(program.dirty, "a full repaint follows resume");
+        assert!(
+            program.model().seen.is_empty(),
+            "same size: no Resize for the model"
+        );
+
+        // The request was consumed: a second pass does nothing.
+        program.service_suspend().expect("idle pass");
+        assert!(take_job_log().is_empty());
+    }
+
+    #[test]
+    fn size_change_while_stopped_resizes_the_model_before_the_repaint() {
+        let mut program = suspendable_program(ProgramConfig::default(), true);
+        program.stop_process = stop_while_the_terminal_is_resized;
+        program.inject_suspend_signal(20);
+        program.service_suspend().expect("suspend and resume");
+
+        let log = take_job_log();
+        assert_eq!(
+            log.last().map(String::as_str),
+            Some("presenter.resize(100x30)")
+        );
+        assert_eq!(program.model().seen, ["resize(100x30)"]);
+        assert_eq!((program.width, program.height), (100, 30));
+    }
+
+    #[test]
+    fn pending_termination_outranks_a_stop_request() {
+        let mut program = suspendable_program(ProgramConfig::default(), true);
+        // Observe only this instance's termination slot, never the global one.
+        program.intercept_signals = true;
+        program.global_signal_slot = false;
+        program.inject_termination_signal(15);
+        program.inject_suspend_signal(20);
+        program.service_suspend().expect("no suspend");
+
+        assert!(
+            take_job_log().is_empty(),
+            "exit path wins; nothing is released"
+        );
+        assert_eq!(program.pending_termination_signal(), Some(15));
+    }
+
+    #[test]
+    fn stop_requests_are_ignored_without_job_control() {
+        let mut program =
+            suspendable_program(ProgramConfig::default().with_job_control(false), true);
+        program.inject_suspend_signal(20);
+        program.service_suspend().expect("ignored");
+        assert!(take_job_log().is_empty());
+    }
+
+    #[test]
+    fn a_source_that_releases_nothing_is_never_stopped() {
+        let mut program = suspendable_program(ProgramConfig::default(), false);
+        program.dirty = false;
+        program.inject_suspend_signal(20);
+        program.service_suspend().expect("no stop");
+
+        assert_eq!(
+            take_job_log(),
+            [
+                "presenter.suspend",
+                "events.suspend",
+                "presenter.resize(80x24)"
+            ],
+            "no stop with the terminal still raw, and a full repaint instead"
+        );
+        assert!(program.dirty);
+    }
+
+    #[test]
+    fn headless_programs_never_suspend() {
+        let mut program =
+            headless_program_with_config(TestModel { value: 0 }, ProgramConfig::default());
+        program.stop_process = recording_stop;
+        program.inject_suspend_signal(20);
+        program.service_suspend().expect("ignored");
+        assert!(take_job_log().is_empty());
+    }
+
+    #[test]
+    fn ctrl_z_reaches_the_model_unless_suspend_is_opted_into() {
+        let ctrl_z = || {
+            Event::Key(
+                ftui_core::event::KeyEvent::new(KeyCode::Char('z')).with_modifiers(Modifiers::CTRL),
+            )
+        };
+
+        // Default: Ctrl-Z is an ordinary key (undo in TextArea and the editors).
+        let mut program = suspendable_program(ProgramConfig::default(), true);
+        program.handle_event(ctrl_z()).expect("key");
+        assert_eq!(program.model().seen.len(), 1, "{:?}", program.model().seen);
+        program.service_suspend().expect("nothing pending");
+        assert!(take_job_log().is_empty());
+
+        // Opted in: the key becomes a SIGTSTP request and the model never sees it.
+        let mut program =
+            suspendable_program(ProgramConfig::default().with_ctrl_z_suspend(true), true);
+        program.handle_event(ctrl_z()).expect("key");
+        assert!(
+            program.model().seen.is_empty(),
+            "{:?}",
+            program.model().seen
+        );
+        program.service_suspend().expect("suspend");
+        assert!(take_job_log().contains(&format!(
+            "stop({})",
+            ftui_core::job_control::KEYBOARD_STOP_SIGNAL
+        )));
+
+        // Other Ctrl chords are untouched.
+        program
+            .handle_event(Event::Key(
+                ftui_core::event::KeyEvent::new(KeyCode::Char('y')).with_modifiers(Modifiers::CTRL),
+            ))
+            .expect("key");
+        assert_eq!(program.model().seen.len(), 1);
+    }
+
+    #[test]
+    fn suspend_and_resume_write_evidence_rows() {
+        let path = temp_evidence_path("job_control");
+        let mut program = suspendable_program(
+            ProgramConfig::default().with_evidence_sink(EvidenceSinkConfig::enabled_file(&path)),
+            true,
+        );
+        program.stop_process = stop_while_the_terminal_is_resized;
+        program.inject_suspend_signal(20);
+        program.service_suspend().expect("suspend and resume");
+        take_job_log();
+
+        let suspend = read_evidence_event(&path, "suspend");
+        assert_eq!(suspend["signal"], 20);
+        assert_eq!(
+            (suspend["cols"].as_u64(), suspend["rows"].as_u64()),
+            (Some(80), Some(24))
+        );
+        assert!(suspend.get("size_changed").is_none());
+
+        let resume = read_evidence_event(&path, "resume");
+        assert_eq!(resume["signal"], 20);
+        assert_eq!(
+            (resume["cols"].as_u64(), resume["rows"].as_u64()),
+            (Some(100), Some(30))
+        );
+        assert_eq!(resume["size_changed"], true);
     }
 }

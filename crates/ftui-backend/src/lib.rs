@@ -118,6 +118,29 @@ pub trait BackendEventSource {
     /// pending; callers must treat `Ok(None)` as "nothing decodable right
     /// now" and return to their poll loop.
     fn read_event(&mut self) -> Result<Option<Event>, Self::Error>;
+
+    /// Whether [`suspend`](Self::suspend) can hand the terminal back for a
+    /// job-control stop. The runtime claims SIGTSTP/SIGTTIN/SIGTTOU only for a
+    /// source that says so; others keep the signals' default action.
+    fn supports_suspend(&self) -> bool {
+        false
+    }
+
+    /// Hand the terminal back to the shell ahead of a job-control stop:
+    /// disable input modes, leave the alternate screen and restore the
+    /// original terminal modes, keeping what is needed to undo it.
+    ///
+    /// Returns `Ok(false)` when this source owns no terminal session to
+    /// release; the runtime then does not stop the process.
+    fn suspend(&mut self) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+
+    /// Undo [`suspend`](Self::suspend) after the process is continued.
+    /// A no-op when nothing is suspended.
+    fn resume(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 /// Presentation abstraction: UI rendering and log output.
@@ -182,6 +205,14 @@ pub trait BackendPresenter {
     /// Flush any pending output to the terminal or host.
     fn flush(&mut self) -> Result<(), Self::Error> {
         Ok(())
+    }
+
+    /// Release presenter-owned terminal state ahead of a job-control stop:
+    /// close an open synchronized-output block, reset the scroll region, show
+    /// the cursor. On resume the runtime calls [`resize`](Self::resize), which
+    /// must drop any diff baseline, since the screen is no longer ours.
+    fn suspend(&mut self) -> Result<(), Self::Error> {
+        self.flush()
     }
 
     /// Take a reusable render buffer sized for the current frame.

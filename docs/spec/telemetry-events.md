@@ -514,6 +514,38 @@ Example:
 {"event":"inline_strategy_fallback","from":"hybrid","to":"overlay_redraw","reason":"cpr_mismatch","observed_row":24,"expected_row":20,"rows":24,"region_bottom":20}
 ```
 
+#### Event: `suspend`
+
+Written by the runtime after the terminal has been handed back for a
+job-control stop and immediately before the process stops
+(`docs/spec/suspend-resume.md`). Not written when the event source could not
+release its terminal, since the process is then not stopped.
+
+Required fields:
+- `signal` (i32): the stop signal being served (SIGTSTP, SIGTTIN or SIGTTOU;
+  SIGTSTP for a Ctrl-Z key with `ctrl_z_suspends`). The process itself stops
+  on SIGSTOP.
+- `screen_mode` (`inline` | `inline_auto` | `altscreen`), `cols`, `rows` (u16): the
+  size in force when the terminal was released
+
+#### Event: `resume`
+
+Written after the process is continued, the terminal is re-armed and a full
+repaint is scheduled.
+
+Required fields:
+- `signal` (i32): the stop signal that was served
+- `screen_mode`, `cols`, `rows`: the size after resume
+- `size_changed` (bool): whether the terminal was resized while stopped; if so
+  the model received the `Resize` before the repaint
+
+Example (a resize from 80x24 while stopped):
+
+```json
+{"schema_version":"ftui-evidence-v1","event":"suspend","signal":20,"screen_mode":"altscreen","cols":80,"rows":24}
+{"schema_version":"ftui-evidence-v1","event":"resume","signal":20,"screen_mode":"altscreen","cols":100,"rows":30,"size_changed":true}
+```
+
 #### Event: `a11y_tree`
 
 Written once per rendered frame whose accessibility tree differs from the

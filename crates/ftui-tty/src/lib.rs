@@ -346,6 +346,29 @@ impl RawModeGuard {
             tty,
         })
     }
+
+    /// Put back the terminal modes saved by [`enter`](Self::enter) while
+    /// keeping the guard, so [`reenter_raw`](Self::reenter_raw) can undo it.
+    /// Used to hand the terminal to the shell for a job-control stop.
+    pub fn restore_original(&self) -> io::Result<()> {
+        // TCSANOW for the reason given in `drop`: nothing to wait for.
+        nix::sys::termios::tcsetattr(
+            &self.tty,
+            nix::sys::termios::SetArg::TCSANOW,
+            &self.original_termios,
+        )
+        .map_err(io::Error::other)
+    }
+
+    /// Re-enter raw mode after [`restore_original`](Self::restore_original).
+    pub fn reenter_raw(&self) -> io::Result<()> {
+        let mut raw = self.original_termios.clone();
+        nix::sys::termios::cfmakeraw(&mut raw);
+        // TCSANOW, not the TCSAFLUSH of `enter_on`: input typed since the
+        // process was continued is the user's, not stale typeahead.
+        nix::sys::termios::tcsetattr(&self.tty, nix::sys::termios::SetArg::TCSANOW, &raw)
+            .map_err(io::Error::other)
+    }
 }
 
 #[cfg(unix)]
@@ -1317,8 +1340,19 @@ pub struct TtyBackend {
     alt_screen_active: bool,
     #[cfg(unix)]
     signal_interception_active: bool,
+    /// What `suspend` turned off, for `resume` to turn back on.
+    #[cfg(unix)]
+    suspended: Option<SuspendedSession>,
     #[cfg(unix)]
     raw_mode: Option<RawModeGuard>,
+}
+
+/// Terminal state a job-control suspend released.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy)]
+struct SuspendedSession {
+    features: BackendFeatures,
+    alt_screen: bool,
 }
 
 impl TtyBackend {
@@ -1331,6 +1365,8 @@ impl TtyBackend {
             alt_screen_active: false,
             #[cfg(unix)]
             signal_interception_active: false,
+            #[cfg(unix)]
+            suspended: None,
             #[cfg(unix)]
             raw_mode: None,
         }
@@ -1345,6 +1381,8 @@ impl TtyBackend {
             alt_screen_active: false,
             #[cfg(unix)]
             signal_interception_active: false,
+            #[cfg(unix)]
+            suspended: None,
             #[cfg(unix)]
             raw_mode: None,
         }
@@ -1416,6 +1454,7 @@ impl TtyBackend {
             events,
             alt_screen_active,
             signal_interception_active: signal_guard.disarm(),
+            suspended: None,
             raw_mode: Some(raw_mode),
         })
     }
@@ -1435,6 +1474,75 @@ impl TtyBackend {
             LIVE_SIGNAL_INTERCEPT_SESSIONS.fetch_sub(1, Ordering::SeqCst);
             self.signal_interception_active = false;
         }
+    }
+
+    /// Hand the terminal back for a job-control stop: the teardown `drop`
+    /// writes (input modes off, cursor shown, alt screen left), then the
+    /// original termios, keeping the guard for [`resume_session`](Self::resume_session).
+    ///
+    /// Returns `false` for a headless backend. Idempotent while suspended.
+    #[cfg(unix)]
+    fn suspend_session(&mut self) -> io::Result<bool> {
+        let Some(raw_mode) = self.raw_mode.as_ref() else {
+            return Ok(false);
+        };
+        if self.suspended.is_some() {
+            return Ok(true);
+        }
+        let session = SuspendedSession {
+            features: self.events.features(),
+            alt_screen: self.alt_screen_active,
+        };
+        let mut stdout = io::stdout();
+        let mouse_disable_seq = mouse_disable_sequence_for_capabilities(self.events.capabilities);
+        // Same sequence and order as `drop`, and for the same reasons: no
+        // synchronized-output end (the presenter owns that block), cursor
+        // shown and alt screen left while the terminal still reads escapes.
+        write_cleanup_sequence_policy_with_mouse(
+            &session.features,
+            session.alt_screen,
+            false,
+            mouse_disable_seq,
+            &mut stdout,
+        )?;
+        stdout.flush()?;
+        // Recorded before termios, so a failure below still leaves `resume`
+        // (or `drop`) with an accurate picture of what is switched off.
+        self.suspended = Some(session);
+        self.alt_screen_active = false;
+        self.events.apply_feature_state(BackendFeatures::default());
+        raw_mode.restore_original()?;
+        Ok(true)
+    }
+
+    /// Undo [`suspend_session`](Self::suspend_session): raw mode, then the
+    /// alternate screen (cleared: its contents are gone), then input modes,
+    /// the reverse of the teardown order.
+    #[cfg(unix)]
+    fn resume_session(&mut self) -> io::Result<()> {
+        let Some(session) = self.suspended.take() else {
+            return Ok(());
+        };
+        let Some(raw_mode) = self.raw_mode.as_ref() else {
+            return Ok(());
+        };
+        raw_mode.reenter_raw()?;
+        let mut stdout = io::stdout();
+        if session.alt_screen {
+            stdout.write_all(ALT_SCREEN_ENTER)?;
+            stdout.write_all(CLEAR_SCREEN)?;
+            stdout.write_all(CURSOR_HOME)?;
+            self.alt_screen_active = true;
+        }
+        TtyEventSource::write_feature_delta(
+            &BackendFeatures::default(),
+            &session.features,
+            self.events.capabilities,
+            &mut stdout,
+        )?;
+        stdout.flush()?;
+        self.events.apply_feature_state(session.features);
+        Ok(())
     }
 
     /// Whether this backend has an active terminal session (raw mode).
@@ -1521,6 +1629,32 @@ impl BackendEventSource for TtyBackend {
 
     fn read_event(&mut self) -> Result<Option<Event>, io::Error> {
         self.events.read_event()
+    }
+
+    fn supports_suspend(&self) -> bool {
+        self.is_live()
+    }
+
+    fn suspend(&mut self) -> Result<bool, io::Error> {
+        #[cfg(unix)]
+        {
+            self.suspend_session()
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(false)
+        }
+    }
+
+    fn resume(&mut self) -> Result<(), io::Error> {
+        #[cfg(unix)]
+        {
+            self.resume_session()
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(())
+        }
     }
 }
 
@@ -1669,6 +1803,18 @@ mod tests {
     fn read_returns_none_headless() {
         let mut src = TtyEventSource::new(80, 24);
         assert!(src.read_event().unwrap().is_none());
+    }
+
+    #[test]
+    fn headless_backend_has_no_session_to_suspend() {
+        // The runtime claims the stop signals only for a backend that can
+        // hand a terminal back; a headless one must say it cannot, or a stop
+        // would strand whatever terminal the process does have.
+        let mut backend = TtyBackend::new(80, 24);
+        assert!(!backend.supports_suspend());
+        assert!(!backend.suspend().unwrap());
+        backend.resume().unwrap();
+        assert!(!backend.is_live());
     }
 
     #[test]

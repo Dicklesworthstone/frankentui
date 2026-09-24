@@ -1,8 +1,10 @@
 # Suspend and resume (SIGTSTP / SIGCONT) — design
 
-Status: **design, not implemented.** This note exists so `bd-d4dtr` can be
-implemented without re-deriving the signal semantics. Written for
-`bd-g00-root-epic-ewths.37.1`.
+Status: **implemented for the native TTY backend** (`bd-d4dtr`). Written for
+`bd-g00-root-epic-ewths.37.1` as a design; **§11 records where the build
+departs from it**, and wins where the two disagree. The crossterm backend
+does not support suspend yet: under it the stop signals keep their default
+action.
 
 Today `kill -TSTP` on an inline session leaves the shell in raw mode: the
 process stops with the terminal still in the state the app configured, so the
@@ -263,3 +265,54 @@ is the closest existing pattern.
 3. **Inline cursor placement on suspend** (§5b.6) needs the row below the UI
    region, which is `TerminalWriter` state. Confirm it is still accurate after
    a partial frame.
+
+---
+
+## 11. As built (bd-d4dtr)
+
+Where each piece lives:
+
+| Piece | Where |
+|---|---|
+| Stop-signal handlers, claims, `stop_process` | `ftui_core::job_control` |
+| Hooks | `BackendEventSource::{supports_suspend, suspend, resume}`, `BackendPresenter::suspend` |
+| Terminal hand-back and re-arm | `TtyBackend::{suspend_session, resume_session}`, `RawModeGuard::{restore_original, reenter_raw}` |
+| Presenter state (sync block, scroll region, cursor) | `TerminalWriter::release_for_suspend`, the drop-time cleanup without the trace finish |
+| Sequence, Ctrl-Z, evidence | `Program::service_suspend`, `ProgramConfig::{job_control, ctrl_z_suspends}` |
+
+Departures from the design above, each for a measured reason:
+
+1. **Ctrl-Z is opt-in** (`ProgramConfig::with_ctrl_z_suspend`), not on by
+   default as §7 proposed. Ctrl-Z is undo in `TextArea` and in the showcase's
+   app, forms and advanced text editor, and nothing tells the runtime whether
+   a model binds it, so intercepting it by default would have broken undo.
+   External stop signals *are* handled by default (`job_control: true`):
+   before this they stranded a raw terminal, so handling them only fixes a bug.
+2. **No SIGCONT handler.** Resume runs when `stop_process` returns, which is
+   exactly when the process is continued, so `resume_flag` has nothing to
+   add. A stray `kill -CONT` keeps its default (ignore) action. One gap
+   follows: `kill -TSTP` then `kill -CONT` sent before the loop serves the
+   first leaves the process stopped until a second CONT, because the
+   handler cannot tell the order the two arrived in.
+3. **Handlers are process-global and never uninstalled,** because
+   signal-hook cannot remove one. Each is paired with
+   `register_conditional_default`, which performs the default stop while no
+   `JobControlClaim` is held. Without that, a process whose program had
+   exited could never be suspended again.
+4. **No dedicated wake channel.** A stop signal is served within one poll
+   interval (100 ms by default), the same latency termination signals already
+   have: `poll_tty` returns on `EINTR` and the loop checks both flags.
+5. **Inline cursor** is left where the drop-time cleanup leaves it (the
+   restored cursor), not moved below the UI region: suspend and exit put the
+   shell prompt in the same place, and open question 3 stays open.
+6. **The input thread is not paused** (open question 1): the TTY backend
+   reads on the loop thread, so nothing races the termios change.
+
+Evidence rows `suspend` and `resume` are specified in
+`docs/spec/telemetry-events.md`. Tests: ordered-sequence unit tests in
+`ftui-runtime/src/program.rs` (`stop_request_releases_stops_and_restores_in_order`
+and neighbours), and a real-PTY test that sends `kill -TSTP`, reads the PTY's
+termios while the process is stopped, sends `kill -CONT` and checks raw mode
+and a repaint, in alt-screen and inline mode
+(`ftui-harness/tests/pty_terminal_lifecycle.rs`,
+`pty_stop_signal_hands_back_the_terminal_and_continue_takes_it_again_*`).
