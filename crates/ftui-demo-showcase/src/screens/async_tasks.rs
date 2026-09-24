@@ -94,12 +94,14 @@
 
 use std::cell::Cell as StdCell;
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
-use ftui_runtime::Cmd;
+use ftui_runtime::{Cmd, FileEvent};
 use ftui_style::Style;
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
@@ -919,7 +921,15 @@ pub struct AsyncTaskManager {
     layout_task_list_inner: StdCell<Rect>,
     layout_details: StdCell<Rect>,
     layout_activity: StdCell<Rect>,
+    /// File the app watches while this screen is shown (see
+    /// [`Self::watch_path`]); `w` appends a line to it.
+    watch_path: PathBuf,
+    /// Lines appended with `w`.
+    watch_writes: u32,
 }
+
+/// Environment variable that overrides [`AsyncTaskManager::watch_path`].
+pub const WATCH_FILE_ENV: &str = "FTUI_DEMO_WATCH_FILE";
 
 impl Default for AsyncTaskManager {
     fn default() -> Self {
@@ -953,6 +963,11 @@ impl AsyncTaskManager {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: std::env::var_os(WATCH_FILE_ENV).map_or_else(
+                || std::env::temp_dir().join("ftui-demo-async-tasks-watch.log"),
+                PathBuf::from,
+            ),
+            watch_writes: 0,
         };
 
         // Seed with a few initial tasks
@@ -970,6 +985,11 @@ impl AsyncTaskManager {
     /// Get a reference to the task list.
     pub fn tasks(&self) -> &[Task] {
         &self.tasks
+    }
+
+    /// The Activity panel's lines, oldest first.
+    pub fn activity_log(&self) -> &VecDeque<String> {
+        &self.events
     }
 
     /// Get the current scheduler policy.
@@ -1390,6 +1410,53 @@ impl AsyncTaskManager {
             self.events.pop_front();
         }
         self.events.push_back(msg);
+    }
+
+    /// The file the app's `file_watcher` subscription polls while this
+    /// screen is shown: `$FTUI_DEMO_WATCH_FILE`, or a fixed name in the
+    /// temp dir. Nothing writes it until `w` is pressed.
+    pub fn watch_path(&self) -> &Path {
+        &self.watch_path
+    }
+
+    /// Log a watcher event as `[hh:mm:ss.mmm] <Kind> <basename>` (UTC).
+    pub fn record_file_event(&mut self, event: FileEvent, at: SystemTime) {
+        let ms = at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() % 86_400_000);
+        let name = self.watch_path.file_name().map_or_else(
+            || self.watch_path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        self.log_event(format!(
+            "[{:02}:{:02}:{:02}.{:03}] {event:?} {name}",
+            ms / 3_600_000,
+            ms / 60_000 % 60,
+            ms / 1000 % 60,
+            ms % 1000
+        ));
+    }
+
+    /// Append a line to the watched file, so the watcher has something to
+    /// report without a second process. Appending changes the size, which
+    /// the mtime+size poll always sees.
+    fn append_to_watched_file(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::io::Write;
+            self.watch_writes += 1;
+            let line = format!("write {}\n", self.watch_writes);
+            let result = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.watch_path)
+                .and_then(|mut file| file.write_all(line.as_bytes()));
+            if let Err(error) = result {
+                self.log_event(format!("watch write failed: {error}"));
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.log_event("File watching needs a native terminal".to_string());
     }
 
     /// Count tasks by state.
@@ -1989,7 +2056,7 @@ impl AsyncTaskManager {
             return;
         }
 
-        let help = "n:spawn  c:cancel  s:scheduler  a:aging  r:retry  j/k:nav";
+        let help = "n:spawn  c:cancel  s:scheduler  a:aging  r:retry  w:write file  j/k:nav";
         Paragraph::new(help)
             .style(Style::new().fg(theme::fg::MUTED))
             .render(area, frame);
@@ -2051,6 +2118,9 @@ impl Screen for AsyncTaskManager {
                 }
                 KeyCode::Char('a') | KeyCode::Char('A') => {
                     self.toggle_aging();
+                }
+                KeyCode::Char('w') | KeyCode::Char('W') => {
+                    self.append_to_watched_file();
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.select_prev();
@@ -2153,6 +2223,10 @@ impl Screen for AsyncTaskManager {
             HelpEntry {
                 key: "r",
                 action: "Retry failed task",
+            },
+            HelpEntry {
+                key: "w",
+                action: "Append to the watched file",
             },
             HelpEntry {
                 key: "j/k",
@@ -2693,6 +2767,36 @@ mod tests {
     }
 
     #[test]
+    fn file_events_log_time_kind_and_basename() {
+        let mut mgr = AsyncTaskManager::new();
+        mgr.watch_path = PathBuf::from("/somewhere/watched.log");
+        let at = SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(86_400_000 + 3_723_045);
+        mgr.record_file_event(FileEvent::Modified, at);
+        assert_eq!(
+            mgr.events.back().map(String::as_str),
+            Some("[01:02:03.045] Modified watched.log")
+        );
+    }
+
+    /// `w` appends a line per press, creating the file on the first one.
+    #[test]
+    fn w_appends_to_the_watched_file() {
+        let path = std::env::temp_dir().join(format!(
+            "ftui-async-tasks-watch-test-{}.log",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut mgr = AsyncTaskManager::new();
+        mgr.watch_path = path.clone();
+        let w = Event::Key(KeyEvent::new(KeyCode::Char('w')));
+        mgr.update(&w);
+        mgr.update(&w);
+        let written = std::fs::read_to_string(&path).expect("watched file created");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(written, "write 1\nwrite 2\n");
+    }
+
+    #[test]
     fn title_and_label() {
         let mgr = AsyncTaskManager::new();
         assert_eq!(mgr.title(), "Async Tasks");
@@ -2723,6 +2827,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         // Add tasks in order with different durations/priorities
@@ -2762,6 +2868,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         mgr.spawn_task_with_name("Long", 100, 1);
@@ -2804,6 +2912,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         // Create tasks with different remaining times
@@ -2879,6 +2989,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         // Low priority task created at tick 0
@@ -2933,6 +3045,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         mgr.spawn_task_with_name("LowPri", 50, 1);
@@ -2971,6 +3085,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         mgr.spawn_task_with_name("A", 50, 1);
@@ -3027,6 +3143,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         // Fill up to MAX_TASKS with completed tasks
@@ -3146,6 +3264,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         mgr.spawn_task_with_name("WillFail", 5, 1);
@@ -3181,6 +3301,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         mgr.spawn_task_with_name("WillSucceed", 5, 1);
@@ -3240,6 +3362,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         // Add many tasks
@@ -3273,6 +3397,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         mgr.spawn_task_with_name("Fast", 2, 1);
@@ -3467,6 +3593,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         let mut mgr2 = AsyncTaskManager {
@@ -3487,6 +3615,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         let name1 = mgr1.generate_name();
@@ -3515,6 +3645,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         let mut names = std::collections::HashSet::new();
@@ -3550,6 +3682,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         // Spawn
@@ -3589,6 +3723,8 @@ mod tests {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
+            watch_path: PathBuf::new(),
+            watch_writes: 0,
         };
 
         mgr.spawn_task_with_name("Running", 100, 1);
@@ -4002,6 +4138,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             let mut last_id = 0u32;
@@ -4040,6 +4178,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             mgr.spawn_task_with_name("Test", estimated_ticks, 1);
@@ -4087,6 +4227,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             // Spawn many tasks
@@ -4136,6 +4278,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             // Create tasks in various terminal states
@@ -4219,6 +4363,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             // Spawn queued tasks
@@ -4272,6 +4418,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             mgr.spawn_task_with_name("Test", estimated, 1);
@@ -4322,6 +4470,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             for i in 0..task_count {
@@ -4372,6 +4522,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             for _ in 0..SchedulerPolicy::count() {
@@ -4419,6 +4571,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             let mut last_counter = 0u32;
@@ -4460,6 +4614,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             for i in 0..event_count {
@@ -4498,6 +4654,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             // Fill to MAX_TASKS with completed tasks
@@ -4560,6 +4718,8 @@ mod proptests {
                 layout_task_list_inner: StdCell::new(Rect::default()),
                 layout_details: StdCell::new(Rect::default()),
                 layout_activity: StdCell::new(Rect::default()),
+                watch_path: PathBuf::new(),
+                watch_writes: 0,
             };
 
             for i in 0..task_count {

@@ -1672,6 +1672,8 @@ pub enum ScreenMessage {
     Unit,
     /// Completion from Theme Studio.
     ThemeStudio(screens::theme_studio::ThemeStudioMsg),
+    /// The Async Tasks screen's watched file changed.
+    FileWatch(ftui_runtime::FileEvent),
 }
 
 impl From<Event> for ScreenMessage {
@@ -3666,6 +3668,12 @@ impl AppModel {
                 ScreenMessage::ThemeStudio(screens::theme_studio::ThemeStudioMsg::Noop) => {
                     Cmd::None
                 }
+                ScreenMessage::FileWatch(event) => {
+                    self.screens
+                        .async_tasks
+                        .record_file_event(event, std::time::SystemTime::now());
+                    Cmd::None
+                }
             },
             AppMsg::PlaybackEvent(event) => {
                 self.handle_msg(AppMsg::from(event), EventSource::Playback)
@@ -4698,8 +4706,20 @@ impl Model for AppModel {
         self.cache_hit_grid(frame);
     }
 
+    /// While Async Tasks is shown, poll its watched file (`w` appends to
+    /// it). The id is the path's, so the watcher keeps running across frames
+    /// and stops when the screen changes.
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
-        Vec::new()
+        if self.display_screen() != ScreenId::AsyncTasks {
+            return Vec::new();
+        }
+        vec![ftui_runtime::file_watcher(
+            self.screens.async_tasks.watch_path(),
+            |event| AppMsg::ScreenMessage {
+                origin: ScreenId::AsyncTasks,
+                message: ScreenMessage::FileWatch(event),
+            },
+        )]
     }
 
     fn on_shutdown(&mut self) -> Cmd<Self::Message> {
@@ -6182,6 +6202,38 @@ mod tests {
     use serial_test::serial;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// The file watcher runs only while Async Tasks is shown, under the
+    /// path's own id, and its events land in that screen's Activity log.
+    #[test]
+    fn async_tasks_watches_its_file_only_while_shown() {
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::Dashboard;
+        assert!(app.subscriptions().is_empty());
+
+        app.current_screen = ScreenId::AsyncTasks;
+        let subs = app.subscriptions();
+        let path = app.screens.async_tasks.watch_path().to_path_buf();
+        let expected = ftui_runtime::file_watcher(path.clone(), |_| ());
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].id(), expected.id());
+
+        let _ = app.handle_msg(
+            AppMsg::ScreenMessage {
+                origin: ScreenId::AsyncTasks,
+                message: ScreenMessage::FileWatch(ftui_runtime::FileEvent::Created),
+            },
+            EventSource::User,
+        );
+        let name = path.file_name().expect("file name").to_string_lossy();
+        let last = app
+            .screens
+            .async_tasks
+            .activity_log()
+            .back()
+            .expect("logged");
+        assert!(last.ends_with(&format!("] Created {name}")), "{last}");
+    }
 
     #[test]
     #[cfg(feature = "screen-mermaid")]

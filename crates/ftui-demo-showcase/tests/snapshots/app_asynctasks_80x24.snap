@@ -19,6 +19,6 @@
 ││                                             ││                             ││
 ││                                             ││                             ││
 │╰─────────────────────────────────────────────╯╰─────────────────────────────╯│
-│n:spawn  c:cancel  s:scheduler  a:aging  r:retry  j/k:nav                     │
+│n:spawn  c:cancel  s:scheduler  a:aging  r:retry  w:write file  j/k:nav       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
  Async Tasks [29/45] [h] [cmd] [p] [d]    Tab/Shift+Tab: next/prev    0x0 00:00 

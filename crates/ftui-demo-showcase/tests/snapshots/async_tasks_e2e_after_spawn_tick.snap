@@ -37,4 +37,4 @@ Q:1 R:3 D:0 F:0 | FIFO[First-In-First-Out] | Aging:✓
 │                                                                      ││                                              │
 │                                                                      ││                                              │
 ╰──────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────╯
-n:spawn  c:cancel  s:scheduler  a:aging  r:retry  j/k:nav                                                               
+n:spawn  c:cancel  s:scheduler  a:aging  r:retry  w:write file  j/k:nav                                                 
