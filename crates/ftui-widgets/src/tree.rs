@@ -376,7 +376,8 @@ impl Tree {
         self
     }
 
-    /// Set a persistence ID for state saving.
+    /// Set a persistence ID for state saving. Without one the tree has no
+    /// [`StateKey`](crate::stateful::StateKey) and its state is not persisted.
     #[must_use]
     pub fn with_persistence_id(mut self, id: impl Into<String>) -> Self {
         self.persistence_id = Some(id.into());
@@ -820,8 +821,11 @@ pub struct TreePersistState {
 impl crate::stateful::Stateful for Tree {
     type State = TreePersistState;
 
-    fn state_key(&self) -> crate::stateful::StateKey {
-        crate::stateful::StateKey::new("Tree", self.persistence_id.as_deref().unwrap_or("default"))
+    fn state_key(&self) -> Option<crate::stateful::StateKey> {
+        // No persistence_id, no identity: two unnamed trees must not share one.
+        self.persistence_id
+            .as_deref()
+            .map(|id| crate::stateful::StateKey::new("Tree", id))
     }
 
     fn save_state(&self) -> TreePersistState {
@@ -1705,17 +1709,14 @@ mod tests {
     #[test]
     fn tree_state_key_uses_persistence_id() {
         let tree = Tree::new(TreeNode::new("root")).with_persistence_id("project-explorer");
-        let key = tree.state_key();
+        let key = tree.state_key().expect("named tree has a key");
         assert_eq!(key.widget_type, "Tree");
         assert_eq!(key.instance_id, "project-explorer");
     }
 
     #[test]
-    fn tree_state_key_default_when_no_id() {
-        let tree = Tree::new(TreeNode::new("root"));
-        let key = tree.state_key();
-        assert_eq!(key.widget_type, "Tree");
-        assert_eq!(key.instance_id, "default");
+    fn tree_without_id_is_not_persisted() {
+        assert!(Tree::new(TreeNode::new("root")).state_key().is_none());
     }
 
     #[test]

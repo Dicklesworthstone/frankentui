@@ -17,9 +17,12 @@
 //!    back to `T::State::default()` rather than panic. Migration logic belongs
 //!    in the downstream state migration system (bd-30g1.5).
 //!
-//! 3. **Key uniqueness**: Two distinct widget instances must produce distinct
-//!    [`StateKey`] values. The `(widget_type, instance_id)` pair is the primary
-//!    uniqueness invariant.
+//! 3. **Key uniqueness**: Two distinct widget instances must never produce the
+//!    same [`StateKey`]. The `(widget_type, instance_id)` pair is the primary
+//!    uniqueness invariant. An instance with no stable identity returns `None`
+//!    from [`Stateful::state_key`] and is not persisted: the library widgets
+//!    return a key only once given a `persistence_id`, because deriving one
+//!    for them made every unnamed instance of a type share `"default"`.
 //!
 //! 4. **No side effects**: `save_state` must be a pure read; `restore_state`
 //!    must only mutate `self` (no I/O, no global state).
@@ -149,8 +152,8 @@ impl fmt::Display for StateKey {
 /// impl Stateful for ScrollView {
 ///     type State = ScrollViewPersist;
 ///
-///     fn state_key(&self) -> StateKey {
-///         StateKey::new("ScrollView", &self.id)
+///     fn state_key(&self) -> Option<StateKey> {
+///         Some(StateKey::new("ScrollView", &self.id))
 ///     }
 ///
 ///     fn save_state(&self) -> Self::State {
@@ -168,10 +171,13 @@ pub trait Stateful: Sized {
     /// Must implement `Default` so missing/corrupt state degrades gracefully.
     type State: Default;
 
-    /// Unique key identifying this widget instance.
+    /// Unique key identifying this widget instance, or `None` if it has no
+    /// stable identity and must not be persisted.
     ///
-    /// Two distinct widget instances **must** return distinct keys.
-    fn state_key(&self) -> StateKey;
+    /// Two distinct widget instances **must not** return the same key.
+    /// Return `None` rather than a shared fallback id: a shared id makes a
+    /// registry keyed on it restore every such instance to one state.
+    fn state_key(&self) -> Option<StateKey>;
 
     /// Extract current state for persistence.
     ///
@@ -595,8 +601,8 @@ mod tests {
     impl Stateful for TestScrollView {
         type State = ScrollState;
 
-        fn state_key(&self) -> StateKey {
-            StateKey::new("ScrollView", &self.id)
+        fn state_key(&self) -> Option<StateKey> {
+            Some(StateKey::new("ScrollView", &self.id))
         }
 
         fn save_state(&self) -> ScrollState {
@@ -627,8 +633,8 @@ mod tests {
     impl Stateful for TestTreeView {
         type State = TreeState;
 
-        fn state_key(&self) -> StateKey {
-            StateKey::new("TreeView", &self.id)
+        fn state_key(&self) -> Option<StateKey> {
+            Some(StateKey::new("TreeView", &self.id))
         }
 
         fn save_state(&self) -> TreeState {
@@ -1193,7 +1199,7 @@ mod tests {
             offset: 0,
             max: 50,
         };
-        let key = widget.state_key();
+        let key = widget.state_key().expect("an identified widget has a key");
         assert_eq!(key.widget_type, "ScrollView");
         assert_eq!(key.instance_id, "content-panel");
     }
@@ -1527,8 +1533,8 @@ mod tests {
     impl Stateful for WidgetV2 {
         type State = ScrollStateV2;
 
-        fn state_key(&self) -> StateKey {
-            StateKey::new("WidgetV2", "test")
+        fn state_key(&self) -> Option<StateKey> {
+            Some(StateKey::new("WidgetV2", "test"))
         }
 
         fn save_state(&self) -> ScrollStateV2 {

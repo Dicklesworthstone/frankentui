@@ -1371,7 +1371,8 @@ impl VirtualizedListState {
         self
     }
 
-    /// Create with a persistence ID for state saving.
+    /// Create with a persistence ID for state saving. Without one the list has
+    /// no [`StateKey`](crate::stateful::StateKey) and its state is not persisted.
     #[must_use]
     pub fn with_persistence_id(mut self, id: impl Into<String>) -> Self {
         self.persistence_id = Some(id.into());
@@ -1621,11 +1622,11 @@ pub struct VirtualizedListPersistState {
 impl crate::stateful::Stateful for VirtualizedListState {
     type State = VirtualizedListPersistState;
 
-    fn state_key(&self) -> crate::stateful::StateKey {
-        crate::stateful::StateKey::new(
-            "VirtualizedList",
-            self.persistence_id.as_deref().unwrap_or("default"),
-        )
+    fn state_key(&self) -> Option<crate::stateful::StateKey> {
+        // No persistence_id, no identity: two unnamed lists must not share one.
+        self.persistence_id
+            .as_deref()
+            .map(|id| crate::stateful::StateKey::new("VirtualizedList", id))
     }
 
     fn save_state(&self) -> VirtualizedListPersistState {
@@ -4451,17 +4452,15 @@ mod tests {
     fn stateful_state_key_with_persistence_id() {
         use crate::stateful::Stateful;
         let state = VirtualizedListState::new().with_persistence_id("logs");
-        let key = state.state_key();
+        let key = state.state_key().expect("named list has a key");
         assert_eq!(key.widget_type, "VirtualizedList");
         assert_eq!(key.instance_id, "logs");
     }
 
     #[test]
-    fn stateful_state_key_default_instance() {
+    fn stateful_state_without_id_is_not_persisted() {
         use crate::stateful::Stateful;
-        let state = VirtualizedListState::new();
-        let key = state.state_key();
-        assert_eq!(key.instance_id, "default");
+        assert!(VirtualizedListState::new().state_key().is_none());
     }
 
     #[test]

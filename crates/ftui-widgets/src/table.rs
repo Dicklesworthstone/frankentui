@@ -507,7 +507,9 @@ impl TableState {
         self.selected = index;
     }
 
-    /// Create a new TableState with a persistence ID for state saving.
+    /// Create a new TableState with a persistence ID for state saving. Without
+    /// one the table has no [`StateKey`](crate::stateful::StateKey) and its
+    /// state is not persisted.
     #[must_use]
     pub fn with_persistence_id(mut self, id: impl Into<String>) -> Self {
         self.persistence_id = Some(id.into());
@@ -550,8 +552,11 @@ pub struct TablePersistState {
 impl crate::stateful::Stateful for TableState {
     type State = TablePersistState;
 
-    fn state_key(&self) -> crate::stateful::StateKey {
-        crate::stateful::StateKey::new("Table", self.persistence_id.as_deref().unwrap_or("default"))
+    fn state_key(&self) -> Option<crate::stateful::StateKey> {
+        // No persistence_id, no identity: two unnamed tables must not share one.
+        self.persistence_id
+            .as_deref()
+            .map(|id| crate::stateful::StateKey::new("Table", id))
     }
 
     fn save_state(&self) -> TablePersistState {
@@ -2563,17 +2568,14 @@ mod tests {
     #[test]
     fn table_state_key_uses_persistence_id() {
         let state = TableState::default().with_persistence_id("main-data-table");
-        let key = state.state_key();
+        let key = state.state_key().expect("named table has a key");
         assert_eq!(key.widget_type, "Table");
         assert_eq!(key.instance_id, "main-data-table");
     }
 
     #[test]
-    fn table_state_key_default_when_no_id() {
-        let state = TableState::default();
-        let key = state.state_key();
-        assert_eq!(key.widget_type, "Table");
-        assert_eq!(key.instance_id, "default");
+    fn table_state_without_id_is_not_persisted() {
+        assert!(TableState::default().state_key().is_none());
     }
 
     #[test]

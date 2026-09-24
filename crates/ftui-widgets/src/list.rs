@@ -569,7 +569,8 @@ impl ListState {
         self.focused
     }
 
-    /// Create a new ListState with a persistence ID for state saving.
+    /// Create a new ListState with a persistence ID for state saving. Without
+    /// one the list has no [`StateKey`] and its state is not persisted.
     #[must_use]
     pub fn with_persistence_id(mut self, id: impl Into<String>) -> Self {
         self.persistence_id = Some(id.into());
@@ -856,8 +857,11 @@ pub struct ListPersistState {
 impl Stateful for ListState {
     type State = ListPersistState;
 
-    fn state_key(&self) -> StateKey {
-        StateKey::new("List", self.persistence_id.as_deref().unwrap_or("default"))
+    fn state_key(&self) -> Option<StateKey> {
+        // No persistence_id, no identity: two unnamed lists must not share one.
+        self.persistence_id
+            .as_deref()
+            .map(|id| StateKey::new("List", id))
     }
 
     fn save_state(&self) -> ListPersistState {
@@ -2084,17 +2088,16 @@ mod tests {
     #[test]
     fn list_state_key_uses_persistence_id() {
         let state = ListState::default().with_persistence_id("file-browser");
-        let key = state.state_key();
+        let key = state.state_key().expect("named list has a key");
         assert_eq!(key.widget_type, "List");
         assert_eq!(key.instance_id, "file-browser");
     }
 
     #[test]
-    fn list_state_key_default_when_no_id() {
-        let state = ListState::default();
-        let key = state.state_key();
-        assert_eq!(key.widget_type, "List");
-        assert_eq!(key.instance_id, "default");
+    fn list_state_without_id_is_not_persisted() {
+        // bd-2fonp: every unnamed list used to key as ("List", "default"), so
+        // a registry restored all of them to one state.
+        assert!(ListState::default().state_key().is_none());
     }
 
     #[test]
