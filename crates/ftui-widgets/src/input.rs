@@ -639,17 +639,7 @@ impl TextInput {
                 } else {
                     self.selection_anchor = None;
                 }
-                #[cfg(feature = "bidi")]
-                if ftui_text::bidi::has_rtl(&self.value) {
-                    let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
-                    self.cursor = seg.logical_cursor_pos(0);
-                } else {
-                    self.cursor = 0;
-                }
-                #[cfg(not(feature = "bidi"))]
-                {
-                    self.cursor = 0;
-                }
+                self.cursor = 0;
                 self.scroll_cells.set(0);
                 true
             }
@@ -659,17 +649,7 @@ impl TextInput {
                 } else {
                     self.selection_anchor = None;
                 }
-                #[cfg(feature = "bidi")]
-                if ftui_text::bidi::has_rtl(&self.value) {
-                    let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
-                    self.cursor = seg.logical_cursor_pos(seg.len());
-                } else {
-                    self.cursor = self.grapheme_count();
-                }
-                #[cfg(not(feature = "bidi"))]
-                {
-                    self.cursor = self.grapheme_count();
-                }
+                self.cursor = self.grapheme_count();
                 true
             }
             _ => false,
@@ -978,43 +958,21 @@ impl TextInput {
     fn move_cursor_left(&mut self) {
         if let Some(anchor) = self.selection_anchor.take() {
             self.cursor = self.cursor.min(anchor);
-        } else {
-            #[cfg(feature = "bidi")]
-            if ftui_text::bidi::has_rtl(&self.value) {
-                let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
-                self.cursor = seg.move_left(self.cursor);
-                return;
-            }
-            if self.cursor > 0 {
-                self.cursor -= 1;
-            }
+        } else if self.cursor > 0 {
+            self.cursor -= 1;
         }
     }
 
     fn move_cursor_right(&mut self) {
         if let Some(anchor) = self.selection_anchor.take() {
             self.cursor = self.cursor.max(anchor);
-        } else {
-            #[cfg(feature = "bidi")]
-            if ftui_text::bidi::has_rtl(&self.value) {
-                let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
-                self.cursor = seg.move_right(self.cursor);
-                return;
-            }
-            if self.cursor < self.grapheme_count() {
-                self.cursor += 1;
-            }
+        } else if self.cursor < self.grapheme_count() {
+            self.cursor += 1;
         }
     }
 
     fn move_cursor_left_select(&mut self) {
         self.ensure_selection_anchor();
-        #[cfg(feature = "bidi")]
-        if ftui_text::bidi::has_rtl(&self.value) {
-            let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
-            self.cursor = seg.move_left(self.cursor);
-            return;
-        }
         if self.cursor > 0 {
             self.cursor -= 1;
         }
@@ -1022,12 +980,6 @@ impl TextInput {
 
     fn move_cursor_right_select(&mut self) {
         self.ensure_selection_anchor();
-        #[cfg(feature = "bidi")]
-        if ftui_text::bidi::has_rtl(&self.value) {
-            let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
-            self.cursor = seg.move_right(self.cursor);
-            return;
-        }
         if self.cursor < self.grapheme_count() {
             self.cursor += 1;
         }
@@ -1158,33 +1110,14 @@ impl TextInput {
     fn cursor_visual_pos(&self) -> usize {
         let mut pos = 0;
         if !self.value.is_empty() {
-            #[cfg(feature = "bidi")]
-            if ftui_text::bidi::has_rtl(&self.value) {
-                let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
-                let visual_idx = seg.visual_cursor_pos(self.cursor);
-                for v in 0..visual_idx {
-                    if let Some(ch) = seg.char_at_visual(v) {
-                        let mut buf = [0u8; 4];
-                        pos += self.grapheme_width(ch.encode_utf8(&mut buf));
-                    }
-                }
-            } else {
-                pos += self
-                    .value
-                    .graphemes(true)
-                    .take(self.cursor)
-                    .map(|g| self.grapheme_width(g))
-                    .sum::<usize>();
-            }
-            #[cfg(not(feature = "bidi"))]
-            {
-                pos += self
-                    .value
-                    .graphemes(true)
-                    .take(self.cursor)
-                    .map(|g| self.grapheme_width(g))
-                    .sum::<usize>();
-            }
+            // Logical order: TextInput renders its value in logical order, so
+            // the caret must be measured the same way (#102).
+            pos += self
+                .value
+                .graphemes(true)
+                .take(self.cursor)
+                .map(|g| self.grapheme_width(g))
+                .sum::<usize>();
         }
         if let Some(ime) = &self.ime_composition {
             pos += ime
@@ -3010,28 +2943,46 @@ mod scroll_edge_tests {
             }
         }
 
-        #[cfg(feature = "bidi")]
+        /// #102: TextInput draws its value in logical order, so its keys must
+        /// move the caret in logical order too (the v0.8.0 behavior), with or
+        /// without the `bidi` feature, and the caret column must be the summed
+        /// width of whole grapheme clusters.
         #[test]
-        fn input_rtl_left_key_moves_visually_left() {
+        fn input_rtl_keys_move_in_logical_order_like_the_renderer() {
             // Arabic text: "مرحبا" (5 characters, pure RTL)
             let mut input = TextInput::new().with_value("\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}");
-            input.cursor = 0; // cursor at logical 0 (visual right end)
+            input.cursor = 0;
 
-            // Right at logical 0 is a no-op at the visual right edge
             input.handle_event(&key(KeyCode::Right));
-            assert_eq!(input.cursor, 0);
-
-            // Left moves visual cursor left (logical +1)
-            input.handle_event(&key(KeyCode::Left));
             assert_eq!(input.cursor, 1);
+            assert_eq!(input.cursor_visual_pos(), 1);
 
-            // Home goes to visual left (logical 5)
-            input.handle_event(&key(KeyCode::Home));
-            assert_eq!(input.cursor, 5);
-
-            // End goes to visual right (logical 0)
-            input.handle_event(&key(KeyCode::End));
+            input.handle_event(&key(KeyCode::Left));
             assert_eq!(input.cursor, 0);
+            assert_eq!(input.cursor_visual_pos(), 0);
+
+            input.handle_event(&key(KeyCode::End));
+            assert_eq!(input.cursor, 5);
+            assert_eq!(input.cursor_visual_pos(), 5);
+
+            input.handle_event(&key(KeyCode::Home));
+            assert_eq!(input.cursor, 0);
+        }
+
+        #[test]
+        fn input_mixed_bidi_cluster_caret_matches_logical_render() {
+            // a + combining acute, space, Hebrew: grapheme 2 sits after "a\u{301} ".
+            let mut input = TextInput::new().with_value("a\u{0301} \u{05D0}\u{05D1}");
+            input.cursor = 0;
+            input.handle_event(&key(KeyCode::Right));
+            input.handle_event(&key(KeyCode::Right));
+            assert_eq!(input.cursor, 2);
+            assert_eq!(input.cursor_visual_pos(), 2);
+            // Multi-scalar emoji cluster counts its full width once.
+            let mut input = TextInput::new()
+                .with_value("x\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} \u{05D0}");
+            input.cursor = 2;
+            assert_eq!(input.cursor_visual_pos(), 3);
         }
     }
 }

@@ -384,7 +384,7 @@ See `docs/telemetry.md` for integration patterns and trace‑parent attachment.
 | `ftui-render` | `tracing` | Performance spans for diff/presenter |
 | `ftui-runtime` | `tracing` | Runtime loop instrumentation |
 | `ftui-runtime` | `telemetry` | OpenTelemetry export (OTLP) |
-| `ftui-widgets` | `bidi` | BiDi reordering and RTL cursor support for widgets |
+| `ftui-widgets` | `bidi` | BiDi (UAX#9) visual reordering for `Paragraph`; editable widgets keep logical order |
 
 Enable features per-crate in your `Cargo.toml` as needed.
 
@@ -1630,7 +1630,7 @@ native OSC 52 commands do not grant browser clipboard permissions.
 
 ### BiDi & Shaping
 
-- **BiDi** (`bidi.rs`, 1,146 lines): Unicode Bidirectional Algorithm for mixed LTR/RTL text (feature `bidi`, used by `Paragraph` and the editors)
+- **BiDi** (`bidi.rs`, 1,146 lines): Unicode Bidirectional Algorithm for mixed LTR/RTL text (feature `bidi`, used by `Paragraph` rendering and the opt-in `CursorNavigator::with_visual_bidi` caret mode)
 - **Shaping** (`shaping.rs`, 1,500+ lines): script/run segmentation for cluster-aware rendering
 - **Normalization** (`normalization.rs`): NFC/NFD Unicode normalization for consistent comparison
 
@@ -2748,7 +2748,7 @@ The `ftui-i18n` crate provides locale-aware rendering:
 
 - **Locale context** propagated through the runtime (`ProgramConfig::with_locale("fr")`, `LocaleContext::direction()`)
 - **String catalog** with fallback chains and CLDR-style plural rules (`StringCatalog`, `PluralRule`)
-- **Text direction** from locale with per-line UAX#9 reordering in `Paragraph`/`TextInput`/`TextArea` (feature `bidi`, on by default in `ftui`)
+- **Text direction** from locale with per-line, grapheme-cluster-preserving UAX#9 reordering in `Paragraph` (feature `bidi`, on by default in `ftui`). `TextInput` and `TextArea` draw and navigate editable text in logical order; `CursorNavigator::with_visual_bidi(true)` is an explicit opt-in visual caret for editors that also render in visual order
 
 - **Number & date formatting** backed by pinned Unicode CLDR v45.0 data for 7 declared locales (`NumberFormatter`, `DateTimeFormatter`, `format_number`, `format_date`)
 

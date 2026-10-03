@@ -34,16 +34,92 @@ impl CursorPosition {
 }
 
 /// Cursor navigation helper for rope-backed text.
+///
+/// By default every operation works in *logical* order: left/right step one
+/// grapheme backward/forward, Home/End go to grapheme 0 / the line end, and
+/// visual columns are the summed cell widths of the logical graphemes. That is
+/// what the built-in editors (`Editor`, `TextArea`) draw, so cursor, selection
+/// and mouse hit testing stay consistent with the rendered text.
+///
+/// With the `bidi` feature, [`with_visual_bidi`](Self::with_visual_bidi) opts
+/// in to *visual* bidi cursor behavior on lines containing RTL text. Only use
+/// it when the line is also *rendered* in UAX#9 visual order (for example via
+/// [`crate::bidi::reorder`]); see that method for the exact semantics.
 #[derive(Debug, Clone, Copy)]
 pub struct CursorNavigator<'a> {
     rope: &'a Rope,
+    #[cfg(feature = "bidi")]
+    visual_bidi: bool,
 }
 
 impl<'a> CursorNavigator<'a> {
-    /// Create a new navigator for the given rope.
+    /// Create a new navigator for the given rope (logical cursor movement).
     #[must_use]
     pub const fn new(rope: &'a Rope) -> Self {
-        Self { rope }
+        Self {
+            rope,
+            #[cfg(feature = "bidi")]
+            visual_bidi: false,
+        }
+    }
+
+    /// Opt in (or out) of visual bidi cursor behavior. Off by default.
+    ///
+    /// When enabled, on lines that contain RTL text:
+    /// - `visual_col` is the cell column of the caret in UAX#9 visual order
+    ///   (resolved levels from [`crate::bidi::BidiSegment`], with every
+    ///   extended grapheme cluster kept whole and measured with its full
+    ///   display width);
+    /// - [`move_left`](Self::move_left) / [`move_right`](Self::move_right)
+    ///   step to the next caret stop strictly to the left / right on screen,
+    ///   so repeated presses are monotonic and never loop;
+    /// - [`line_start`](Self::line_start) / [`line_end`](Self::line_end) go to
+    ///   the leftmost / rightmost caret stop;
+    /// - [`from_visual_col`](Self::from_visual_col) hit-tests against the
+    ///   visual layout.
+    ///
+    /// Each logical position has a single canonical caret stop, so at a
+    /// direction change the caret does not remember which visual edge it
+    /// arrived from (no caret affinity). The widgets in `ftui-widgets` draw
+    /// editable text in logical order and therefore do not enable this.
+    #[cfg(feature = "bidi")]
+    #[must_use]
+    pub const fn with_visual_bidi(mut self, enabled: bool) -> Self {
+        self.visual_bidi = enabled;
+        self
+    }
+
+    /// Whether visual bidi cursor behavior is enabled.
+    #[cfg(feature = "bidi")]
+    #[must_use]
+    pub const fn visual_bidi(&self) -> bool {
+        self.visual_bidi
+    }
+
+    /// Visual layout for `text` when visual bidi behavior applies to it.
+    #[cfg(feature = "bidi")]
+    fn visual_layout(&self, text: &str) -> Option<VisualLineLayout> {
+        if self.visual_bidi {
+            VisualLineLayout::new(text)
+        } else {
+            None
+        }
+    }
+
+    fn visual_col_for_grapheme(&self, text: &str, grapheme_idx: usize) -> usize {
+        #[cfg(feature = "bidi")]
+        if let Some(layout) = self.visual_layout(text) {
+            return layout.visual_col(grapheme_idx);
+        }
+        visual_col_for_grapheme(text, grapheme_idx)
+    }
+
+    fn grapheme_index_at_visual_col(&self, text: &str, visual_col: usize) -> usize {
+        #[cfg(feature = "bidi")]
+        if let Some(layout) = self.visual_layout(text) {
+            return layout.grapheme_at_visual_col(visual_col);
+        }
+        grapheme_index_at_visual_col(text, visual_col)
     }
 
     /// Clamp an arbitrary position to valid ranges.
@@ -53,7 +129,7 @@ impl<'a> CursorNavigator<'a> {
         let line_text = line_text(self.rope, line);
         let line_text = strip_trailing_newline(&line_text);
         let grapheme = pos.grapheme.min(grapheme_count(line_text));
-        let visual_col = visual_col_for_grapheme(line_text, grapheme);
+        let visual_col = self.visual_col_for_grapheme(line_text, grapheme);
         CursorPosition::new(line, grapheme, visual_col)
     }
 
@@ -64,7 +140,7 @@ impl<'a> CursorNavigator<'a> {
         let line_text = line_text(self.rope, line);
         let line_text = strip_trailing_newline(&line_text);
         let grapheme = grapheme.min(grapheme_count(line_text));
-        let visual_col = visual_col_for_grapheme(line_text, grapheme);
+        let visual_col = self.visual_col_for_grapheme(line_text, grapheme);
         CursorPosition::new(line, grapheme, visual_col)
     }
 
@@ -74,8 +150,8 @@ impl<'a> CursorNavigator<'a> {
         let line = clamp_line_index(self.rope, line);
         let line_text = line_text(self.rope, line);
         let line_text = strip_trailing_newline(&line_text);
-        let grapheme = grapheme_index_at_visual_col(line_text, visual_col);
-        let visual_col = visual_col_for_grapheme(line_text, grapheme);
+        let grapheme = self.grapheme_index_at_visual_col(line_text, visual_col);
+        let visual_col = self.visual_col_for_grapheme(line_text, grapheme);
         CursorPosition::new(line, grapheme, visual_col)
     }
 
@@ -138,65 +214,58 @@ impl<'a> CursorNavigator<'a> {
 
     /// Move cursor left by one grapheme (across line boundaries).
     ///
-    /// When the `bidi` feature is enabled and the line contains RTL characters,
-    /// this moves in visual left order on screen. Otherwise, moves backward in
-    /// logical document order.
+    /// Moves backward in logical document order, unless visual bidi behavior
+    /// was enabled with [`with_visual_bidi`](Self::with_visual_bidi) and the
+    /// line contains RTL text: then it moves to the next caret stop to the
+    /// left on screen, wrapping to the visual end of the previous line.
     #[must_use]
     pub fn move_left(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
         #[cfg(feature = "bidi")]
-        {
+        if self.visual_bidi {
             let raw = line_text(self.rope, pos.line);
             let current_text = strip_trailing_newline(&raw);
-            if crate::bidi::has_rtl(current_text) {
-                let seg = crate::bidi::BidiSegment::new(current_text, None);
-                let next_grapheme = seg.move_left(pos.grapheme);
-                if next_grapheme != pos.grapheme {
-                    return self.from_line_grapheme(pos.line, next_grapheme);
-                }
-                if pos.line == 0 {
-                    return pos;
-                }
-                let prev_line = pos.line - 1;
-                let prev_raw = line_text(self.rope, prev_line);
-                let prev_text = strip_trailing_newline(&prev_raw);
-                let prev_seg = crate::bidi::BidiSegment::new(prev_text, None);
-                let prev_end = prev_seg.logical_cursor_pos(prev_seg.len());
-                return self.from_line_grapheme(prev_line, prev_end);
+            let step = match VisualLineLayout::new(current_text) {
+                Some(layout) => layout.step_left(pos.grapheme),
+                None => pos.grapheme.checked_sub(1),
+            };
+            if let Some(next) = step {
+                return self.from_line_grapheme(pos.line, next);
             }
+            if pos.line == 0 {
+                return pos;
+            }
+            // Wrap to the visual end of the previous line.
+            return self.line_end(self.from_line_grapheme(pos.line - 1, 0));
         }
         self.move_grapheme_backward(pos)
     }
 
     /// Move cursor right by one grapheme (across line boundaries).
     ///
-    /// When the `bidi` feature is enabled and the line contains RTL characters,
-    /// this moves in visual right order on screen. Otherwise, moves forward in
-    /// logical document order.
+    /// Moves forward in logical document order, unless visual bidi behavior
+    /// was enabled with [`with_visual_bidi`](Self::with_visual_bidi) and the
+    /// line contains RTL text: then it moves to the next caret stop to the
+    /// right on screen, wrapping to the visual start of the next line.
     #[must_use]
     pub fn move_right(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
         #[cfg(feature = "bidi")]
-        {
+        if self.visual_bidi {
             let raw = line_text(self.rope, pos.line);
             let current_text = strip_trailing_newline(&raw);
-            if crate::bidi::has_rtl(current_text) {
-                let seg = crate::bidi::BidiSegment::new(current_text, None);
-                let next_grapheme = seg.move_right(pos.grapheme);
-                if next_grapheme != pos.grapheme {
-                    return self.from_line_grapheme(pos.line, next_grapheme);
-                }
-                let last_line = last_line_index(self.rope);
-                if pos.line >= last_line {
-                    return pos;
-                }
-                let next_line = pos.line + 1;
-                let next_raw = line_text(self.rope, next_line);
-                let next_text = strip_trailing_newline(&next_raw);
-                let next_seg = crate::bidi::BidiSegment::new(next_text, None);
-                let next_start = next_seg.logical_cursor_pos(0);
-                return self.from_line_grapheme(next_line, next_start);
+            let step = match VisualLineLayout::new(current_text) {
+                Some(layout) => layout.step_right(pos.grapheme),
+                None => (pos.grapheme < grapheme_count(current_text)).then_some(pos.grapheme + 1),
+            };
+            if let Some(next) = step {
+                return self.from_line_grapheme(pos.line, next);
             }
+            if pos.line >= last_line_index(self.rope) {
+                return pos;
+            }
+            // Wrap to the visual start of the next line.
+            return self.line_start(self.from_line_grapheme(pos.line + 1, 0));
         }
         self.move_grapheme_forward(pos)
     }
@@ -285,9 +354,9 @@ impl<'a> CursorNavigator<'a> {
 
     /// Move cursor to start of line.
     ///
-    /// When the `bidi` feature is enabled and the line contains RTL characters,
-    /// this moves to the visual left start of the line. Otherwise, moves to the
-    /// logical start of the line.
+    /// Goes to the logical start of the line (grapheme 0), unless visual bidi
+    /// behavior was enabled with [`with_visual_bidi`](Self::with_visual_bidi)
+    /// and the line contains RTL text: then it goes to the leftmost caret stop.
     #[must_use]
     pub fn line_start(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
@@ -295,9 +364,8 @@ impl<'a> CursorNavigator<'a> {
         {
             let line_text = line_text(self.rope, pos.line);
             let line_text = strip_trailing_newline(&line_text);
-            if crate::bidi::has_rtl(line_text) {
-                let seg = crate::bidi::BidiSegment::new(line_text, None);
-                return self.from_line_grapheme(pos.line, seg.logical_cursor_pos(0));
+            if let Some(layout) = self.visual_layout(line_text) {
+                return self.from_line_grapheme(pos.line, layout.leftmost());
             }
         }
         self.logical_line_start(pos)
@@ -305,9 +373,10 @@ impl<'a> CursorNavigator<'a> {
 
     /// Move cursor to end of line.
     ///
-    /// When the `bidi` feature is enabled and the line contains RTL characters,
-    /// this moves to the visual right end of the line. Otherwise, moves to the
-    /// logical end of the line.
+    /// Goes to the logical end of the line (after the last grapheme), unless
+    /// visual bidi behavior was enabled with
+    /// [`with_visual_bidi`](Self::with_visual_bidi) and the line contains RTL
+    /// text: then it goes to the rightmost caret stop.
     #[must_use]
     pub fn line_end(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
@@ -315,9 +384,8 @@ impl<'a> CursorNavigator<'a> {
         {
             let line_text = line_text(self.rope, pos.line);
             let line_text = strip_trailing_newline(&line_text);
-            if crate::bidi::has_rtl(line_text) {
-                let seg = crate::bidi::BidiSegment::new(line_text, None);
-                return self.from_line_grapheme(pos.line, seg.logical_cursor_pos(seg.len()));
+            if let Some(layout) = self.visual_layout(line_text) {
+                return self.from_line_grapheme(pos.line, layout.rightmost());
             }
         }
         self.logical_line_end(pos)
@@ -431,43 +499,10 @@ fn grapheme_count(text: &str) -> usize {
 }
 
 fn visual_col_for_grapheme(text: &str, grapheme_idx: usize) -> usize {
-    #[cfg(feature = "bidi")]
-    if crate::bidi::has_rtl(text) {
-        let seg = crate::bidi::BidiSegment::new(text, None);
-        let visual_grapheme = seg.visual_cursor_pos(grapheme_idx);
-        let mut col = 0usize;
-        for v in 0..visual_grapheme {
-            if let Some(ch) = seg.char_at_visual(v) {
-                let mut buf = [0u8; 4];
-                col = col.saturating_add(display_width(ch.encode_utf8(&mut buf)));
-            }
-        }
-        return col;
-    }
     graphemes(text).take(grapheme_idx).map(display_width).sum()
 }
 
 fn grapheme_index_at_visual_col(text: &str, visual_col: usize) -> usize {
-    #[cfg(feature = "bidi")]
-    if crate::bidi::has_rtl(text) {
-        let seg = crate::bidi::BidiSegment::new(text, None);
-        let mut col = 0usize;
-        let mut visual_idx = 0usize;
-        for v in 0..seg.len() {
-            let w = if let Some(ch) = seg.char_at_visual(v) {
-                let mut buf = [0u8; 4];
-                display_width(ch.encode_utf8(&mut buf))
-            } else {
-                1
-            };
-            if col.saturating_add(w) > visual_col {
-                break;
-            }
-            col = col.saturating_add(w);
-            visual_idx = visual_idx.saturating_add(1);
-        }
-        return seg.logical_cursor_pos(visual_idx);
-    }
     let mut col = 0usize;
     let mut idx = 0usize;
     for g in graphemes(text) {
@@ -479,6 +514,151 @@ fn grapheme_index_at_visual_col(text: &str, visual_col: usize) -> usize {
         idx = idx.saturating_add(1);
     }
     idx
+}
+
+/// Visual (UAX#9) caret layout of one line, at extended-grapheme granularity.
+///
+/// [`crate::bidi::BidiSegment`] works in Unicode scalar (char) indices, while
+/// the navigator works in extended grapheme cluster indices. This type is the
+/// only place the two meet: grapheme boundaries are converted to scalar
+/// indices before calling into the segment, scalar results are converted back
+/// to grapheme indices, and display widths are measured per whole cluster (so
+/// combining marks, ZWJ sequences, flags and keycaps keep their real width).
+#[cfg(feature = "bidi")]
+struct VisualLineLayout {
+    /// Canonical caret column (cells) of every logical grapheme boundary
+    /// `0..=grapheme_count`.
+    stop_cols: Vec<usize>,
+}
+
+#[cfg(feature = "bidi")]
+impl VisualLineLayout {
+    /// Build the layout, or `None` for lines without RTL text (those are laid
+    /// out in logical order and use the plain logical helpers).
+    fn new(text: &str) -> Option<Self> {
+        if !crate::bidi::has_rtl(text) {
+            return None;
+        }
+        let seg = crate::bidi::BidiSegment::new(text, None);
+        let scalar_total = seg.len();
+
+        // Scalar index at which each grapheme starts, plus the total.
+        let mut grapheme_scalar_start = Vec::new();
+        let mut widths = Vec::new();
+        let mut scalar = 0usize;
+        for g in graphemes(text) {
+            grapheme_scalar_start.push(scalar);
+            widths.push(display_width(g));
+            scalar += g.chars().count();
+        }
+        grapheme_scalar_start.push(scalar);
+        debug_assert_eq!(scalar, scalar_total);
+        let grapheme_count = widths.len();
+
+        // Order clusters left-to-right by their leftmost visual scalar slot.
+        let mut visual_order: Vec<(usize, usize)> = (0..grapheme_count)
+            .map(|g| {
+                let first_visual = (grapheme_scalar_start[g]..grapheme_scalar_start[g + 1])
+                    .map(|s| seg.visual_pos(s))
+                    .min()
+                    .unwrap_or(0);
+                (first_visual, g)
+            })
+            .collect();
+        visual_order.sort_unstable();
+
+        // Cell column of every visual scalar boundary. A boundary that falls
+        // inside a cluster (only possible if a cluster's scalars resolved to
+        // different levels) snaps to the cluster's left edge.
+        let mut slot_cols = vec![0usize; scalar_total + 1];
+        let mut slot = 0usize;
+        let mut col = 0usize;
+        for &(_, g) in &visual_order {
+            let scalars = grapheme_scalar_start[g + 1] - grapheme_scalar_start[g];
+            for k in 0..scalars {
+                if let Some(c) = slot_cols.get_mut(slot + k) {
+                    *c = col;
+                }
+            }
+            slot += scalars;
+            col += widths[g];
+        }
+        if let Some(last) = slot_cols.last_mut() {
+            *last = col;
+        }
+
+        let stop_cols = grapheme_scalar_start
+            .iter()
+            .map(|&s| {
+                let visual_boundary = seg.visual_cursor_pos(s).min(scalar_total);
+                slot_cols[visual_boundary]
+            })
+            .collect();
+        Some(Self { stop_cols })
+    }
+
+    fn visual_col(&self, grapheme: usize) -> usize {
+        let last = self.stop_cols.len() - 1;
+        self.stop_cols[grapheme.min(last)]
+    }
+
+    /// Grapheme boundary whose caret stop is the rightmost one at or left of
+    /// `visual_col` (lowest index on ties).
+    fn grapheme_at_visual_col(&self, visual_col: usize) -> usize {
+        let mut best: Option<(usize, usize)> = None;
+        for (g, &c) in self.stop_cols.iter().enumerate() {
+            if c <= visual_col && best.is_none_or(|(bc, _)| c > bc) {
+                best = Some((c, g));
+            }
+        }
+        best.map_or_else(|| self.leftmost(), |(_, g)| g)
+    }
+
+    /// Nearest caret stop strictly right of `grapheme`'s stop.
+    fn step_right(&self, grapheme: usize) -> Option<usize> {
+        let here = self.visual_col(grapheme);
+        let mut best: Option<(usize, usize)> = None;
+        for (g, &c) in self.stop_cols.iter().enumerate() {
+            if c > here && best.is_none_or(|(bc, _)| c < bc) {
+                best = Some((c, g));
+            }
+        }
+        best.map(|(_, g)| g)
+    }
+
+    /// Nearest caret stop strictly left of `grapheme`'s stop.
+    fn step_left(&self, grapheme: usize) -> Option<usize> {
+        let here = self.visual_col(grapheme);
+        let mut best: Option<(usize, usize)> = None;
+        for (g, &c) in self.stop_cols.iter().enumerate() {
+            if c < here && best.is_none_or(|(bc, _)| c > bc) {
+                best = Some((c, g));
+            }
+        }
+        best.map(|(_, g)| g)
+    }
+
+    /// Grapheme boundary with the leftmost caret stop (lowest index on ties).
+    fn leftmost(&self) -> usize {
+        let mut best = (usize::MAX, 0usize);
+        for (g, &c) in self.stop_cols.iter().enumerate() {
+            if c < best.0 {
+                best = (c, g);
+            }
+        }
+        best.1
+    }
+
+    /// Grapheme boundary with the rightmost caret stop (lowest index on ties).
+    fn rightmost(&self) -> usize {
+        let mut best: Option<(usize, usize)> = None;
+        for (g, &c) in self.stop_cols.iter().enumerate() {
+            if best.is_none_or(|(bc, _)| c > bc) {
+                best = Some((c, g));
+            }
+        }
+        best.map_or(0, |(_, g)| g)
+    }
 }
 
 fn grapheme_byte_offset(text: &str, grapheme_idx: usize) -> usize {
@@ -1182,7 +1362,7 @@ mod tests {
     fn rtl_cursor_navigation() {
         // Arabic text: "مرحبا" (5 characters, pure RTL)
         let r = rope("\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}");
-        let nav = CursorNavigator::new(&r);
+        let nav = CursorNavigator::new(&r).with_visual_bidi(true);
 
         // At logical 0 (visual right end):
         let pos0 = nav.from_line_grapheme(0, 0);
@@ -1211,6 +1391,204 @@ mod tests {
 
         assert_eq!(nav.logical_line_start(pos5).grapheme, 0);
         assert_eq!(nav.logical_line_end(pos0).grapheme, 5);
+    }
+
+    // ---- #102 regression tests -------------------------------------------
+
+    /// Grapheme boundaries of `text` paired with the logical (summed
+    /// whole-cluster width) column of each boundary.
+    fn logical_cols(text: &str) -> Vec<usize> {
+        let mut cols = vec![0];
+        let mut col = 0;
+        for g in graphemes(text) {
+            col += display_width(g);
+            cols.push(col);
+        }
+        cols
+    }
+
+    const MIXED_FIXTURES: &[&str] = &[
+        "a\u{0301} \u{05D0}\u{05D1}",
+        "ab \u{05D0}\u{05D1}",
+        "x\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} \u{05D0}\u{05D1}",
+        "\u{1F1FA}\u{1F1F8} 1\u{FE0F}\u{20E3} \u{05D0}\u{05D1} end",
+        "\u{05E9}\u{05B8}\u{05C1}\u{05DC}\u{05D5}\u{05B9}\u{05DD}",
+        "\u{0628}\u{0650}\u{0633}\u{0652}\u{0645}\u{0650} abc, (\u{05D0}!) e\u{0301}",
+        "\u{200F}a\u{200E}\u{05D0}",
+        "\u{4E16}\u{754C} \u{05D0}\u{05D1} \u{1F600}",
+    ];
+
+    /// The default navigator is logical (v0.8.0 behavior) even when the
+    /// `bidi` feature is compiled in: it must agree with editors that draw
+    /// text in logical order.
+    #[test]
+    fn default_navigator_is_logical_for_rtl_and_clusters() {
+        for text in MIXED_FIXTURES {
+            let r = rope(text);
+            let nav = CursorNavigator::new(&r);
+            let cols = logical_cols(text);
+            let n = cols.len() - 1;
+            for (g, &col) in cols.iter().enumerate() {
+                let pos = nav.from_line_grapheme(0, g);
+                assert_eq!(pos.visual_col, col, "fixture={text:?} g={g}");
+                // Zero-width clusters share a column; hit testing lands on
+                // the last boundary at that column.
+                let last_at_col = cols.iter().rposition(|&c| c == col).unwrap();
+                assert_eq!(
+                    nav.from_visual_col(0, col).grapheme,
+                    last_at_col,
+                    "fixture={text:?} g={g}"
+                );
+            }
+            let mut pos = nav.document_start();
+            for g in 1..=n {
+                pos = nav.move_right(pos);
+                assert_eq!(pos.grapheme, g, "fixture={text:?}");
+            }
+            assert_eq!(nav.move_right(pos), pos);
+            assert_eq!(nav.line_start(pos).grapheme, 0);
+            assert_eq!(nav.line_end(nav.document_start()).grapheme, n);
+            assert_eq!(nav.move_left(nav.document_start()), nav.document_start());
+        }
+    }
+
+    /// Issue #102 (1): a grapheme index was passed to the scalar-indexed
+    /// `BidiSegment` maps, so the caret after "a\u{301} " landed at column 1.
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn issue_102_combining_cluster_before_rtl_visual_col() {
+        let text = "a\u{0301} \u{05D0}\u{05D1}";
+        let r = Rope::from_text(text);
+        for nav in [
+            CursorNavigator::new(&r),
+            CursorNavigator::new(&r).with_visual_bidi(true),
+        ] {
+            let pos = nav.from_line_grapheme(0, 2);
+            assert_eq!(nav.to_byte_index(pos), "a\u{0301} ".len());
+            assert_eq!(pos.visual_col, 2);
+            assert_eq!(nav.from_visual_col(0, 2), pos);
+        }
+        // ASCII control.
+        let r = Rope::from_text("a \u{05D0}\u{05D1}");
+        let nav = CursorNavigator::new(&r).with_visual_bidi(true);
+        assert_eq!(nav.from_line_grapheme(0, 2).visual_col, 2);
+    }
+
+    /// Multi-scalar clusters keep their whole display width in the visual
+    /// layout, and LTR prefixes before an RTL run lay out exactly like the
+    /// logical sum.
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn visual_bidi_measures_whole_clusters() {
+        // Emoji ZWJ family (width 2) before Hebrew.
+        let text = "x\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} \u{05D0}\u{05D1}";
+        let r = rope(text);
+        let nav = CursorNavigator::new(&r).with_visual_bidi(true);
+        let cols = logical_cols(text);
+        for g in 0..=3 {
+            assert_eq!(nav.from_line_grapheme(0, g).visual_col, cols[g], "g={g}");
+        }
+        let total = *cols.last().unwrap();
+        assert_eq!(nav.line_end(nav.document_start()).visual_col, total);
+
+        // Flag + keycap prefix.
+        let text = "\u{1F1FA}\u{1F1F8} 1\u{FE0F}\u{20E3} \u{05D0}\u{05D1} end";
+        let r = rope(text);
+        let nav = CursorNavigator::new(&r).with_visual_bidi(true);
+        let cols = logical_cols(text);
+        for g in 0..=4 {
+            assert_eq!(nav.from_line_grapheme(0, g).visual_col, cols[g], "g={g}");
+        }
+
+        // Pointed Hebrew (pure RTL, 4 clusters over 7 scalars): logical
+        // boundary g sits 4 - g cells from the left edge.
+        let text = "\u{05E9}\u{05B8}\u{05C1}\u{05DC}\u{05D5}\u{05B9}\u{05DD}";
+        let r = rope(text);
+        let nav = CursorNavigator::new(&r).with_visual_bidi(true);
+        for g in 0..=4 {
+            assert_eq!(nav.from_line_grapheme(0, g).visual_col, 4 - g, "g={g}");
+            assert_eq!(nav.from_visual_col(0, 4 - g).grapheme, g, "g={g}");
+        }
+        assert_eq!(nav.line_start(nav.document_start()).grapheme, 4);
+        assert_eq!(nav.line_end(nav.document_end()).grapheme, 0);
+    }
+
+    /// Issue #102 (2): on "ab \u{5D0}\u{5D1}" right-arrow from grapheme 4
+    /// used to land on grapheme 3 one column to the LEFT. Visual movement
+    /// must be strictly monotonic, terminate, and round-trip.
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn visual_bidi_moves_are_monotonic_and_round_trip() {
+        let r = rope("ab \u{05D0}\u{05D1}");
+        let nav = CursorNavigator::new(&r).with_visual_bidi(true);
+        let at4 = nav.from_line_grapheme(0, 4);
+        let right = nav.move_right(at4);
+        assert!(
+            right == at4 || right.visual_col > at4.visual_col,
+            "{at4:?} -> {right:?}"
+        );
+
+        for text in MIXED_FIXTURES {
+            let r = rope(text);
+            let nav = CursorNavigator::new(&r).with_visual_bidi(true);
+            let n = grapheme_count(text);
+            let mut pos = nav.line_start(nav.document_start());
+            assert_eq!(pos.visual_col, 0, "fixture={text:?}");
+            let mut stops = vec![pos];
+            for _ in 0..=n + 1 {
+                let next = nav.move_right(pos);
+                if next == pos {
+                    break;
+                }
+                assert!(
+                    next.visual_col > pos.visual_col,
+                    "fixture={text:?} {pos:?} -> {next:?}"
+                );
+                pos = next;
+                stops.push(pos);
+            }
+            assert_eq!(pos, nav.line_end(pos), "fixture={text:?}");
+            assert_eq!(
+                pos.visual_col,
+                logical_cols(text).last().copied().unwrap(),
+                "fixture={text:?}: rightmost stop is the full line width"
+            );
+            for w in stops.windows(2).rev() {
+                assert_eq!(nav.move_left(w[1]), w[0], "fixture={text:?}");
+            }
+            for stop in &stops {
+                assert_eq!(
+                    nav.from_visual_col(0, stop.visual_col),
+                    *stop,
+                    "fixture={text:?}"
+                );
+                assert_eq!(nav.from_byte_index(nav.to_byte_index(*stop)), *stop);
+            }
+        }
+    }
+
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn visual_bidi_wraps_across_lines() {
+        let r = rope("\u{05D0}\u{05D1}\nab");
+        let nav = CursorNavigator::new(&r).with_visual_bidi(true);
+        // Visual right edge of the RTL line is logical 0.
+        let right_edge = nav.from_line_grapheme(0, 0);
+        let next = nav.move_right(right_edge);
+        assert_eq!((next.line, next.grapheme), (1, 0));
+        let back = nav.move_left(next);
+        assert_eq!((back.line, back.grapheme), (0, 0));
+        // From the LTR line's end, right goes nowhere; left walks back over
+        // "ab" and then onto the RTL line's right edge.
+        let end = nav.document_end();
+        assert_eq!(nav.move_right(end), end);
+        let mut pos = end;
+        for g in [1, 0] {
+            pos = nav.move_left(pos);
+            assert_eq!((pos.line, pos.grapheme), (1, g));
+        }
+        pos = nav.move_left(pos);
+        assert_eq!((pos.line, pos.grapheme, pos.visual_col), (0, 0, 2));
     }
 
     #[test]

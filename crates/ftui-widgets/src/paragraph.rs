@@ -555,65 +555,65 @@ fn reorder_line_bidi(
             .collect();
         return (ftui_text::Line::from_spans(spans), width);
     }
-    let reordered = ftui_text::bidi::reorder(&full_text, para_dir);
-    let width = ftui_text::display_width(&reordered);
-
-    if line.spans().len() <= 1 {
-        let style = line
-            .spans()
-            .first()
-            .and_then(|s| s.style)
-            .unwrap_or_default();
-        return (ftui_text::Line::styled(reordered, style), width);
-    }
-
-    let dir_opt = match para_dir {
-        ftui_text::bidi::ParagraphDirection::Ltr => Some(ftui_text::bidi::Direction::Ltr),
-        ftui_text::bidi::ParagraphDirection::Rtl => Some(ftui_text::bidi::Direction::Rtl),
+    // UAX#9 visual runs (rules L1/L2, as `unicode_bidi::BidiInfo::reorder_line`
+    // applies them), but RTL runs are reversed by extended grapheme cluster
+    // rather than by scalar, so combining marks, ZWJ sequences, flags and
+    // keycaps stay attached to their base and keep their width (#102).
+    // `reorder_line` itself leaves cluster handling to the caller.
+    let level = match para_dir {
+        ftui_text::bidi::ParagraphDirection::Ltr => Some(unicode_bidi::Level::ltr()),
+        ftui_text::bidi::ParagraphDirection::Rtl => Some(unicode_bidi::Level::rtl()),
         ftui_text::bidi::ParagraphDirection::Auto => None,
     };
-    let seg = ftui_text::bidi::BidiSegment::new(&full_text, dir_opt);
-    let mut char_styles: Vec<Option<Style>> = Vec::with_capacity(full_text.chars().count());
+    let bidi_info = unicode_bidi::BidiInfo::new(&full_text, level);
+    let mut byte_styles: Vec<Option<Style>> = Vec::with_capacity(full_text.len());
     for span in line.spans() {
-        for _ in span.content.chars() {
-            char_styles.push(span.style);
-        }
+        byte_styles.extend(std::iter::repeat_n(span.style, span.content.len()));
     }
+
     let mut new_spans: Vec<ftui_text::Span<'static>> = Vec::new();
     let mut current_str = String::new();
     let mut current_style: Option<Style> = None;
-
-    for &logical_idx in &seg.visual_to_logical {
-        if logical_idx < seg.chars.len() {
-            let ch = seg.chars[logical_idx];
-            let style = char_styles.get(logical_idx).copied().flatten();
-            if current_str.is_empty() {
-                current_str.push(ch);
-                current_style = style;
-            } else if current_style == style {
-                current_str.push(ch);
-            } else {
-                if let Some(st) = current_style {
-                    new_spans.push(ftui_text::Span::styled(
-                        std::mem::take(&mut current_str),
-                        st,
-                    ));
-                } else {
-                    new_spans.push(ftui_text::Span::raw(std::mem::take(&mut current_str)));
+    let mut push_cluster = |cluster: &str, style: Option<Style>| {
+        if !current_str.is_empty() && current_style != style {
+            let text = std::mem::take(&mut current_str);
+            new_spans.push(match current_style {
+                Some(st) => ftui_text::Span::styled(text, st),
+                None => ftui_text::Span::raw(text),
+            });
+        }
+        current_style = style;
+        current_str.push_str(cluster);
+    };
+    for para in &bidi_info.paragraphs {
+        let (levels, runs) = bidi_info.visual_runs(para, para.range.clone());
+        for run in runs {
+            let run_text = &full_text[run.clone()];
+            let clusters: Vec<(usize, &str)> =
+                unicode_segmentation::UnicodeSegmentation::grapheme_indices(run_text, true)
+                    .collect();
+            let rtl = levels.get(run.start).is_some_and(|l| l.is_rtl());
+            let style_at = |off: usize| byte_styles.get(run.start + off).copied().flatten();
+            if rtl {
+                for &(off, g) in clusters.iter().rev() {
+                    push_cluster(g, style_at(off));
                 }
-                current_str.push(ch);
-                current_style = style;
+            } else {
+                for &(off, g) in &clusters {
+                    push_cluster(g, style_at(off));
+                }
             }
         }
     }
     if !current_str.is_empty() {
-        if let Some(st) = current_style {
-            new_spans.push(ftui_text::Span::styled(current_str, st));
-        } else {
-            new_spans.push(ftui_text::Span::raw(current_str));
-        }
+        new_spans.push(match current_style {
+            Some(st) => ftui_text::Span::styled(current_str, st),
+            None => ftui_text::Span::raw(current_str),
+        });
     }
-    (ftui_text::Line::from_spans(new_spans), width)
+    let line = ftui_text::Line::from_spans(new_spans);
+    let width = line.width();
+    (line, width)
 }
 impl MeasurableWidget for Paragraph<'_> {
     fn measure(&self, available: Size) -> SizeConstraints {
@@ -1804,6 +1804,45 @@ mod tests {
                 rendered_trimmed,
                 oracle_reordered
             );
+        }
+    }
+
+    /// #102: RTL runs are reversed by grapheme cluster, so combining marks
+    /// (pointed Hebrew, Arabic harakat) stay after their base letter and
+    /// multi-scalar clusters keep their bytes and width.
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn paragraph_rtl_reorder_keeps_grapheme_clusters_whole() {
+        let cases = [
+            (
+                "\u{05E9}\u{05B8}\u{05C1}\u{05DC}\u{05D5}\u{05B9}\u{05DD}",
+                "\u{05DD}\u{05D5}\u{05B9}\u{05DC}\u{05E9}\u{05B8}\u{05C1}",
+            ),
+            (
+                "\u{0628}\u{0650}\u{0633}\u{0652}\u{0645}\u{0650}",
+                "\u{0645}\u{0650}\u{0633}\u{0652}\u{0628}\u{0650}",
+            ),
+            ("a\u{0301} \u{05D0}\u{05D1}", "a\u{0301} \u{05D1}\u{05D0}"),
+        ];
+        for (logical, visual) in cases {
+            for styled in [false, true] {
+                let text = if styled {
+                    // Split into two differently styled spans so the
+                    // multi-span path is exercised as well.
+                    let mid = logical.char_indices().nth(1).unwrap().0;
+                    FtuiText::from_spans([
+                        Span::styled(&logical[..mid], Style::new().bold()),
+                        Span::raw(&logical[mid..]),
+                    ])
+                } else {
+                    FtuiText::raw(logical)
+                };
+                let (line, width) =
+                    reorder_line_bidi(&text.lines()[0], ftui_text::bidi::ParagraphDirection::Auto);
+                let got: String = line.spans().iter().map(|s| s.content.as_ref()).collect();
+                assert_eq!(got, visual, "logical={logical:?} styled={styled}");
+                assert_eq!(width, display_width(logical), "logical={logical:?}");
+            }
         }
     }
 

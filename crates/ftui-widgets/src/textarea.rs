@@ -2075,6 +2075,87 @@ mod tests {
             press(&mut ta, 9, 0, 1000);
             assert_eq!(ta.cursor().grapheme, 9);
         }
+
+        fn key(ta: &mut TextArea, code: KeyCode, modifiers: Modifiers) {
+            ta.handle_event(&Event::Key(KeyEvent {
+                code,
+                modifiers,
+                kind: KeyEventKind::Press,
+            }));
+        }
+
+        fn drawn_cursor(ta: &TextArea, area: Rect) -> (Option<(u16, u16)>, Vec<String>) {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(area.right(), area.bottom(), &mut pool);
+            Widget::render(ta, area, &mut frame);
+            let row: Vec<String> = (area.x..area.right())
+                .map(|x| {
+                    let cell = frame.buffer.get(x, area.y).unwrap();
+                    cell.content
+                        .as_char()
+                        .map(String::from)
+                        .or_else(|| {
+                            cell.content
+                                .grapheme_id()
+                                .and_then(|id| frame.pool.get(id).map(str::to_string))
+                        })
+                        .unwrap_or_default()
+                })
+                .collect();
+            (frame.cursor_position, row)
+        }
+
+        /// #102 (3): TextArea draws text in logical order, so keys, the drawn
+        /// caret, clicks, delete and undo must all use the same logical
+        /// layout, with whole grapheme clusters (default features include
+        /// `bidi`).
+        #[test]
+        fn rtl_and_clusters_render_navigate_click_delete_consistently() {
+            let text = "a\u{0301} \u{05D0}\u{05D1}";
+            for wrap in [false, true] {
+                let mut ta = TextArea::new()
+                    .with_text(text)
+                    .with_soft_wrap(wrap)
+                    .with_focus(true);
+                let (_, row) = drawn_cursor(&ta, AREA);
+                assert_eq!(
+                    &row[..4],
+                    ["a\u{0301}", " ", "\u{05D0}", "\u{05D1}"],
+                    "wrap={wrap}"
+                );
+
+                key(&mut ta, KeyCode::Home, Modifiers::NONE);
+                assert_eq!(ta.cursor().grapheme, 0);
+                key(&mut ta, KeyCode::Right, Modifiers::NONE);
+                key(&mut ta, KeyCode::Right, Modifiers::NONE);
+                assert_eq!(ta.cursor().grapheme, 2, "wrap={wrap}");
+                let (cursor, _) = drawn_cursor(&ta, AREA);
+                assert_eq!(
+                    cursor,
+                    Some((AREA.x + 2, AREA.y)),
+                    "wrap={wrap}: caret before the alef"
+                );
+
+                key(&mut ta, KeyCode::End, Modifiers::NONE);
+                assert_eq!(ta.cursor().grapheme, 4);
+                let (cursor, _) = drawn_cursor(&ta, AREA);
+                assert_eq!(cursor, Some((AREA.x + 4, AREA.y)), "wrap={wrap}");
+
+                // Clicking between the alef and bet lands between them.
+                press(&mut ta, AREA.x + 3, AREA.y, 0);
+                assert_eq!(ta.cursor().grapheme, 3, "wrap={wrap}");
+                key(&mut ta, KeyCode::Backspace, Modifiers::NONE);
+                assert_eq!(ta.text(), "a\u{0301} \u{05D1}", "wrap={wrap}");
+                ta.undo();
+                assert_eq!(ta.text(), text, "wrap={wrap}");
+
+                // Backspace after the combining cluster removes it whole.
+                press(&mut ta, AREA.x + 1, AREA.y, 5000);
+                assert_eq!(ta.cursor().grapheme, 1, "wrap={wrap}");
+                key(&mut ta, KeyCode::Backspace, Modifiers::NONE);
+                assert_eq!(ta.text(), " \u{05D0}\u{05D1}", "wrap={wrap}");
+            }
+        }
     }
 
     #[test]
