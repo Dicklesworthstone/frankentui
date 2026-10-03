@@ -1485,8 +1485,8 @@ mod tests {
         let r = rope(text);
         let nav = CursorNavigator::new(&r).with_visual_bidi(true);
         let cols = logical_cols(text);
-        for g in 0..=3 {
-            assert_eq!(nav.from_line_grapheme(0, g).visual_col, cols[g], "g={g}");
+        for (g, &col) in cols.iter().enumerate().take(3 + 1) {
+            assert_eq!(nav.from_line_grapheme(0, g).visual_col, col, "g={g}");
         }
         let total = *cols.last().unwrap();
         assert_eq!(nav.line_end(nav.document_start()).visual_col, total);
@@ -1496,8 +1496,8 @@ mod tests {
         let r = rope(text);
         let nav = CursorNavigator::new(&r).with_visual_bidi(true);
         let cols = logical_cols(text);
-        for g in 0..=4 {
-            assert_eq!(nav.from_line_grapheme(0, g).visual_col, cols[g], "g={g}");
+        for (g, &col) in cols.iter().enumerate().take(4 + 1) {
+            assert_eq!(nav.from_line_grapheme(0, g).visual_col, col, "g={g}");
         }
 
         // Pointed Hebrew (pure RTL, 4 clusters over 7 scalars): logical
