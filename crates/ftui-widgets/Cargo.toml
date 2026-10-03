@@ -19,7 +19,7 @@ debug-overlay = []
 regex-search = ["dep:regex"]
 state-persistence = ["dep:serde"]
 tracing = ["dep:tracing", "ftui-render/tracing"]
-bidi = ["ftui-text/bidi"]
+bidi = ["ftui-text/bidi", "dep:unicode-bidi"]
 
 [lints]
 workspace = true
@@ -38,6 +38,8 @@ web-time = "1.1.0"
 regex = { version = "1.13.1", optional = true }
 serde = { version = "1.0.229", features = ["derive"], optional = true }
 tracing = { version = "0.1.41", optional = true }
+# `bidi`: Paragraph reorders by UAX#9 visual runs, keeping grapheme clusters whole.
+unicode-bidi = { version = "0.3.18", optional = true }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 
