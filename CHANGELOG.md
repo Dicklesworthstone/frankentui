@@ -7,7 +7,7 @@ All notable changes to [FrankenTUI](https://github.com/Dicklesworthstone/franken
 **License:** MIT + OpenAI/Anthropic Rider
 
 Scope window: initial development on 2026-01-31 through the 0.9.0 release
-published on 2026-09-18. The latest published GitHub Release is
+published on 2026-10-03. The latest published GitHub Release is
 [v0.9.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.9.0).
 `Release` below means a published GitHub Release; `Tag` means a git tag with
 no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
@@ -16,7 +16,7 @@ no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
-| [v0.9.0] | Release | 2026-09-18 | SIMD width kernels, OSC 52 clipboard, paragraph editing, unified teardown, first crates.io publish since 0.7.0 |
+| [v0.9.0] | Release | 2026-10-03 | SIMD width kernels, OSC 52 clipboard, paragraph editing, bidi `Paragraph`, unified teardown, first crates.io publish since 0.7.0 |
 | [v0.8.0] | Release | 2026-09-13 | Browser showcase parity, driven guided tour, touch navigation, clipboard |
 | [v0.7.0] | Release | 2026-09-08 | Default backends, keymaps, runtime accessibility, widgets, terminal fixes |
 | [v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0) | Release | 2026-08-24 | Runtime guardrails, resize SLA, asupersync 0.4.9, color depth |
@@ -35,9 +35,9 @@ tag's recorded timezone; the internal milestone uses its commit date.
 
 ---
 
-## [v0.9.0] -- 2026-09-18 (GitHub Release)
+## [v0.9.0] -- 2026-10-03 (GitHub Release)
 
-231 commits since v0.8.0.
+691 commits since v0.8.0.
 
 **crates.io catch-up.** The 17 library crates are published again at 0.9.0. The
 registry had been stuck at **0.7.0**: the v0.8.0 tag and GitHub Release shipped,
@@ -72,6 +72,21 @@ pick up everything in the v0.8.0 section below as well as this one. There is no
   classification and its transition event are folded into diff evidence; an
   upward `AllocLeakDetector` feeds `FrameGuardrails`; and guardrails queue depth,
   VOI schema version, and telemetry all have validation tests.
+- **Right-to-left text in `Paragraph` (feature `bidi`, on by default in `ftui`).**
+  `LocaleContext::direction()` and `Frame::text_direction` carry the locale's
+  direction, and `Paragraph` reorders each (wrapped) line into UAX#9 visual
+  order. RTL runs are reversed by extended grapheme cluster, so pointed Hebrew,
+  Arabic harakat, ZWJ emoji, flags and keycaps stay whole and keep their width.
+- **Opt-in visual bidi caret: `CursorNavigator::with_visual_bidi(true)`.** For
+  editors that also *render* in visual order, left/right step to the next caret
+  stop on screen (monotonic, never looping, wrapping to the adjacent line's
+  visual edge), Home/End go to the leftmost/rightmost stop, and visual columns
+  and hit testing use the visual layout, measured per whole grapheme cluster.
+  It is off by default. Known limitation: each logical position has one
+  canonical caret stop, so the caret does not keep its affinity (which edge it
+  arrived from) at a direction change, and boundaries that share a column
+  (around zero-width marks such as RLM) collapse into one stop; see
+  [#102](https://github.com/Dicklesworthstone/frankentui/issues/102).
 - **Widget introspection.** `CachedWidget` exposes cache-hit and last-key
   inspectors, and virtualized row heights are trained per category with exposed
   statistics.
@@ -84,6 +99,19 @@ pick up everything in the v0.8.0 section below as well as this one. There is no
 
 ### Fixed
 
+- **Editors behave as in v0.8.0 for RTL text with default features
+  ([#102](https://github.com/Dicklesworthstone/frankentui/issues/102)).** A
+  pre-release change made `CursorNavigator`, `Editor`, `TextArea` and
+  `TextInput` move the caret in visual bidi order whenever the `bidi` feature
+  was on (it is on by default in `ftui`), while both widgets still draw editable
+  text in logical order. It also passed grapheme indices into the
+  scalar-indexed `BidiSegment` maps and measured multi-scalar clusters per
+  scalar. On `a\u{301} \u{5D0}\u{5D1}`, the caret after the space was placed one
+  column too far left, and on `ab \u{5D0}\u{5D1}` right-arrow could move the
+  caret left. The default navigator and both widgets are logical again, so
+  caret, selection, clicks and the drawn text agree. Visual bidi movement is
+  now the explicit opt-in described above, and it converts between grapheme
+  and scalar indices at the `BidiSegment` boundary.
 - Teardown no longer emits an unpaired DEC `?2026l` under mux policy, and termios
   is restored with `TCSANOW` so cleanup cannot block forever.
 - The accessibility panel no longer cuts off its own lines, sizes its columns
@@ -1085,6 +1113,8 @@ its full feature list should not be attributed to the earlier 0.1.1 package.
 
 ---
 
+[v0.9.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.9.0
+[v0.8.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.8.0
 [v0.7.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.7.0
 [v0.6.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0
 [v0.5.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.5.0
