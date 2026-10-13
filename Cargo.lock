@@ -1631,6 +1631,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-segmentation",
  "unicode-width",
+ "vt100",
  "web-time",
 ]
 

@@ -347,7 +347,8 @@
         "use_scroll_region",
         "use_sync_output",
         "in_mux",
-        "scroll_region_verified"
+        "scroll_region_verified",
+        "log_transport"
       ],
       "optional": [],
       "types": {
@@ -355,7 +356,8 @@
         "use_scroll_region": "boolean",
         "use_sync_output": "boolean",
         "in_mux": "boolean",
-        "scroll_region_verified": ["boolean", "null"]
+        "scroll_region_verified": ["boolean", "null"],
+        "log_transport": "string"
       }
     },
     "diff_decision": {

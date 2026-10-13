@@ -171,7 +171,8 @@ mod tests {
         assert!(output.contains("\x1b[31m界!\x1b[0m"));
         assert!(output.contains("\x1b[32mgreen\x1b[0m"));
         assert!(!output.contains("\x1b[2J"));
-        assert!(!output.contains('\n'), "overlay must not scroll the UI");
+        // Overlay lines end with CR LF: a bare LF would staircase in raw mode.
+        assert!(!output.replace("\r\n", "").contains('\n'));
     }
 
     #[test]
@@ -183,7 +184,7 @@ mod tests {
             sink.write_all(b"Jtrusted\n").unwrap();
         }
         let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
-        assert!(output.contains("\x1b[2Jtrusted\n"));
+        assert!(output.contains("\x1b[2Jtrusted\r\n"));
     }
 
     #[test]
@@ -234,18 +235,21 @@ mod tests {
         let mut writer = create_writer();
         {
             let mut sink = LogSink::new(&mut writer);
-            sink.write_all(b"\n").unwrap();
+            sink.write_all(b"before\n\nafter\n").unwrap();
         }
 
         let output = writer.into_inner().unwrap();
-        let output_str = String::from_utf8_lossy(&output);
-        // An empty line carries no payload: overlay-mode write_log emits
-        // nothing for it and NEVER a raw LF byte (bd-th0p6 — an unqualified
-        // LF would scroll and corrupt the displayed UI).
-        assert!(
-            !output_str.contains('\n'),
-            "overlay log emission must not contain raw newline bytes"
-        );
+        // An empty line is a blank line in the log, as in a terminal: it
+        // reaches scrollback between its neighbours (G48).
+        let mut vt = vt100::Parser::new(24, 80, 1_000);
+        vt.process(&output);
+        vt.screen_mut().set_scrollback(usize::MAX);
+        let mut rows: Vec<String> = vt.screen().rows(0, 80).collect();
+        vt.screen_mut().set_scrollback(0);
+        rows.extend(vt.screen().rows(0, 80));
+        let at = rows.iter().position(|r| r == "before").expect("before");
+        assert_eq!(rows[at + 1], "");
+        assert_eq!(rows[at + 2], "after");
     }
 
     #[test]

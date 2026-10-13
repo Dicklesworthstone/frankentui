@@ -124,6 +124,24 @@ impl EvidenceSinkConfig {
         self.max_bytes = max_bytes;
         self
     }
+
+    /// Refuse an enabled stdout destination when stdout is the terminal the
+    /// UI draws on: JSONL written there lands in the middle of frames,
+    /// breaking the one-writer rule (bd-g00-root-epic-ewths.33.4). Piped or
+    /// redirected stdout stays allowed.
+    pub(crate) fn check_terminal_ui_stdout(&self, stdout_is_terminal: bool) -> io::Result<()> {
+        if self.enabled
+            && stdout_is_terminal
+            && matches!(self.destination, EvidenceSinkDestination::Stdout)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "evidence sink destination is stdout, which the terminal UI owns; \
+                 use EvidenceSinkConfig::enabled_file(..) or redirect stdout",
+            ));
+        }
+        Ok(())
+    }
 }
 
 struct EvidenceSinkInner {
@@ -259,6 +277,28 @@ impl EvidenceSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdout_destination_is_refused_only_when_stdout_is_the_ui_terminal() {
+        let stdout = EvidenceSinkConfig::enabled_stdout();
+        let err = stdout.check_terminal_ui_stdout(true).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("enabled_file"), "{err}");
+        // Piped/redirected stdout carries no UI.
+        assert!(stdout.check_terminal_ui_stdout(false).is_ok());
+        // Disabled (the default, whose destination is also Stdout) and file
+        // destinations are never refused.
+        assert!(
+            EvidenceSinkConfig::default()
+                .check_terminal_ui_stdout(true)
+                .is_ok()
+        );
+        assert!(
+            EvidenceSinkConfig::enabled_file("/tmp/ftui-evidence-never-written.jsonl")
+                .check_terminal_ui_stdout(true)
+                .is_ok()
+        );
+    }
 
     #[test]
     fn schema_version_stable() {

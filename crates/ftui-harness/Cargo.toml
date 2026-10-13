@@ -2,6 +2,9 @@
 name = "ftui-harness"
 version = "0.9.0"
 edition = "2024"
+# README documents `cargo run -p ftui-harness`; the crate also ships the
+# flicker_scan and pane_splitter_pty_harness binaries.
+default-run = "ftui-harness"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Test harness and reference fixtures for FrankenTUI."
 repository = "https://github.com/Dicklesworthstone/frankentui"

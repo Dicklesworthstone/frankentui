@@ -3830,9 +3830,16 @@ struct EffectQueue<M: Send + 'static> {
     sender: mpsc::Sender<EffectCommand<M>>,
     handle: Option<JoinHandle<()>>,
     closed: bool,
-    /// Tasks accepted by the loop thread and not yet run (published by the
-    /// loop each iteration; read by the frame guardrail).
-    depth: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Tasks handed to the queue and not finished — still in the channel,
+    /// accepted by the loop, or running. Incremented by `enqueue`,
+    /// decremented by the loop when a task finishes or is dropped; read by
+    /// the frame guardrail.
+    outstanding: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// `EffectQueueConfig::max_queue_depth` (0 = unbounded), enforced at
+    /// submission. The loop runs one task at a time, so a check on the loop
+    /// side alone let any number of submissions pile up in the unbounded
+    /// channel while a long task ran (bd-g00-root-epic-ewths.50.1).
+    max_depth: usize,
 }
 
 impl<M: Send + 'static> EffectQueue<M> {
@@ -3842,31 +3849,45 @@ impl<M: Send + 'static> EffectQueue<M> {
         evidence_sink: Option<EvidenceSink>,
     ) -> io::Result<Self> {
         let (tx, rx) = mpsc::channel::<EffectCommand<M>>();
-        let depth = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let loop_depth = std::sync::Arc::clone(&depth);
+        let outstanding = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let loop_outstanding = std::sync::Arc::clone(&outstanding);
+        let max_depth = config.max_queue_depth;
         let handle = thread::Builder::new()
             .name("ftui-effects".into())
             .spawn(move || {
-                effect_queue_loop(config, rx, result_sender, evidence_sink, &loop_depth);
+                effect_queue_loop(config, rx, result_sender, evidence_sink, &loop_outstanding);
             })?;
 
         Ok(Self {
             sender: tx,
             handle: Some(handle),
             closed: false,
-            depth,
+            outstanding,
+            max_depth,
         })
     }
 
-    /// Tasks accepted by the queue that have not run yet.
+    /// Tasks handed to the queue that have not finished.
     fn in_flight(&self) -> usize {
-        self.depth.load(std::sync::atomic::Ordering::Relaxed)
+        self.outstanding.load(std::sync::atomic::Ordering::Acquire)
     }
 
     fn enqueue(&self, spec: TaskSpec, task: Box<dyn FnOnce() -> M + Send>) {
+        use std::sync::atomic::Ordering;
         if self.closed {
             crate::effect_system::record_queue_drop("post_shutdown");
             tracing::debug!("rejecting task enqueue after effect queue shutdown");
+            return;
+        }
+        let max_depth = self.max_depth;
+        let admitted = self
+            .outstanding
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (max_depth == 0 || n < max_depth).then_some(n + 1)
+            })
+            .is_ok();
+        if !admitted {
+            crate::effect_system::record_queue_drop("backpressure");
             return;
         }
         if self
@@ -3874,6 +3895,7 @@ impl<M: Send + 'static> EffectQueue<M> {
             .send(EffectCommand::Enqueue(spec, task))
             .is_err()
         {
+            release_outstanding(&self.outstanding);
             crate::effect_system::record_queue_drop("channel_closed");
         }
     }
@@ -4386,12 +4408,21 @@ fn run_task_closure<M: Send + 'static>(
     }
 }
 
+/// One task handed to an [`EffectQueue`] finished or was dropped. Saturating:
+/// tests drive the loop with commands that never passed through `enqueue`.
+fn release_outstanding(outstanding: &std::sync::atomic::AtomicUsize) {
+    use std::sync::atomic::Ordering;
+    let _ = outstanding.try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+        Some(n.saturating_sub(1))
+    });
+}
+
 fn effect_queue_loop<M: Send + 'static>(
     config: EffectQueueConfig,
     rx: mpsc::Receiver<EffectCommand<M>>,
     result_sender: mpsc::Sender<M>,
     evidence_sink: Option<EvidenceSink>,
-    depth: &std::sync::atomic::AtomicUsize,
+    outstanding: &std::sync::atomic::AtomicUsize,
 ) {
     let mut scheduler = QueueingScheduler::new(config.scheduler);
     let mut tasks: HashMap<u64, Box<dyn FnOnce() -> M + Send>> = HashMap::new();
@@ -4399,9 +4430,6 @@ fn effect_queue_loop<M: Send + 'static>(
     let max_depth = config.max_queue_depth;
 
     loop {
-        // Publish the accepted-but-unrun depth for the frame guardrail; the
-        // loop comes back here after every command batch and every task.
-        depth.store(tasks.len(), std::sync::atomic::Ordering::Relaxed);
         if tasks.is_empty() {
             if shutdown_requested {
                 return;
@@ -4416,6 +4444,7 @@ fn effect_queue_loop<M: Send + 'static>(
                             &result_sender,
                             evidence_sink.as_ref(),
                             max_depth,
+                            outstanding,
                         ),
                         EffectLoopControl::ShutdownRequested
                     ) {
@@ -4428,6 +4457,7 @@ fn effect_queue_loop<M: Send + 'static>(
 
         while let Ok(cmd) = rx.try_recv() {
             if shutdown_requested && matches!(cmd, EffectCommand::Enqueue(_, _)) {
+                release_outstanding(outstanding);
                 crate::effect_system::record_queue_drop("post_shutdown");
                 continue;
             }
@@ -4439,6 +4469,7 @@ fn effect_queue_loop<M: Send + 'static>(
                     &result_sender,
                     evidence_sink.as_ref(),
                     max_depth,
+                    outstanding,
                 ),
                 EffectLoopControl::ShutdownRequested
             ) {
@@ -4466,6 +4497,7 @@ fn effect_queue_loop<M: Send + 'static>(
         for job_id in completed {
             if let Some(task) = tasks.remove(&job_id) {
                 let _ = run_task_closure(task, "queued", evidence_sink.as_ref(), &result_sender);
+                release_outstanding(outstanding);
                 crate::effect_system::record_queue_processed();
             }
         }
@@ -4479,11 +4511,14 @@ fn handle_effect_command<M: Send + 'static>(
     result_sender: &mpsc::Sender<M>,
     evidence_sink: Option<&EvidenceSink>,
     max_depth: usize,
+    outstanding: &std::sync::atomic::AtomicUsize,
 ) -> EffectLoopControl {
     match cmd {
         EffectCommand::Enqueue(spec, task) => {
-            // Backpressure: drop task if queue depth exceeds limit (bd-2zd0a)
+            // Backpressure (bd-2zd0a). `EffectQueue::enqueue` already bounds
+            // the backlog at submission; this guards direct loop callers.
             if max_depth > 0 && tasks.len() >= max_depth {
+                release_outstanding(outstanding);
                 crate::effect_system::record_queue_drop("backpressure");
                 return EffectLoopControl::Continue;
             }
@@ -4519,6 +4554,7 @@ fn handle_effect_command<M: Send + 'static>(
                 );
                 let _ =
                     run_task_closure(task, "queued-inline-fallback", evidence_sink, result_sender);
+                release_outstanding(outstanding);
             }
             EffectLoopControl::Continue
         }
@@ -5463,6 +5499,9 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
         let frame_timing = config.frame_timing.clone();
         writer.set_timing_enabled(frame_timing.is_some());
 
+        config
+            .evidence_sink
+            .check_terminal_ui_stdout(io::IsTerminal::is_terminal(&io::stdout()))?;
         let evidence_sink = EvidenceSink::from_config(&config.evidence_sink)?;
         if let Some(ref sink) = evidence_sink {
             writer = writer.with_evidence_sink(sink.clone());
@@ -5889,6 +5928,9 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, TerminalPresenter<Stdout>> {
             scroll_region.rows,
             scroll_region.region_bottom,
         );
+        config
+            .evidence_sink
+            .check_terminal_ui_stdout(io::IsTerminal::is_terminal(&io::stdout()))?;
         let evidence_sink = EvidenceSink::from_config(&config.evidence_sink)?;
         if let Some(ref sink) = evidence_sink {
             writer = writer.with_evidence_sink(sink.clone());
@@ -6231,6 +6273,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 break;
             }
 
+            self.poll_long_press(Instant::now())?;
+            if !self.running {
+                break;
+            }
+
             // Detect screen transitions from any update() calls above.
             // A.2: notifies the tick strategy so predictive strategies learn.
             // D.3: force-ticks the newly active screen for immediate refresh.
@@ -6311,16 +6358,6 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                     self.reconcile_subscriptions();
                 }
 
-                // A stationary mouse-down only becomes a long press with the
-                // passage of time, so the recognizer is polled once per tick.
-                if let Some(gesture) = self
-                    .gesture_recognizer
-                    .as_mut()
-                    .and_then(|recognizer| recognizer.check_long_press(Instant::now()))
-                {
-                    self.deliver_gesture(gesture)?;
-                }
-
                 // Flush any pending coalesced events on tick so they do not sit unrendered.
                 if self.running {
                     self.flush_coalesced_events()?;
@@ -6375,6 +6412,25 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             if loop_count.is_multiple_of(1000) {
                 self.presenter.gc();
             }
+        }
+
+        // A quit returned by update() ends the loop before that update's
+        // state is drawn. In inline mode the last frame stays in the terminal
+        // after exit, so if one is on screen and the model changed since (a
+        // child's final line count, say), draw it once more. Not after a
+        // termination signal, and nothing for a program that never drew.
+        // No later frame can repair a skipped or degraded one, so the frame
+        // budget (which may be at SkipFrame after an output storm) is reset.
+        if termination_signal.is_none()
+            && self.dirty
+            && self.frame_idx > 0
+            && matches!(
+                self.presenter.screen_mode(),
+                ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
+            )
+        {
+            self.budget.set_degradation(DegradationLevel::Full);
+            self.render_frame()?;
         }
 
         Ok(termination_signal)
@@ -7997,6 +8053,21 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
     }
 
     /// Calculate the effective poll timeout.
+    /// A stationary mouse-down becomes a long press with the passage of time
+    /// alone, so this runs on every loop iteration — and
+    /// [`Self::effective_timeout`] wakes the loop at the deadline — whether or
+    /// not the app set a tick rate (bd-g00-root-epic-ewths.50.2).
+    fn poll_long_press(&mut self, now: Instant) -> io::Result<()> {
+        if let Some(gesture) = self
+            .gesture_recognizer
+            .as_mut()
+            .and_then(|recognizer| recognizer.check_long_press(now))
+        {
+            self.deliver_gesture(gesture)?;
+        }
+        Ok(())
+    }
+
     fn effective_timeout(&self) -> Duration {
         // A full subscription batch may leave a FIFO suffix queued. Poll input
         // without sleeping before the next batch, while still returning through
@@ -8004,6 +8075,18 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         if self.subscriptions.may_have_pending_messages() {
             return Duration::ZERO;
         }
+        let timeout = self.tick_or_poll_timeout();
+        match self
+            .gesture_recognizer
+            .as_ref()
+            .and_then(|recognizer| recognizer.long_press_deadline())
+        {
+            Some(deadline) => timeout.min(deadline.saturating_duration_since(Instant::now())),
+            None => timeout,
+        }
+    }
+
+    fn tick_or_poll_timeout(&self) -> Duration {
         if let Some(tick_rate) = self.tick_rate {
             let elapsed = self.last_tick.elapsed();
             let mut timeout = tick_rate.saturating_sub(elapsed);
@@ -11215,8 +11298,22 @@ mod tests {
             }),
         );
 
-        let shutdown = handle_effect_command(cmd, &mut scheduler, &mut tasks, &result_tx, None, 0);
+        let outstanding = AtomicUsize::new(1);
+        let shutdown = handle_effect_command(
+            cmd,
+            &mut scheduler,
+            &mut tasks,
+            &result_tx,
+            None,
+            0,
+            &outstanding,
+        );
         assert_eq!(shutdown, EffectLoopControl::Continue);
+        assert_eq!(
+            outstanding.load(Ordering::SeqCst),
+            1,
+            "accepted, not finished"
+        );
         assert_eq!(ran.load(Ordering::SeqCst), 0);
         assert_eq!(tasks.len(), 1);
         assert!(result_rx.try_recv().is_err());
@@ -11236,6 +11333,7 @@ mod tests {
             }),
         );
 
+        let full_outstanding = AtomicUsize::new(1);
         let shutdown_full = handle_effect_command(
             cmd_full,
             &mut full_scheduler,
@@ -11243,10 +11341,16 @@ mod tests {
             &result_tx,
             None,
             0,
+            &full_outstanding,
         );
         assert_eq!(shutdown_full, EffectLoopControl::Continue);
         assert!(full_tasks.is_empty());
         assert_eq!(ran_full.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            full_outstanding.load(Ordering::SeqCst),
+            0,
+            "the inline fallback ran the task, so it is no longer outstanding"
+        );
         assert_eq!(
             result_rx.recv_timeout(Duration::from_millis(200)).unwrap(),
             42
@@ -11259,6 +11363,7 @@ mod tests {
             &result_tx,
             None,
             0,
+            &full_outstanding,
         );
         assert_eq!(shutdown, EffectLoopControl::ShutdownRequested);
     }
@@ -11284,6 +11389,7 @@ mod tests {
             &result_tx,
             Some(&sink),
             0,
+            &AtomicUsize::new(1),
         );
 
         assert_eq!(shutdown, EffectLoopControl::Continue);
@@ -11518,7 +11624,8 @@ mod tests {
             sender: tx,
             handle: None,
             closed: true,
-            depth: Arc::new(AtomicUsize::new(0)),
+            outstanding: Arc::new(AtomicUsize::new(0)),
+            max_depth: 0,
         };
         let runs = Arc::new(AtomicUsize::new(0));
         let before = crate::effect_system::effects_queue_dropped();
@@ -11542,6 +11649,68 @@ mod tests {
         );
     }
 
+    /// `.50.1`: while one long task holds the single worker, submissions past
+    /// `max_queue_depth` are refused at `enqueue` instead of piling up in the
+    /// channel; exactly `max_queue_depth` tasks run and the count drains.
+    #[test]
+    fn effect_queue_bounds_the_backlog_at_submission() {
+        const MAX: usize = 4;
+        let (result_tx, result_rx) = mpsc::channel::<u32>();
+        let mut queue = EffectQueue::start(
+            EffectQueueConfig::default()
+                .with_enabled(true)
+                .with_max_queue_depth(MAX),
+            result_tx,
+            None,
+        )
+        .expect("start effect queue");
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+        {
+            let release_rx = Arc::clone(&release_rx);
+            queue.enqueue(
+                TaskSpec::default(),
+                Box::new(move || {
+                    let _ = release_rx.lock().expect("release lock").recv();
+                    0
+                }),
+            );
+        }
+        for i in 1..(10 * MAX as u32) {
+            queue.enqueue(TaskSpec::default(), Box::new(move || i));
+            assert!(
+                queue.in_flight() <= MAX,
+                "backlog {} > {MAX}",
+                queue.in_flight()
+            );
+        }
+        assert_eq!(
+            queue.in_flight(),
+            MAX,
+            "the bound is reached, not undershot"
+        );
+
+        release_tx.send(()).expect("release the blocking task");
+        let mut ran = Vec::new();
+        while ran.len() < MAX {
+            ran.push(
+                result_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("admitted task result"),
+            );
+        }
+        assert!(
+            result_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "a refused task ran: {ran:?}"
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while queue.in_flight() > 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(queue.in_flight(), 0, "outstanding count drains");
+        queue.shutdown();
+    }
+
     #[test]
     fn effect_queue_enqueue_with_closed_channel_records_drop() {
         let (tx, rx) = mpsc::channel::<EffectCommand<u32>>();
@@ -11551,7 +11720,8 @@ mod tests {
             sender: tx,
             handle: None,
             closed: false,
-            depth: Arc::new(AtomicUsize::new(0)),
+            outstanding: Arc::new(AtomicUsize::new(0)),
+            max_depth: 0,
         };
         let runs = Arc::new(AtomicUsize::new(0));
         let before = crate::effect_system::effects_queue_dropped();
@@ -11594,6 +11764,7 @@ mod tests {
             &result_tx,
             None,
             2,
+            &AtomicUsize::new(0),
         );
         assert_eq!(r1, EffectLoopControl::Continue);
         assert_eq!(tasks.len(), 1);
@@ -11605,6 +11776,7 @@ mod tests {
             &result_tx,
             None,
             2,
+            &AtomicUsize::new(0),
         );
         assert_eq!(r2, EffectLoopControl::Continue);
         assert_eq!(tasks.len(), 2);
@@ -11618,6 +11790,7 @@ mod tests {
             &result_tx,
             None,
             2,
+            &AtomicUsize::new(0),
         );
         assert_eq!(r3, EffectLoopControl::Continue);
         assert_eq!(
@@ -11648,6 +11821,7 @@ mod tests {
                 &result_tx,
                 None,
                 0,
+                &AtomicUsize::new(0),
             );
             assert_eq!(r, EffectLoopControl::Continue);
         }
@@ -13440,6 +13614,140 @@ mod tests {
         assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
     }
 
+    /// G48 `.47.6`: the frame left in an inline terminal after a quit from
+    /// a subscription message shows the state that update produced, not the
+    /// one before — even when the frame budget has degraded to SkipFrame.
+    /// (A quit from a tick is drawn in the same loop iteration anyway.)
+    #[test]
+    fn inline_quit_from_subscription_draws_the_final_state_once() {
+        use crate::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        /// Emits three messages back to back, then stops.
+        struct Burst;
+
+        impl Subscription<CountMsg> for Burst {
+            fn id(&self) -> SubId {
+                0xB0_0057
+            }
+
+            fn run(&self, sender: SubscriptionSender<CountMsg>, _stop: StopSignal) {
+                for _ in 0..3 {
+                    let _ = sender.send(CountMsg::Line);
+                }
+            }
+        }
+
+        struct CountingModel {
+            count: usize,
+            last_drawn: Arc<AtomicUsize>,
+        }
+
+        #[derive(Debug, Clone, Copy)]
+        enum CountMsg {
+            Line,
+            Other,
+        }
+
+        impl From<Event> for CountMsg {
+            fn from(_: Event) -> Self {
+                CountMsg::Other
+            }
+        }
+
+        impl Model for CountingModel {
+            type Message = CountMsg;
+
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                if matches!(msg, CountMsg::Line) {
+                    self.count += 1;
+                    if self.count == 3 {
+                        return Cmd::quit();
+                    }
+                }
+                Cmd::none()
+            }
+
+            fn view(&self, _frame: &mut Frame) {
+                self.last_drawn.store(self.count, Ordering::SeqCst);
+            }
+
+            fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
+                vec![Box::new(Burst)]
+            }
+        }
+
+        for (mode, skip_frames, expected) in [
+            (ScreenMode::Inline { ui_height: 4 }, false, Some(3)),
+            (ScreenMode::Inline { ui_height: 4 }, true, Some(3)),
+            // Alt-screen output is torn down on exit: no extra frame.
+            (ScreenMode::AltScreen, false, None),
+        ] {
+            let last_drawn = Arc::new(AtomicUsize::new(usize::MAX));
+            let config = ProgramConfig {
+                screen_mode: mode,
+                ..ProgramConfig::default()
+            };
+            let mut program = headless_program_with_config(
+                CountingModel {
+                    count: 0,
+                    last_drawn: Arc::clone(&last_drawn),
+                },
+                config,
+            );
+            if skip_frames {
+                program.budget.set_degradation(DegradationLevel::SkipFrame);
+            }
+            program.run().expect("program run");
+            let drawn = last_drawn.load(Ordering::SeqCst);
+            match expected {
+                Some(count) => assert_eq!(drawn, count, "{mode:?} skip={skip_frames}"),
+                None => assert_ne!(drawn, 3, "{mode:?}: no frame after quit"),
+            }
+        }
+    }
+
+    #[test]
+    fn inline_quit_from_init_draws_nothing() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        struct QuitAtInit {
+            draws: Arc<AtomicUsize>,
+        }
+
+        impl Model for QuitAtInit {
+            type Message = Event;
+
+            fn init(&mut self) -> Cmd<Self::Message> {
+                Cmd::quit()
+            }
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, _frame: &mut Frame) {
+                self.draws.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let draws = Arc::new(AtomicUsize::new(0));
+        let mut program = headless_program_with_config(
+            QuitAtInit {
+                draws: Arc::clone(&draws),
+            },
+            ProgramConfig::default(),
+        );
+        program.run().expect("program run");
+        assert_eq!(draws.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn run_processes_shutdown_task_results_before_exit() {
         use std::sync::{
@@ -15128,6 +15436,78 @@ mod tests {
     /// With `ProgramConfig::gestures` set, raw mouse events still reach
     /// `update()` and every recognized gesture reaches `Model::on_gesture`;
     /// without it nothing is recognized.
+    /// `.50.2`: a long press reaches `on_gesture` without any tick rate, and
+    /// the loop's poll timeout wakes it at the long-press deadline.
+    #[test]
+    fn long_press_fires_without_a_tick_rate() {
+        use ftui_core::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ftui_core::gesture::GestureConfig;
+        use ftui_core::semantic_event::SemanticEvent;
+        use std::sync::{Arc, Mutex};
+
+        struct PressModel {
+            gestures: Arc<Mutex<Vec<SemanticEvent>>>,
+        }
+
+        impl Model for PressModel {
+            type Message = Event;
+
+            fn update(&mut self, _msg: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+
+            fn view(&self, _frame: &mut Frame) {}
+
+            fn on_gesture(&mut self, gesture: SemanticEvent) -> Cmd<Event> {
+                self.gestures.lock().unwrap().push(gesture);
+                Cmd::none()
+            }
+        }
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let threshold = GestureConfig::default().long_press_threshold;
+        let config = ProgramConfig {
+            poll_timeout: Duration::from_secs(10),
+            ..ProgramConfig::default().with_gestures(GestureConfig::default())
+        };
+        let mut program = headless_program_with_config(
+            PressModel {
+                gestures: Arc::clone(&log),
+            },
+            config,
+        );
+        assert!(program.tick_rate.is_none());
+        assert_eq!(program.effective_timeout(), Duration::from_secs(10));
+
+        program
+            .handle_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                x: 3,
+                y: 3,
+                modifiers: Modifiers::NONE,
+            }))
+            .unwrap();
+        // The idle loop now sleeps no longer than the long-press deadline.
+        assert!(program.effective_timeout() <= threshold);
+
+        let pressed_at = Instant::now();
+        program.poll_long_press(pressed_at).unwrap();
+        assert!(log.lock().unwrap().is_empty(), "not before the threshold");
+        program
+            .poll_long_press(pressed_at + threshold + Duration::from_millis(100))
+            .unwrap();
+        assert!(
+            matches!(
+                log.lock().unwrap().as_slice(),
+                [SemanticEvent::LongPress { .. }]
+            ),
+            "{:?}",
+            log.lock().unwrap()
+        );
+        // Fired once: no further deadline, so the idle timeout is restored.
+        assert_eq!(program.effective_timeout(), Duration::from_secs(10));
+    }
+
     #[test]
     fn headless_program_delivers_recognized_gestures_to_on_gesture() {
         use ftui_core::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};

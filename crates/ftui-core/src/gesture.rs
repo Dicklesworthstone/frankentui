@@ -279,6 +279,18 @@ impl GestureRecognizer {
         None
     }
 
+    /// When a pending stationary press becomes a long press (`None` when no
+    /// press is pending or it already fired). A runtime wakes at this instant
+    /// to call [`Self::check_long_press`], so long presses need no tick rate.
+    #[must_use]
+    pub fn long_press_deadline(&self) -> Option<Instant> {
+        if self.long_press_fired {
+            return None;
+        }
+        self.long_press_pos
+            .map(|(_, down_time)| down_time + self.config.long_press_threshold)
+    }
+
     /// Whether a drag is currently in progress.
     #[inline]
     #[must_use]

@@ -1,7 +1,7 @@
 {"event":"capability_decision","capability":"true_color","env_detected":true,"probe":"not_probed","operator_override":null,"in_mux":false,"final":true,"log_odds":3.0000,"probability":0.952574,"evidence":[{"source":"environment","log_odds":3.0000}]}
 {"event":"capability_decision","capability":"sync_output","env_detected":true,"probe":"not_probed","operator_override":null,"in_mux":false,"final":true,"log_odds":3.0000,"probability":0.952574,"evidence":[{"source":"environment","log_odds":3.0000}]}
 {"event":"capability_decision","capability":"scroll_region","env_detected":true,"probe":"not_probed","operator_override":null,"in_mux":false,"final":true,"log_odds":3.0000,"probability":0.952574,"evidence":[{"source":"environment","log_odds":3.0000}]}
-{"event":"inline_strategy","strategy":"scroll_region","use_scroll_region":true,"use_sync_output":true,"in_mux":false,"scroll_region_verified":null}
+{"event":"inline_strategy","strategy":"scroll_region","use_scroll_region":true,"use_sync_output":true,"in_mux":false,"scroll_region_verified":null,"log_transport":"decstbm"}
 {"event":"task_executor_backend","backend":"spawned"}
 {"event":"a11y_tree","frame_idx":1,"nodes":1,"added":1,"removed":0,"changed":0,"focus":null,"announcements":0,"dropped":0}
 {"event":"widget_refresh","frame_idx":1,"budget_us":8000.000,"degradation":"Full","essentials_cost_us":0.000,"selected_cost_us":0.000,"selected_value":0.000,"selected_count":0,"skipped_count":0,"starved_selected":0,"starved_skipped":0,"over_budget":false,"selected":[]}

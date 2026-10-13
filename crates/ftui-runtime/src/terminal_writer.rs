@@ -310,6 +310,19 @@ struct InlineRegion {
     height: u16,
 }
 
+/// One complete, already-sanitized log line waiting for the overlay
+/// transport.
+#[derive(Debug, Clone)]
+struct PendingLogLine {
+    text: String,
+    mode: SanitizeMode,
+}
+
+/// Overlay log batches are streamed early once they reach this many lines
+/// or bytes, bounding memory and latency when no frame is presented.
+const OVERLAY_LOG_BATCH_LINES: usize = 256;
+const OVERLAY_LOG_BATCH_BYTES: usize = 64 * 1024;
+
 struct DiffDecision {
     #[allow(dead_code)] // reserved for future diff strategy introspection
     strategy: DiffStrategy,
@@ -604,6 +617,28 @@ pub struct TerminalWriter<W: Write> {
     strategy_fallback: Option<InlineStrategyFallback>,
     /// Last inline UI region for clearing on shrink.
     last_inline_region: Option<InlineRegion>,
+    /// Complete log lines batched for the overlay transport (bottom-anchored
+    /// UI without an active scroll region); see [`Self::flush_pending_logs`].
+    pending_logs: Vec<PendingLogLine>,
+    /// Text bytes held in `pending_logs`.
+    pending_log_bytes: usize,
+    /// Whether the rows under the bottom-anchored inline UI have been made
+    /// room for below the shell's cursor (done once, before the first
+    /// inline output).
+    inline_rows_reserved: bool,
+    /// Absolute position of the visible UI cursor after the last inline
+    /// present (`None`: hidden), restored after a standalone log flush.
+    last_ui_cursor: Option<(u16, u16)>,
+    /// First row below the last streamed log line (bottom-anchored overlay
+    /// transport). Before a frame is displayed, a later stream and the first
+    /// frame must not start above it: an inline-auto UI may have grown
+    /// since, and the rows it now claims hold lines not yet in scrollback.
+    log_floor: Option<u16>,
+    /// The displayed frame after an inline-auto height change dropped it as
+    /// the diff baseline: still what the screen shows at
+    /// `last_inline_region`, so a log flush before the next present can
+    /// repaint it. Cleared by the next present.
+    stale_frame: Option<Buffer>,
     /// Bayesian diff strategy selector.
     diff_strategy: DiffStrategySelector,
     /// Reusable diff buffer to avoid per-frame allocations.
@@ -773,6 +808,12 @@ impl<W: Write> TerminalWriter<W> {
             scroll_region_verified: None,
             strategy_fallback: None,
             last_inline_region: None,
+            pending_logs: Vec::new(),
+            pending_log_bytes: 0,
+            inline_rows_reserved: false,
+            last_ui_cursor: None,
+            log_floor: None,
+            stale_frame: None,
             diff_strategy,
             diff_scratch,
             full_redraw_probe: 0,
@@ -911,13 +952,22 @@ impl<W: Write> TerminalWriter<W> {
         let verified = self
             .scroll_region_verified
             .map_or_else(|| "null".to_string(), |v| v.to_string());
+        // Where inline log lines go (G48): through the DECSTBM region, by the
+        // overlay whole-screen scroll stream, or (top-anchored overlay) one
+        // overwritten row that never reaches scrollback.
+        let log_transport = match (self.inline_strategy, self.ui_anchor) {
+            (InlineStrategy::ScrollRegion | InlineStrategy::Hybrid, _) => "decstbm",
+            (InlineStrategy::OverlayRedraw, UiAnchor::Bottom) => "scroll_repaint",
+            (InlineStrategy::OverlayRedraw, UiAnchor::Top) => "single_row",
+        };
         let _ = sink.write_jsonl(&format!(
-            r#"{{"event":"inline_strategy","strategy":"{}","use_scroll_region":{},"use_sync_output":{},"in_mux":{},"scroll_region_verified":{}}}"#,
+            r#"{{"event":"inline_strategy","strategy":"{}","use_scroll_region":{},"use_sync_output":{},"in_mux":{},"scroll_region_verified":{},"log_transport":"{}"}}"#,
             inline_strategy_str(self.inline_strategy),
             self.capabilities.use_scroll_region(),
             self.capabilities.use_sync_output(),
             self.capabilities.in_any_mux(),
-            verified
+            verified,
+            log_transport
         ));
     }
 
@@ -984,6 +1034,8 @@ impl<W: Write> TerminalWriter<W> {
         }
         // Clear prev_buffer to force full redraw after resize
         self.prev_buffer = None;
+        self.stale_frame = None;
+        self.log_floor = None;
         // Old-geometry coordinates are meaningless after a resize: drop the
         // displayed-region cache so neither log positioning nor
         // clear_inline_region_diff acts on rows that no longer exist.
@@ -1034,8 +1086,14 @@ impl<W: Write> TerminalWriter<W> {
     }
 
     /// Set the screen mode.
-    #[inline]
+    ///
+    /// Leaving inline mode streams any batched overlay log lines first
+    /// (best effort), so they reach scrollback instead of being dropped.
     pub fn set_screen_mode(&mut self, mode: ScreenMode) {
+        if matches!(mode, ScreenMode::AltScreen) && !self.pending_logs.is_empty() {
+            let _output_guard = terminal_output_lock();
+            let _ = self.flush_pending_logs(false);
+        }
         self.screen_mode = mode;
     }
 
@@ -1102,7 +1160,7 @@ impl<W: Write> TerminalWriter<W> {
             if self.auto_ui_height != Some(clamped) {
                 self.auto_ui_height = Some(clamped);
                 if clamped != previous_effective {
-                    self.prev_buffer = None;
+                    self.stash_displayed_frame();
                     self.reset_diff_strategy();
                     if self.scroll_region_active {
                         let _ = self.deactivate_scroll_region();
@@ -1112,13 +1170,21 @@ impl<W: Write> TerminalWriter<W> {
         }
     }
 
+    /// Drop the diff baseline after an inline-auto height change, keeping
+    /// the displayed frame for repaint until the next present.
+    fn stash_displayed_frame(&mut self) {
+        if let Some(prev) = self.prev_buffer.take() {
+            self.stale_frame = Some(prev);
+        }
+    }
+
     /// Clear the cached auto UI height (inline auto mode only).
     pub fn clear_auto_ui_height(&mut self) {
         if matches!(self.screen_mode, ScreenMode::InlineAuto { .. })
             && self.auto_ui_height.is_some()
         {
             self.auto_ui_height = None;
-            self.prev_buffer = None;
+            self.stash_displayed_frame();
             self.reset_diff_strategy();
             if self.scroll_region_active {
                 let _ = self.deactivate_scroll_region();
@@ -2011,6 +2077,8 @@ impl<W: Write> TerminalWriter<W> {
 
     fn invalidate_after_present_error(&mut self) {
         self.prev_buffer = None;
+        self.stale_frame = None;
+        self.log_floor = None;
         self.last_inline_region = None;
         self.reset_diff_strategy();
     }
@@ -2070,6 +2138,21 @@ impl<W: Write> TerminalWriter<W> {
                     let _ = self.writer().flush();
                     return Err(err);
                 }
+            }
+
+            // G48, before anything else moves the cursor: make room for the
+            // UI below the shell's last line (first inline output only),
+            // stream batched overlay logs into scrollback, and scroll for a
+            // grown UI so the rows it now needs are vacated, not drawn over.
+            if visible_height > 0 {
+                self.reserve_inline_rows(visible_height)?;
+            }
+            if self.flush_pending_logs(false)? {
+                // The UI rows were vacated: no on-screen baseline remains.
+                self.prev_buffer = None;
+            }
+            if visible_height > 0 {
+                self.scroll_for_inline_growth(current_region)?;
             }
 
             // Save cursor (DEC save)
@@ -2185,6 +2268,7 @@ impl<W: Write> TerminalWriter<W> {
             self.cursor_saved = false;
 
             let mut show_cursor = false;
+            self.last_ui_cursor = None;
             if cursor_visible
                 && let Some((cx, cy)) = cursor
                 && cx < buffer.width()
@@ -2200,6 +2284,7 @@ impl<W: Write> TerminalWriter<W> {
                     cx.saturating_add(1)
                 )?;
                 show_cursor = true;
+                self.last_ui_cursor = Some((cx, abs_y));
             }
             self.set_cursor_visibility(show_cursor)?;
 
@@ -2219,6 +2304,11 @@ impl<W: Write> TerminalWriter<W> {
             } else {
                 None
             };
+            self.stale_frame = None;
+            if visible_height > 0 {
+                // The displayed frame now marks where the log rows end.
+                self.log_floor = None;
+            }
 
             if self.timing_enabled {
                 self.last_present_timings = Some(PresentTimings { diff_us });
@@ -2404,15 +2494,21 @@ impl<W: Write> TerminalWriter<W> {
     ///   the log region, so lines accumulate upward into scrollback while the
     ///   UI stays put.
     ///
-    /// - **Overlay fallback** (OverlayRedraw strategy, or any transient state
-    ///   without an active region): an unqualified LF would scroll the whole
-    ///   screen and displace or corrupt the displayed UI, so logs NEVER emit
-    ///   one. Instead exactly one width-clamped line is erased-and-rewritten,
-    ///   referenced against the *displayed* region (`last_inline_region`) so
-    ///   height changes between presents cannot land the line inside on-screen
-    ///   UI. Older lines remain visible above until displaced by present
-    ///   repaints; accumulation into scrollback requires the scroll-region
-    ///   path.
+    /// - **Overlay transport** (OverlayRedraw strategy — multiplexers and
+    ///   terminals that fail the DECSTBM self-test — or any transient state
+    ///   without an active region), bottom-anchored UI: complete lines are
+    ///   batched and streamed at the next [`present_ui`](Self::present_ui),
+    ///   [`flush`](Self::flush) or teardown (or early, once a batch reaches
+    ///   256 lines / 64 KiB). The stream erases the UI rows, writes the lines
+    ///   from the UI's first row with ordinary CR LF, and lets the terminal
+    ///   scroll the whole screen, so every line reaches scrollback exactly
+    ///   once and in order; the UI is then repainted below them. Text without
+    ///   a trailing newline counts as a complete line.
+    ///
+    /// - **Top-anchored UI without a region**: a whole-screen scroll would
+    ///   push UI rows into history, so the newest line overwrites the bottom
+    ///   row instead and log lines do not reach scrollback. (A region that
+    ///   does not start at row 1 never feeds history either.)
     ///
     /// If the UI consumes the entire terminal height, there is no log region
     /// available and the write becomes a no-op.
@@ -2533,37 +2629,32 @@ impl<W: Write> TerminalWriter<W> {
             return self.writer().flush();
         }
 
-        // Overlay discipline: never emit an unscoped LF (it would scroll the
-        // whole screen and push UI rows around). Erase-and-rewrite exactly
-        // one width-clamped line instead.
-        let log_row = match self.ui_anchor {
-            UiAnchor::Bottom => {
-                // One row above the uppermost of the displayed/pending UI
-                // regions (0-indexed start doubles as the 1-indexed row
-                // directly above that region).
-                let pending_start = self.ui_start_row();
-                let anchor = self.last_inline_region.map_or(pending_start, |displayed| {
-                    displayed.start.min(pending_start)
-                });
-                if anchor == 0 {
-                    // No free row above the UI.
-                    return Ok(());
-                }
-                anchor
+        if matches!(self.ui_anchor, UiAnchor::Bottom) {
+            // Overlay transport (G48): batch complete lines; they are
+            // streamed into scrollback by `flush_pending_logs`.
+            self.queue_overlay_log_lines(text, mode);
+            if self.pending_logs.len() >= OVERLAY_LOG_BATCH_LINES
+                || self.pending_log_bytes >= OVERLAY_LOG_BATCH_BYTES
+            {
+                self.flush_pending_logs(true)?;
+                return self.writer().flush();
             }
-            UiAnchor::Top => {
-                // A pending shrink does not free a row until it is presented.
-                // The old UI may still occupy even the screen's bottom row.
-                if self.last_inline_region.is_some_and(|displayed| {
-                    displayed.start.saturating_add(displayed.height) >= self.term_height
-                }) {
-                    return Ok(());
-                }
-                // Both displayed and pending UI leave this row free. This
-                // path never emits LF, so the log cannot scroll either UI.
-                self.term_height
-            }
-        };
+            return Ok(());
+        }
+
+        // Top-anchored UI: a whole-screen scroll would push UI rows into
+        // history, so never emit an unscoped LF here. Erase-and-rewrite the
+        // bottom row with one width-clamped line instead.
+        //
+        // A pending shrink does not free a row until it is presented. The
+        // old UI may still occupy even the screen's bottom row.
+        if self.last_inline_region.is_some_and(|displayed| {
+            displayed.start.saturating_add(displayed.height) >= self.term_height
+        }) {
+            return Ok(());
+        }
+        // Both displayed and pending UI leave this row free.
+        let log_row = self.term_height;
 
         let line = match mode {
             SanitizeMode::Strip => std::borrow::Cow::Owned(sanitize_overlay_log_line(
@@ -2616,6 +2707,222 @@ impl<W: Write> TerminalWriter<W> {
         let reset_result = self.writer().write_all(SGR_RESET);
         write_result?;
         reset_result
+    }
+
+    /// Split sanitized log text into complete lines and batch them for the
+    /// overlay transport. A trailing fragment without a newline is a line
+    /// too: a later write cannot resume a row the UI has been repainted
+    /// under.
+    fn queue_overlay_log_lines(&mut self, text: &str, mode: SanitizeMode) {
+        let normalized;
+        let mut rest = if text.contains("\r\n") {
+            normalized = text.replace("\r\n", "\n");
+            normalized.as_str()
+        } else {
+            text
+        };
+        while !rest.is_empty() {
+            let (line, tail) = rest.split_once('\n').unwrap_or((rest, ""));
+            self.pending_log_bytes = self.pending_log_bytes.saturating_add(line.len());
+            self.pending_logs.push(PendingLogLine {
+                text: line.to_owned(),
+                mode,
+            });
+            rest = tail;
+        }
+    }
+
+    /// Make room for a bottom-anchored inline UI before the first inline
+    /// output: the UI rows sit at the bottom of the screen, and on a full
+    /// terminal those rows still hold the shell's last lines, which have not
+    /// reached scrollback. `ui_height - 1` CR LFs from the shell's cursor
+    /// (the start of a fresh line) scroll exactly enough of the screen into
+    /// history that every UI row is blank.
+    fn reserve_inline_rows(&mut self, ui_height: u16) -> io::Result<()> {
+        if self.inline_rows_reserved || !matches!(self.ui_anchor, UiAnchor::Bottom) {
+            return Ok(());
+        }
+        self.inline_rows_reserved = true;
+        for _ in 1..ui_height.min(self.term_height) {
+            self.writer().write_all(b"\r\n")?;
+        }
+        Ok(())
+    }
+
+    /// Overlay transport (G48): stream batched log lines into scrollback.
+    ///
+    /// Let `T` be the first UI row and `u` the UI height. The UI rows are
+    /// erased (`CUP T;1`, `ED 0`) so no UI text can ever scroll into
+    /// history; the lines are written from `T` as a plain stream (`line CR
+    /// LF`), the terminal's own autowrap breaking long lines and its LF at
+    /// the bottom row scrolling the whole screen; then `u - 1` more `CR LF`
+    /// leave the cursor exactly as many rows past the bottom as the log text
+    /// occupied, so the screen has scrolled by that amount and the bottom
+    /// `u` rows are blank with the newest line directly above them. Every
+    /// line therefore reaches scrollback exactly once and in order, in any
+    /// terminal, with no width arithmetic. With `repaint` the last presented
+    /// frame is redrawn into the vacated rows (standalone flush); otherwise
+    /// the caller is about to present a frame and must treat the diff
+    /// baseline as gone.
+    ///
+    /// Returns whether anything was streamed.
+    fn flush_pending_logs(&mut self, repaint: bool) -> io::Result<bool> {
+        if self.pending_logs.is_empty() {
+            return Ok(false);
+        }
+        let lines = std::mem::take(&mut self.pending_logs);
+        self.pending_log_bytes = 0;
+        if !matches!(
+            self.screen_mode,
+            ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
+        ) || self.term_height == 0
+        {
+            return Ok(false);
+        }
+
+        // `start`: where the stream begins (and the screen is erased from);
+        // `height`: the blank rows the UI needs at the bottom afterwards.
+        let displayed = self.last_inline_region;
+        let (mut start, height) = match displayed {
+            Some(region) => {
+                let start = region.start.min(self.term_height);
+                (start, region.height.min(self.term_height - start))
+            }
+            None => {
+                let height = self.effective_ui_height().min(self.term_height);
+                // An earlier stream may have left lines below the pending UI
+                // start (an inline-auto UI grew since); never erase them.
+                let floor = self.log_floor.unwrap_or(0);
+                ((self.term_height - height).max(floor), height)
+            }
+        };
+        if height >= self.term_height {
+            // The UI fills the screen: there is no row a log line could
+            // occupy without scrolling UI rows into history.
+            return Ok(false);
+        }
+        self.reserve_inline_rows(height)?;
+
+        let open_sync = repaint && self.capabilities.use_sync_output() && !self.in_sync_block;
+        if open_sync {
+            self.in_sync_block = true;
+            self.writer().write_all(SYNC_BEGIN)?;
+        }
+        let was_visible = self.cursor_visible;
+        self.set_cursor_visibility(false)?;
+        // Leftover presenter style must not colour the logs or the rows the
+        // scroll brings in.
+        self.writer().write_all(SGR_RESET)?;
+        if height > 0 {
+            if start >= self.term_height {
+                // The newest line sits on the bottom row (a UI-less stream
+                // came first): open a fresh row below it.
+                let bottom = self.term_height;
+                write!(self.writer(), "\x1b[{bottom};1H\r\n")?;
+                start = self.term_height - 1;
+            }
+            write!(self.writer(), "\x1b[{};1H\x1b[J", start.saturating_add(1))?;
+            for line in &lines {
+                self.write_log_payload(&line.text, line.mode)?;
+                self.writer().write_all(b"\r\n")?;
+            }
+            // `start >= term_height - height`, so these always scroll the
+            // screen far enough that the last line ends just above the UI.
+            for _ in 1..height {
+                self.writer().write_all(b"\r\n")?;
+            }
+        } else {
+            // No UI rows: the newest line lives on the bottom row, so each
+            // line starts with the scroll instead of ending with it.
+            let bottom = self.term_height;
+            write!(self.writer(), "\x1b[{bottom};1H")?;
+            for line in &lines {
+                self.writer().write_all(b"\r\n")?;
+                self.write_log_payload(&line.text, line.mode)?;
+            }
+        }
+        // The last line now ends just above the bottom `height` rows (or on
+        // the bottom row when there is no UI).
+        self.log_floor = Some(self.term_height - height);
+
+        if repaint {
+            if displayed.is_some() && height > 0 {
+                self.repaint_prev_frame(start, height)?;
+                if let Some((x, y)) = self.last_ui_cursor {
+                    write!(
+                        self.writer(),
+                        "\x1b[{};{}H",
+                        y.saturating_add(1),
+                        x.saturating_add(1)
+                    )?;
+                    self.set_cursor_visibility(true)?;
+                }
+            } else if was_visible {
+                self.set_cursor_visibility(true)?;
+            }
+            if open_sync {
+                self.writer().write_all(SYNC_END)?;
+                self.in_sync_block = false;
+            }
+        }
+        Ok(true)
+    }
+
+    /// Redraw the last presented frame at `start` (after the overlay
+    /// transport vacated the UI rows). The terminal matches `prev_buffer`
+    /// again afterwards, so the diff baseline stays valid. After an
+    /// inline-auto height change the displayed frame is `stale_frame`.
+    fn repaint_prev_frame(&mut self, start: u16, height: u16) -> io::Result<()> {
+        let Some(prev) = self.prev_buffer.as_ref().or(self.stale_frame.as_ref()) else {
+            return Ok(());
+        };
+        let full = BufferDiff::full(prev.width(), prev.height().min(height));
+        let presenter = self.presenter.as_mut().expect("presenter consumed");
+        presenter.reset();
+        presenter.set_viewport_offset_y(start);
+        presenter.prepare_runs(&full);
+        presenter.emit_diff_runs(prev, Some(&self.pool), Some(&self.links))?;
+        presenter.finish_frame()
+    }
+
+    /// When a bottom-anchored UI grows, the rows it now needs hold the
+    /// newest log lines, which have not reached scrollback. Scroll the whole
+    /// screen by the growth first, so they move up instead of being drawn
+    /// over. The rows in use end at the displayed frame's first row, or —
+    /// before any frame — at the row after the last streamed log line. The
+    /// old frame moves up with everything else; the caller then redraws the
+    /// grown region in full.
+    fn scroll_for_inline_growth(&mut self, current: InlineRegion) -> io::Result<()> {
+        if !matches!(self.ui_anchor, UiAnchor::Bottom) || self.term_height == 0 {
+            return Ok(());
+        }
+        let occupied_from = match (self.last_inline_region, self.log_floor) {
+            (Some(previous), _) => previous.start,
+            (None, Some(floor)) => floor,
+            (None, None) => return Ok(()),
+        };
+        if current.start >= occupied_from {
+            return Ok(());
+        }
+        let grow = occupied_from - current.start;
+        if self.scroll_region_active {
+            self.deactivate_scroll_region()?;
+        }
+        self.writer().write_all(SGR_RESET)?;
+        let bottom = self.term_height;
+        write!(self.writer(), "\x1b[{bottom};1H")?;
+        for _ in 0..grow {
+            self.writer().write_all(b"\r\n")?;
+        }
+        if let Some(previous) = self.last_inline_region {
+            self.last_inline_region = Some(InlineRegion {
+                start: current.start,
+                height: previous.height,
+            });
+        }
+        self.log_floor = Some(current.start);
+        self.prev_buffer = None;
+        Ok(())
     }
 
     /// Position cursor at the bottom margin of the active DECSTBM log region.
@@ -2683,6 +2990,8 @@ impl<W: Write> TerminalWriter<W> {
             first_error.get_or_insert(err);
         }
         self.prev_buffer = None;
+        self.stale_frame = None;
+        self.log_floor = None;
         self.last_inline_region = None;
         self.reset_diff_strategy();
         if let Some(err) = first_error {
@@ -2761,9 +3070,12 @@ impl<W: Write> TerminalWriter<W> {
         Ok(())
     }
 
-    /// Flush any buffered output.
+    /// Flush any buffered output, including log lines batched for the
+    /// overlay transport (streamed into scrollback, then the last frame is
+    /// repainted below them).
     pub fn flush(&mut self) -> io::Result<()> {
         let _output_guard = terminal_output_lock();
+        self.flush_pending_logs(true)?;
         self.writer().flush()
     }
 
@@ -2913,16 +3225,54 @@ impl<W: Write> TerminalWriter<W> {
     /// baseline and inline-region cache: the screen is not ours after a stop.
     pub(crate) fn release_for_suspend(&mut self) {
         self.release_terminal_state();
+        // The shell owns the screen until resume; make room again before
+        // the next inline frame.
+        self.inline_rows_reserved = false;
     }
 
     /// Close an open sync block, reset the scroll region, restore the saved
     /// cursor and show it, then flush.
+    ///
+    /// Inline teardown contract (bottom-anchored UI): batched log lines are
+    /// streamed first, the final frame stays on screen, and the cursor is
+    /// parked at the start of an empty row below it, so the shell's next
+    /// output can never overwrite part of a UI row. Skipped while panicking
+    /// apart from the parking (which only scrolls): the panic hook has
+    /// already printed its message, and the stream would erase UI rows it
+    /// may sit on.
     fn release_terminal_state(&mut self) {
         // Teardown bytes must not interleave with another thread's emission
         // batch (bd-kdn7n item 2); reentrant so Drop-under-lock is safe.
         let _output_guard = terminal_output_lock();
-        let Some(presenter) = &mut self.presenter else {
+        if self.presenter.is_none() {
             return; // Presenter already taken (via into_inner)
+        }
+        if !std::thread::panicking() {
+            let _ = self.flush_pending_logs(true);
+        }
+        let bottom_inline = matches!(self.ui_anchor, UiAnchor::Bottom)
+            && matches!(
+                self.screen_mode,
+                ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
+            );
+        // Row (1-indexed) to park on, and whether to scroll a fresh row in.
+        let park = if !bottom_inline || self.term_height == 0 {
+            None
+        } else if self.last_inline_region.is_some() {
+            Some((self.term_height, true))
+        } else if let Some(floor) = self.log_floor {
+            // No frame: park on the row after the last log line (scrolling
+            // one in when that line is on the bottom row).
+            if floor >= self.term_height {
+                Some((self.term_height, true))
+            } else {
+                Some((floor.saturating_add(1), false))
+            }
+        } else {
+            None
+        };
+        let Some(presenter) = &mut self.presenter else {
+            return;
         };
         presenter.finish_frame_best_effort();
         let writer = presenter.counting_writer_mut();
@@ -2950,6 +3300,13 @@ impl<W: Write> TerminalWriter<W> {
         if self.cursor_saved {
             let _ = writer.write_all(CURSOR_RESTORE);
             self.cursor_saved = false;
+        }
+
+        if let Some((row, scroll_fresh_row)) = park {
+            let _ = write!(writer, "\x1b[{row};1H");
+            if scroll_fresh_row {
+                let _ = writer.write_all(b"\r\n");
+            }
         }
 
         // Show cursor
@@ -4486,7 +4843,7 @@ mod tests {
             assert!(block[2].contains(r#""probe":"not_probed""#), "{}", block[2]);
             assert_eq!(
                 block[3],
-                r#"{"event":"inline_strategy","strategy":"scroll_region","use_scroll_region":true,"use_sync_output":true,"in_mux":false,"scroll_region_verified":null}"#
+                r#"{"event":"inline_strategy","strategy":"scroll_region","use_scroll_region":true,"use_sync_output":true,"in_mux":false,"scroll_region_verified":null,"log_transport":"decstbm"}"#
             );
         }
     }
@@ -4758,10 +5115,47 @@ mod tests {
 
     // --- Log write cursor positioning tests (bd-xh8s) ---
 
+    /// Feed `bytes` to an independent VT emulator (`vt100`) of the given
+    /// size; overlay-transport tests check the screen it shows, not bytes.
+    fn vt_screen(bytes: &[u8], cols: u16, rows: u16) -> vt100::Parser {
+        let mut parser = vt100::Parser::new(rows, cols, 10_000);
+        parser.process(bytes);
+        parser
+    }
+
+    /// Scrollback (oldest first) followed by the visible rows.
+    fn vt_transcript(parser: &mut vt100::Parser) -> Vec<String> {
+        let (rows, cols) = parser.screen().size();
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let mut offset = parser.screen().scrollback();
+        let mut lines = Vec::new();
+        while offset > 0 {
+            parser.screen_mut().set_scrollback(offset);
+            let take = offset.min(usize::from(rows));
+            lines.extend(parser.screen().rows(0, cols).take(take));
+            offset -= take;
+        }
+        parser.screen_mut().set_scrollback(0);
+        lines.extend(parser.screen().rows(0, cols));
+        lines.iter().map(|row| row.trim_end().to_string()).collect()
+    }
+
+    /// A frame whose rows read `UI-row0`, `UI-row1`, ...
+    fn marked_frame(width: u16, height: u16) -> Buffer {
+        let mut buf = Buffer::new(width, height);
+        for y in 0..height {
+            for (x, ch) in format!("UI-row{y}").chars().enumerate() {
+                buf.set_raw(x as u16, y, Cell::from_char(ch));
+            }
+        }
+        buf
+    }
+
     #[test]
-    fn write_log_positions_cursor_bottom_anchor() {
-        // Verify log writes position cursor at the bottom of the log region
-        // for bottom-anchored UI (log region is above UI).
+    fn write_log_streams_from_first_ui_row_bottom_anchor() {
+        // Overlay transport: the stream starts on the UI's first row (20 of
+        // 24 for a 5-row UI) after erasing to the end of the screen, and
+        // ends every line with CR LF.
         let mut output = Vec::new();
         {
             let mut writer = TerminalWriter::new(
@@ -4774,16 +5168,13 @@ mod tests {
             writer.write_log("test log\n").unwrap();
         }
 
-        // For bottom-anchored with ui_height=5, term_height=24:
-        // Log region is rows 1-19 (24-5=19 rows)
-        // Cursor should be positioned at row 19 (bottom of log region)
-        let expected_pos = b"\x1b[19;1H";
         assert!(
-            output
-                .windows(expected_pos.len())
-                .any(|w| w == expected_pos),
-            "Log write should position cursor at row 19 for bottom anchor"
+            contains_bytes(&output, b"\x1b[20;1H\x1b[Jtest log\r\n"),
+            "log stream must start on the first UI row after erasing it"
         );
+        let mut vt = vt_screen(&output, 80, 24);
+        let rows = vt_transcript(&mut vt);
+        assert_eq!(rows.iter().filter(|r| *r == "test log").count(), 1);
     }
 
     #[test]
@@ -4862,8 +5253,8 @@ mod tests {
     }
 
     #[test]
-    fn write_log_multiple_writes_position_each_time() {
-        // Verify cursor is positioned for each log write.
+    fn write_log_batches_consecutive_lines_into_one_stream() {
+        // Lines written between presents share one stream (one UI repaint).
         let mut output = Vec::new();
         {
             let mut writer = TerminalWriter::new(
@@ -4875,50 +5266,39 @@ mod tests {
             writer.set_size(80, 24);
             writer.write_log("first\n").unwrap();
             writer.write_log("second\n").unwrap();
+            writer.flush().unwrap();
         }
 
-        // Should have cursor positioning twice
-        let expected_pos = b"\x1b[19;1H";
+        let stream_start = b"\x1b[20;1H\x1b[J";
         let count = output
-            .windows(expected_pos.len())
-            .filter(|w| *w == expected_pos)
+            .windows(stream_start.len())
+            .filter(|w| *w == stream_start)
             .count();
-        assert_eq!(count, 2, "Should position cursor for each log write");
+        assert_eq!(count, 1, "both lines must go out in one stream");
+        assert!(contains_bytes(&output, b"first\r\nsecond\r\n"));
     }
 
     #[test]
     fn write_log_after_present_ui_works_correctly() {
-        // Verify log writes work correctly after UI presentation.
-        let mut output = Vec::new();
-        {
-            let mut writer = TerminalWriter::new(
-                &mut output,
-                ScreenMode::Inline { ui_height: 5 },
-                UiAnchor::Bottom,
-                basic_caps(),
-            );
-            writer.set_size(80, 24);
-
-            // Present UI first
-            let buffer = Buffer::new(80, 5);
-            writer.present_ui(&buffer, None, true).unwrap();
-
-            // Then write log
-            writer.write_log("after UI\n").unwrap();
-        }
-
-        let output_str = String::from_utf8_lossy(&output);
-        assert!(output_str.contains("after UI"));
-
-        // Log write should still position cursor
-        let expected_pos = b"\x1b[19;1H";
-        // Find position after cursor restore (log write happens after present_ui)
-        assert!(
-            output
-                .windows(expected_pos.len())
-                .any(|w| w == expected_pos),
-            "Log write after present_ui should position cursor"
+        // A log written after a present is streamed above the UI and the
+        // frame is repainted below it.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
         );
+        writer.set_size(80, 24);
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+        writer.write_log("after UI\n").unwrap();
+        writer.flush().unwrap();
+
+        let vt = vt_screen(writer.writer().inner().get_ref(), 80, 24);
+        let visible: Vec<String> = vt.screen().rows(0, 80).collect();
+        assert_eq!(visible[18].trim_end(), "after UI");
+        for y in 0..5 {
+            assert_eq!(visible[19 + y].trim_end(), format!("UI-row{y}"));
+        }
     }
 
     #[test]
@@ -4973,57 +5353,37 @@ mod tests {
     }
 
     #[test]
-    fn log_write_cursor_position_not_in_ui_region_bottom_anchor() {
-        // Verify the cursor position for log writes is never in the UI region.
-        // For bottom-anchored with ui_height=5, term_height=24:
-        // UI region is rows 20-24 (1-indexed)
-        // Log region is rows 1-19
-        // Log cursor should be at row 19 (bottom of log region)
-        let mut output = Vec::new();
-        {
-            let mut writer = TerminalWriter::new(
-                &mut output,
-                ScreenMode::Inline { ui_height: 5 },
-                UiAnchor::Bottom,
-                basic_caps(),
-            );
-            writer.set_size(80, 24);
-            writer.write_log("test\n").unwrap();
+    fn overlay_log_write_leaves_ui_rows_intact_bottom_anchor() {
+        // The stream writes into the vacated UI rows on purpose; what must
+        // hold is the screen: logs above the UI, the frame intact in rows
+        // 20-24, and no UI row in scrollback.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+        for i in 0..40 {
+            writer.write_log(&format!("test {i:02}\n")).unwrap();
         }
+        writer.flush().unwrap();
 
-        // Parse cursor position commands in output
-        // Looking for ESC [ row ; col H patterns
-        let mut found_row = None;
-        let mut i = 0;
-        while i + 2 < output.len() {
-            if output[i] == 0x1b && output[i + 1] == b'[' {
-                let mut j = i + 2;
-                let mut row: u16 = 0;
-                while j < output.len() && output[j].is_ascii_digit() {
-                    row = row * 10 + (output[j] - b'0') as u16;
-                    j += 1;
-                }
-                if j < output.len() && output[j] == b';' {
-                    j += 1;
-                    while j < output.len() && output[j].is_ascii_digit() {
-                        j += 1;
-                    }
-                    if j < output.len() && output[j] == b'H' {
-                        found_row = Some(row);
-                    }
-                }
-            }
-            i += 1;
+        let mut vt = vt_screen(writer.writer().inner().get_ref(), 80, 24);
+        let visible: Vec<String> = vt.screen().rows(0, 80).collect();
+        assert_eq!(visible[18].trim_end(), "test 39");
+        for y in 0..5 {
+            assert_eq!(visible[19 + y].trim_end(), format!("UI-row{y}"));
         }
-
-        if let Some(row) = found_row {
-            // UI region starts at row 20 (24 - 5 + 1 = 20)
-            assert!(
-                row < 20,
-                "Log cursor row {} should be below UI start row 20",
-                row
-            );
-        }
+        let rows = vt_transcript(&mut vt);
+        let logs: Vec<&String> = rows.iter().filter(|r| r.starts_with("test ")).collect();
+        assert_eq!(logs.len(), 40, "every line exactly once");
+        let ui_rows = rows.iter().filter(|r| r.starts_with("UI-")).count();
+        assert_eq!(
+            ui_rows, 5,
+            "UI rows appear only on screen, never in history"
+        );
     }
 
     #[test]
@@ -5890,22 +6250,30 @@ mod tests {
                     assert!(output.contains("colored"));
                     assert_eq!(output.contains("\x1b[31m"), mode != SanitizeMode::Strip);
                     assert_eq!(output.contains("\x1b[2J"), mode == SanitizeMode::Raw);
-                    assert_eq!(
-                        output.contains('\n'),
-                        scroll_region || mode == SanitizeMode::Raw
-                    );
-                    assert_eq!(
-                        output.contains("second"),
-                        scroll_region || mode == SanitizeMode::Raw
-                    );
-                    let log_row = if anchor == UiAnchor::Top { 8 } else { 6 };
+                    // Only the top-anchored overlay keeps a single row; the
+                    // region and the bottom-anchored stream keep every line.
+                    let every_line =
+                        scroll_region || mode == SanitizeMode::Raw || anchor == UiAnchor::Bottom;
+                    assert_eq!(output.contains('\n'), every_line);
+                    assert_eq!(output.contains("second"), every_line);
+                    // Region: its bottom margin (row 6). Bottom overlay: the
+                    // stream starts on the first UI row (7). Top: row 8.
+                    let log_row = match (anchor, scroll_region) {
+                        (UiAnchor::Top, _) => 8,
+                        (UiAnchor::Bottom, true) => 6,
+                        (UiAnchor::Bottom, false) => 7,
+                    };
                     assert!(output.contains(&format!("\x1b[{log_row};1H")));
                     if mode == SanitizeMode::SgrOnly {
                         assert!(output.contains("colored\x1b[0m"));
-                        if scroll_region {
-                            assert!(output.contains("\x1b[0m\nsecond\x1b[0m"));
-                        } else {
-                            assert!(output.ends_with("\x1b[0m\x1b8"));
+                        match (anchor, scroll_region) {
+                            (_, true) => assert!(output.contains("\x1b[0m\nsecond\x1b[0m")),
+                            (UiAnchor::Bottom, false) => {
+                                assert!(output.contains("\x1b[0msecond\x1b[0m\r\n"));
+                            }
+                            (UiAnchor::Top, false) => {
+                                assert!(output.ends_with("\x1b[0m\x1b8"));
+                            }
                         }
                     }
                 }
@@ -5914,7 +6282,9 @@ mod tests {
     }
 
     #[test]
-    fn sgr_overlay_clamps_colored_payload_by_visible_columns() {
+    fn sgr_overlay_streams_long_colored_lines_whole() {
+        // The bottom-anchored stream lets the terminal wrap: nothing is
+        // clamped or dropped, and styling is reset before each line end.
         let mut writer = TerminalWriter::new(
             Vec::new(),
             ScreenMode::Inline { ui_height: 5 },
@@ -5923,14 +6293,16 @@ mod tests {
         );
         writer.set_size(80, 24);
         writer
-            .write_log_sgr_only(&format!("\x1b[38:2::255:0:0m{}\nignored", "x".repeat(200)))
+            .write_log_sgr_only(&format!("\x1b[38:2::255:0:0m{}\ntail", "x".repeat(200)))
             .unwrap();
         let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
-        assert_eq!(output.matches('x').count(), 80);
+        assert_eq!(output.matches('x').count(), 200);
         assert!(output.contains("\x1b[38:2::255:0:0m"));
-        assert!(!output.contains('\n'));
-        assert!(!output.contains("ignored"));
-        assert!(output.contains(&format!("{}\x1b[0m\x1b8", "x".repeat(80))));
+        assert!(output.contains(&format!("{}\x1b[0m\r\n", "x".repeat(200))));
+        assert!(output.contains("\x1b[0mtail\x1b[0m\r\n"));
+        let mut vt = vt_screen(output.as_bytes(), 80, 24);
+        let joined = vt_transcript(&mut vt).concat();
+        assert!(joined.contains(&format!("{}tail", "x".repeat(200))));
     }
 
     #[test]
@@ -5982,8 +6354,6 @@ mod tests {
 
     #[test]
     fn sgr_logs_render_color_and_leave_following_output_unstyled() {
-        use ftui_harness::terminal_model::{ModelStyle, Rgb, TerminalModel};
-
         let mut writer = TerminalWriter::new(
             Vec::new(),
             ScreenMode::InlineAuto {
@@ -5998,17 +6368,20 @@ mod tests {
             .write_log_sgr_only("\x1b[1;38;2;255;0;0mred\x1b[2J")
             .unwrap();
         writer.flush().unwrap();
-        let mut terminal = TerminalModel::new(20, 8);
-        terminal.feed(writer.writer().inner().get_ref());
+        let mut vt = vt_screen(writer.writer().inner().get_ref(), 20, 8);
+        // The streamed line ends directly above the UI rows.
         let row = writer.ui_start_row() - 1;
-        assert!(terminal.row_text(row).starts_with("red"));
-        assert_eq!(terminal.style_at(0, row).fg, Some(Rgb::new(255, 0, 0)));
-        assert!(terminal.style_at(0, row).bold);
-        // This model ignores DEC save/restore. Explicitly position subsequent
-        // output: this checks SGR rendering/reset, not physical cursor restore.
-        terminal.feed(b"\x1b[1;1Hplain");
-        assert!(terminal.row_text(0).starts_with("plain"));
-        assert_eq!(terminal.style_at(0, 0), ModelStyle::default());
+        let visible: Vec<String> = vt.screen().rows(0, 20).collect();
+        assert!(visible[usize::from(row)].starts_with("red"));
+        let cell = vt.screen().cell(row, 0).expect("cell");
+        assert_eq!(cell.fgcolor(), vt100::Color::Rgb(255, 0, 0));
+        assert!(cell.bold());
+        // Output after the log carries no leftover styling.
+        vt.process(b"\x1b[1;1Hplain");
+        let plain = vt.screen().cell(0, 0).expect("cell");
+        assert_eq!(plain.contents(), "p");
+        assert_eq!(plain.fgcolor(), vt100::Color::Default);
+        assert!(!plain.bold());
     }
 
     #[test]
@@ -6039,12 +6412,12 @@ mod tests {
         assert!(state.borrow().bytes.ends_with(SGR_RESET));
     }
 
-    /// CONTRACT: without a scroll region, write_log must never emit an
-    /// unqualified LF (it would scroll the whole screen and displace the UI)
-    /// and must erase the line before rewriting it so shorter lines cannot
-    /// leave remnants of longer predecessors.
+    /// CONTRACT (G48): without a scroll region, a bottom-anchored write_log
+    /// vacates the UI rows (erase to end of screen from the first UI row)
+    /// before streaming, so no UI text can scroll into history, and every LF
+    /// it emits is preceded by CR (raw mode has no ONLCR translation).
     #[test]
-    fn overlay_write_log_emits_single_erased_line_no_lf() {
+    fn overlay_write_log_vacates_ui_rows_then_streams_with_crlf() {
         let mut output = Vec::new();
         {
             let mut writer = TerminalWriter::new(
@@ -6054,27 +6427,21 @@ mod tests {
                 basic_caps(),
             );
             writer.set_size(80, 24);
+            writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
             writer.write_log("first line\n").unwrap();
+            writer.flush().unwrap();
         }
 
-        assert!(
-            !output.contains(&b'\n'),
-            "overlay write_log must never emit a raw LF byte"
-        );
-        assert!(
-            contains_bytes(&output, ERASE_LINE),
-            "overlay write_log must erase the log row before writing"
-        );
-        assert!(
-            contains_bytes(&output, b"first line"),
-            "the (single-line) log payload must be emitted"
-        );
+        assert!(contains_bytes(&output, b"\x1b[20;1H\x1b[Jfirst line\r\n"));
+        for (i, _) in output.iter().enumerate().filter(|(_, b)| **b == b'\n') {
+            assert!(i > 0 && output[i - 1] == b'\r', "bare LF at byte {i}");
+        }
     }
 
-    /// CONTRACT: multi-line payloads collapse to their first display line in
-    /// overlay mode — subsequent lines must never scribble toward the UI.
+    /// CONTRACT (G48): every line of a multi-line payload reaches scrollback,
+    /// in order (the pre-G48 overlay kept only the first).
     #[test]
-    fn overlay_write_log_drops_lines_after_first() {
+    fn overlay_write_log_keeps_every_line_of_a_multiline_payload() {
         let mut output = Vec::new();
         {
             let mut writer = TerminalWriter::new(
@@ -6084,15 +6451,16 @@ mod tests {
                 basic_caps(),
             );
             writer.set_size(80, 24);
-            writer.write_log("only me\nhidden tail\n").unwrap();
+            writer.write_log("only me\nand the tail\n").unwrap();
         }
 
-        let text = String::from_utf8_lossy(&output);
-        assert!(text.contains("only me"), "first line must be emitted");
-        assert!(
-            !text.contains("hidden tail"),
-            "second line must be dropped in overlay mode"
-        );
+        let mut vt = vt_screen(&output, 80, 24);
+        let rows = vt_transcript(&mut vt);
+        let first = rows
+            .iter()
+            .position(|r| r == "only me")
+            .expect("first line");
+        assert_eq!(rows[first + 1], "and the tail");
     }
 
     /// CONTRACT (bd-th0p6 top-anchor): with a top-anchored UI and no scroll
@@ -6123,75 +6491,78 @@ mod tests {
         assert!(contains_bytes(&output, b"top anchored"));
     }
 
-    /// CONTRACT (bd-th0p6): log payloads are clamped to the terminal width so
-    /// they cannot wrap into the first UI row.
+    /// CONTRACT (G48): long lines are not clamped; the terminal wraps them
+    /// above the UI, and the frame stays intact below.
     #[test]
-    fn overlay_write_log_clamps_to_terminal_width() {
-        let long_line = "x".repeat(100);
-        let mut output = Vec::new();
-        {
-            let mut writer = TerminalWriter::new(
-                &mut output,
-                ScreenMode::Inline { ui_height: 5 },
-                UiAnchor::Bottom,
-                basic_caps(),
-            );
-            writer.set_size(80, 24);
-            writer.write_log(&long_line).unwrap();
-        }
-
-        let emitted_xs = output.iter().filter(|&&b| b == b'x').count();
-        assert_eq!(
-            emitted_xs, 80,
-            "exactly term_width columns of the log line must be emitted"
+    fn overlay_write_log_wraps_long_lines_without_touching_the_ui() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
         );
+        writer.set_size(80, 24);
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+        writer.write_log(&"x".repeat(100)).unwrap();
+        writer.flush().unwrap();
+
+        let vt = vt_screen(writer.writer().inner().get_ref(), 80, 24);
+        let visible: Vec<String> = vt.screen().rows(0, 80).collect();
+        assert_eq!(visible[17], "x".repeat(80));
+        assert_eq!(visible[18].trim_end(), "x".repeat(20));
+        for y in 0..5 {
+            assert_eq!(visible[19 + y].trim_end(), format!("UI-row{y}"));
+        }
     }
 
-    /// never inside it — instead of using the pending effective height.
+    /// When the pending inline-auto height shrinks, a log written before the
+    /// next present lands above the *displayed* region (never inside it),
+    /// and the next present draws the shrunk UI below it.
     #[test]
     fn inline_auto_shrink_positions_log_against_displayed_region() {
-        let mut output = Vec::new();
-        {
-            let mut writer = TerminalWriter::new(
-                &mut output,
-                ScreenMode::InlineAuto {
-                    min_height: 1,
-                    max_height: 8,
-                },
-                UiAnchor::Bottom,
-                basic_caps(),
-            );
-            writer.set_size(80, 24);
-
-            // Measure to the max: display an 8-row UI (rows 17-24,
-            // region start 16, 0-indexed).
-            writer.set_auto_ui_height(8);
-            let buffer = Buffer::new(80, 8);
-            writer.present_ui(&buffer, None, false).unwrap();
-
-            // Remeasure drops the pending effective height to min=1 while
-            // rows 17-24 are still physically on screen.
-            writer.clear_auto_ui_height();
-
-            // A Cmd::Log before the next present must land ABOVE row 17.
-            writer.write_log("mid-flight\n").unwrap();
-        }
-
-        // The overlay log write emits exactly SAVE + CUP + EL + payload, a
-        // contiguous pattern no present path produces (presents emit more
-        // bytes between SAVE and any CUP). Asserting on that whole pattern
-        // scopes the check to the log write alone.
-        assert!(
-            contains_bytes(&output, b"\x1b7\x1b[16;1H\x1b[2K"),
-            "log must anchor one row above the displayed region start"
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::InlineAuto {
+                min_height: 1,
+                max_height: 8,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
         );
-        for row in 17..=24 {
-            assert!(
-                !contains_bytes(&output, format!("\x1b7\x1b[{row};1H").as_bytes()),
-                "log must not position inside displayed UI row {row}"
-            );
+        writer.set_size(80, 24);
+
+        // Measure to the max: display an 8-row UI (rows 17-24, region
+        // start 16, 0-indexed).
+        writer.set_auto_ui_height(8);
+        writer
+            .present_ui(&marked_frame(80, 8), None, false)
+            .unwrap();
+
+        // Remeasure drops the pending effective height to min=1 while rows
+        // 17-24 are still physically on screen.
+        writer.clear_auto_ui_height();
+        writer.write_log("mid-flight\n").unwrap();
+        writer.flush().unwrap();
+
+        assert!(
+            contains_bytes(
+                writer.writer().inner().get_ref(),
+                b"\x1b[17;1H\x1b[Jmid-flight\r\n"
+            ),
+            "the stream starts on the displayed region's first row"
+        );
+        writer
+            .present_ui(&marked_frame(80, 1), None, false)
+            .unwrap();
+        writer.flush().unwrap();
+
+        let vt = vt_screen(writer.writer().inner().get_ref(), 80, 24);
+        let visible: Vec<String> = vt.screen().rows(0, 80).collect();
+        assert_eq!(visible[15].trim_end(), "mid-flight");
+        for row in &visible[16..23] {
+            assert_eq!(row.trim_end(), "", "vacated rows hold no stale UI");
         }
-        assert!(contains_bytes(&output, b"mid-flight"));
+        assert_eq!(visible[23].trim_end(), "UI-row0");
     }
 
     #[test]
@@ -6224,13 +6595,21 @@ mod tests {
             writer.flush().unwrap();
             let output = &writer.writer().inner().get_ref()[before..];
             assert!(contains_bytes(output, b"first"));
-            assert!(!contains_bytes(output, b"second"));
-            assert!(
-                !output.contains(&b'\n'),
-                "single-row log must not scroll the screen"
-            );
-            let row = if anchor == UiAnchor::Top { 5 } else { 1 };
-            assert!(contains_bytes(output, format!("\x1b[{row};1H").as_bytes()));
+            if anchor == UiAnchor::Top {
+                // Top anchor: one overwritten row, never a scroll.
+                assert!(!contains_bytes(output, b"second"));
+                assert!(
+                    !output.contains(&b'\n'),
+                    "top-anchored single-row log must not scroll the screen"
+                );
+                assert!(contains_bytes(output, b"\x1b[5;1H"));
+            } else {
+                // Bottom anchor: streamed from the first UI row (2), both
+                // lines kept; the scroll carries them past the one log row.
+                assert!(contains_bytes(output, b"\x1b[2;1H\x1b[J"));
+                assert!(contains_bytes(output, b"first\x1b[0m\r\n"));
+                assert!(contains_bytes(output, b"second\x1b[0m\r\n"));
+            }
 
             writer.set_auto_ui_height(3);
             writer.present_ui(&Buffer::new(20, 3), None, false).unwrap();

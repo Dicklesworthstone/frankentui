@@ -101,8 +101,15 @@ fn check_erases(
                     return Err(format!("erase without known cursor at byte {start}"));
                 }
                 let row = model.cursor().1;
+                // A log flush on a bottom-anchored UI without a scroll region
+                // vacates the UI rows with ED 0 from the UI's first row before
+                // streaming (G48), under the same rule as a present: every
+                // erased row belongs to the UI. EL inside the UI stays
+                // forbidden for logs.
                 let valid = match (operation, command, params) {
-                    (EraseOperation::Present, b'J', b"" | b"0") => (row..height).all(in_ui),
+                    (EraseOperation::Present | EraseOperation::Log, b'J', b"" | b"0") => {
+                        (row..height).all(in_ui)
+                    }
                     (EraseOperation::Present, b'K', b"" | b"0" | b"1" | b"2") => in_ui(row),
                     (EraseOperation::Log, b'K', b"" | b"0" | b"1" | b"2") => !in_ui(row),
                     _ => false,
@@ -173,6 +180,10 @@ fn erase_scope_observer_accepts_ui_erases_and_rejects_planted_violations() {
     }
     assert!(check(b"\x1b[1;1H\x1b[J", 0..3, EraseOperation::Present).is_err());
     assert!(check(b"\x1b[8;1H\x1b[K", 7..10, EraseOperation::Log).is_err());
+    // A log stream may vacate the UI rows from the UI's first row, and not
+    // from any row above it.
+    assert_eq!(check(b"\x1b[8;1H\x1b[J", 7..10, EraseOperation::Log), Ok(1));
+    assert!(check(b"\x1b[7;1H\x1b[J", 7..10, EraseOperation::Log).is_err());
     assert!(check(b"\x1b[1;1H\x1b[K", 7..10, EraseOperation::Other).is_err());
     // Shrinking leaves the old UI on screen until the next present. Its
     // obsolete rows may be erased by present, but not used for logs yet.

@@ -290,13 +290,16 @@ Supported components:
 ### Program Integration (Diff + Resize)
 
 ```rust
-use ftui_runtime::{EvidenceSinkConfig, EvidenceSinkDestination, ProgramConfig};
+use ftui_runtime::{EvidenceSinkConfig, ProgramConfig};
 
 let config = ProgramConfig::default().with_evidence_sink(
-    EvidenceSinkConfig::enabled_file("target/evidence.jsonl")
-        .with_destination(EvidenceSinkDestination::Stdout), // optional override
+    EvidenceSinkConfig::enabled_file("target/evidence.jsonl"),
 );
 ```
+
+A program that draws on a terminal refuses a `Stdout` destination while stdout
+is that terminal (the JSONL would land in the middle of frames); with stdout
+piped or redirected it is allowed.
 
 ### Manual Integration (Budget Monitor)
 

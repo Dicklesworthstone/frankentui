@@ -108,9 +108,12 @@ Notes:
 - Use `Every` subscriptions for periodic updates.
 
 The runnable `streaming` example submits every generated line to both `LogViewer`
-and `Cmd::log_sgr_only`. Terminal logs accumulate when a scroll region is active
-and log rows are available. The overlay fallback displays only the latest
-width-clamped first line; no available log rows means no terminal log output.
+and `Cmd::log_sgr_only`. With the UI at the bottom, every log line reaches the
+terminal's scrollback in order whichever inline strategy is active: through the
+scroll region, or — inside tmux, screen and zellij, or when the DECSTBM
+self-test fails — batched per frame and streamed above the UI, which is then
+redrawn. A top-anchored UI keeps only the newest line on the bottom row; no
+available log rows means no terminal log output.
 With no arguments the example generates messages on a timer. A command after
 `--` starts a real `ProcessSubscription`: stdout and stderr feed the log viewer
 and plain-text terminal logs by default. Stderr lines have a `[stderr]` prefix. The

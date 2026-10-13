@@ -2102,6 +2102,9 @@ fn run_log_injection(mode: &str) -> io::Result<()> {
                 return Err(io::Error::other("requested inline strategy is not active"));
             }
             writer.write_log("LOG_ACTIVE")?;
+            // Overlay log lines are batched until a present or flush; the
+            // parent waits for this marker before acknowledging.
+            writer.flush()?;
             let mut ack = [0];
             io::stdin().read_exact(&mut ack)?;
             if ack != *b"g" {

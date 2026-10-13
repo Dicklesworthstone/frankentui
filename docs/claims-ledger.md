@@ -45,8 +45,8 @@ The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
-As of 2026-09-19 the distribution across 152 rows is 6 pending-code,
-41 pending-doc, 56 retracted and 49 proven. Regenerate this sentence from
+As of 2026-10-13 the distribution across 152 rows is 6 pending-code,
+32 pending-doc, 56 retracted and 58 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -226,7 +226,7 @@ complete `.5.2`.
 | C26 | i18n: number/date formatting, LTR/RTL via ftui-text bidi, demo in EN/FR/DE/JA/AR | README.md :: i18n: number/date formatting, LTR/RTL via ftui-text bidi, demo in EN/FR/DE/JA/AR | api | CODE | bd-g00-root-epic-ewths.34 | test:ftui-demo-showcase::tests::i18n_e2e::formatting_numbers_all_seven_locales; test:ftui-widgets::paragraph::tests::paragraph_rtl_visual_order_matches_unicode_bidi | proven | 2026-09-19 |
 | C27 | Benchmarks `diff/identical_100x50 1.2 µs`, `sparse 8.3 µs`, `dense 45 µs` | README.md :: Benchmarks `diff/identical_100x50 1.2 µs`, `sparse 8.3 µs`, `dense 45 µs` | api | regenerate | bd-g00-root-epic-ewths.31 | bead:bd-g00-root-epic-ewths.31 | pending-doc | - |
 | C28 | `prop_diff_soundness`, `counterexample_dirty_soundness` | README.md :: `prop_diff_soundness`, `counterexample_dirty_soundness` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-render::buffer::set_marks_row_dirty; test:ftui-render::proptest_diff_invariants::no_false_negative_changes | retracted | 2026-09-19 |
-| C29 | Architecture diagram "TerminalSession (crossterm)" (README and AGENTS.md) | README.md :: Architecture diagram "TerminalSession (crossterm)" (README and AGENTS.md) | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| C29 | Architecture diagram "TerminalSession (crossterm)" (README and AGENTS.md) | README.md :: Architecture diagram "TerminalSession (crossterm)" (README and AGENTS.md) | api | DOC | bd-g00-root-epic-ewths.5.10 | test:ftui::default_backend::default_features_select_a_terminal_backend | proven | 2026-10-13 |
 | C30 | "Hybrid" inline strategy is default with runtime DECSTBM-reliability fallback | README.md :: "Hybrid" inline strategy is default with runtime DECSTBM-reliability fallback | api | CODE | bd-g00-root-epic-ewths.4.3 | test:ftui-core::inline_mode::tests::strategy_selection_uses_hybrid_without_sync | retracted | 2026-09-19 |
 | C31 | 80+ widgets | README.md :: 80+ widgets | api | DOC | bd-g00-root-epic-ewths.5.5 | count:91 Widget/StatefulWidget impls under crates/ftui-widgets/src >= 80 | proven | 2026-09-19 |
 | C32 | 850K+ lines | README.md :: 850K+ lines | api | DOC | bd-g00-root-epic-ewths.5.5 | count:1,110,773 lines across 981 .rs files under crates/ | retracted | 2026-09-19 |
@@ -235,7 +235,7 @@ complete `.5.2`.
 | C35 | VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | README.md :: VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::program::inline_auto_remeasure_config_defaults | proven | 2026-09-19 |
 | C36 | SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | README.md :: SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | api | CODE | bd-g00-root-epic-ewths.18 | ident:PROVENANCE: these constants were written by hand | retracted | 2026-09-18 |
 | C37 | `no_flicker_proof.rs` | README.md :: `no_flicker_proof.rs` | api | DOC | bd-g00-root-epic-ewths.4.7 | path:crates/ftui-render/tests/no_flicker_proof.rs | proven | 2026-09-19 |
-| V01 | Inline mode with scrollback preservation and stable chrome | README.md :: Inline mode with scrollback preservation and stable chrome | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
+| V01 | Inline mode with scrollback preservation and stable chrome | README.md :: Inline mode with scrollback preservation and stable chrome | status | CODE | bd-g00-root-epic-ewths.47 | test:ftui-runtime::e2e_inline_mode_scrollback::multiple_render_passes_preserve_scrollback; test:ftui-runtime::e2e_inline_mode_scrollback::first_frame_does_not_overwrite_shell_output; test:ftui-runtime::e2e_inline_mode_scrollback::inline_auto_mode_preserves_scrollback; test:ftui-runtime::e2e_inline_mode_scrollback::scrollback_intact_after_widget_removal | proven | 2026-10-13 |
 | V02 | Deterministic Buffer -> Diff -> Presenter -> ANSI | README.md :: Deterministic Buffer -> Diff -> Presenter -> ANSI | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V03 | One-writer rule | README.md :: One-writer rule | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
 | V04 | RAII cleanup even on panic | README.md :: RAII cleanup even on panic | status | DOC | bd-g00-root-epic-ewths.37 | bead:bd-g00-root-epic-ewths.37 | pending-doc | - |

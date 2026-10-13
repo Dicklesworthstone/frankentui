@@ -72,8 +72,12 @@ pub enum InlineStrategy {
     /// More efficient but less portable (muxes may misbehave).
     ScrollRegion,
 
-    /// Overlay redraw: save cursor, write logs, redraw UI, restore cursor.
-    /// More portable but more redraw work.
+    /// Overlay redraw: no scroll region. The runtime's `TerminalWriter`
+    /// batches log lines, erases the UI rows, streams the lines with
+    /// ordinary line feeds so the whole screen scrolls them into
+    /// scrollback, then redraws the UI (bottom-anchored UI; a top-anchored
+    /// UI keeps only the newest line). Works on any terminal; costs one UI
+    /// redraw per batch.
     OverlayRedraw,
 
     /// Hybrid: the same DECSTBM scroll region as `ScrollRegion` but without

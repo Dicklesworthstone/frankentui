@@ -62,7 +62,7 @@ cargo run -p ftui-demo-showcase
 
 | Feature | What It Does | Example |
 |---------|--------------|---------|
-| **Inline mode** | Stable UI at top/bottom while logs scroll above | `ScreenMode::Inline { ui_height: 10 }` in the runtime |
+| **Inline mode** | Stable UI at the bottom while logs scroll into real scrollback above it, including inside tmux, screen and zellij | `ScreenMode::Inline { ui_height: 10 }` in the runtime |
 | **Deterministic rendering** | Buffer → Diff → Presenter → ANSI, no hidden I/O | `BufferDiff::compute(&prev, &next)` |
 | **One‑writer rule** | Serializes output for correctness | `TerminalWriter` owns all stdout writes |
 | **RAII cleanup** | Terminal state restored even on panic | `TerminalSession` in `ftui-core` |
@@ -616,7 +616,7 @@ Terminal capability detection uses standard environment variables (`TERM`, `COLO
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                                 INPUT LAYER                                  │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ TerminalSession (crossterm)                                                  │
+│ ftui-tty (Unix) / crossterm                                                  │
 │   └─ raw terminal events  →  Event (ftui-core)                               │
 └──────────────────────────────────────────────────────────────────────────────┘
                                         │
@@ -1295,7 +1295,7 @@ Key(Ctrl+x)     ─┘          ModifiedKey
 
 **Chord recognition:** multi-key sequences like `g g` (vim-style) use a `KeySequence` buffer with configurable timeout, enabling complex keybinding schemes without blocking single-key shortcuts.
 
-**Where it runs:** opt in with `ProgramConfig::default().with_gestures(GestureConfig::default())` and implement `Model::on_gesture(&mut self, SemanticEvent) -> Cmd<Msg>`. The runtime feeds every input event through the recognizer after the ordinary `update()` call (raw events are never swallowed), delivers each recognized gesture to `on_gesture`, and polls for long presses once per tick. Mouse gestures need mouse capture enabled.
+**Where it runs:** opt in with `ProgramConfig::default().with_gestures(GestureConfig::default())` and implement `Model::on_gesture(&mut self, SemanticEvent) -> Cmd<Msg>`. The runtime feeds every input event through the recognizer, then hands the raw event to the ordinary `update()` call (raw events are never swallowed), then delivers each recognized gesture to `on_gesture`. Long presses are checked on every loop iteration and the loop wakes at the long-press deadline, so they fire without a `Cmd::tick` rate. Mouse gestures need mouse capture enabled.
 
 `TextArea` handles the mouse itself with the same thresholds, so a host only forwards events through `handle_event`. A left press places the cursor, a double click selects the word under it (Unicode word boundaries), a triple click selects the line, and dragging extends the selection. Presses outside the area it last rendered are ignored, and so is a drag that started outside it. The showcase's forms, advanced text editor and live Markdown screens forward their mouse events to it.
 
@@ -2356,10 +2356,10 @@ pub trait Model: Sized {
 ```rust
 Cmd::none()                          // No side effect
 Cmd::task(|| Msg::Loaded(load()))    // Background work on a worker → Message
-Cmd::tick(Duration::from_millis(50)) // One Tick message after the delay
-Cmd::msg(Msg::Refresh)               // Deliver a message on the next turn
+Cmd::tick(Duration::from_millis(50)) // Set a recurring tick: Event::Tick every 50 ms (replaces the rate)
+Cmd::msg(Msg::Refresh)               // Call update(Msg::Refresh) right away, within this turn
 Cmd::quit()                          // Exit program
-Cmd::batch(vec![...])                // Multiple commands, order irrelevant
+Cmd::batch(vec![...])                // Multiple commands; today executed in order, like sequence
 Cmd::sequence(vec![...])             // Multiple commands, in order
 ```
 
@@ -2800,11 +2800,11 @@ let snap = ftui_runtime::effect_system::queue_telemetry();
 //   processed: 1038,         -- total tasks completed
 //   dropped: 2,              -- tasks dropped (backpressure/shutdown)
 //   high_water: 12,          -- peak queue depth observed
-//   in_flight: 2,            -- currently executing
+//   in_flight: 2,            -- enqueued − processed: accepted, not finished (process-wide)
 // }
 ```
 
-Backpressure kicks in when `in_flight ≥ max_queue_depth`, preventing unbounded memory growth under burst load.
+Backpressure: a program's effect queue refuses a submission once its own outstanding tasks (waiting or running) reach `max_queue_depth`, so a long-running task cannot let an unbounded backlog build up behind it; refused tasks count as `dropped`.
 
 ---
 
@@ -2830,11 +2830,11 @@ Terminal viewport (24 rows):
 CSI sequence: ESC [ top ; bottom r   (set scrolling region)
 ```
 
-When new log output arrives, the terminal scrolls only within the designated region. The UI rows below are untouched.
+When new log output arrives, the terminal scrolls only within the designated region. The UI rows below are untouched. Whether rows leaving the top of such a region enter scrollback is up to the terminal: xterm, tmux and Alacritty keep them when the region starts at row 1 (measured for tmux 3.6 by `tests/e2e/scripts/test_inline_scrollback_mux.py`); the `vt100` crate and some other emulators keep only rows that leave a full-screen scroll.
 
 ### Strategy B: Overlay Redraw
 
-For terminals that don't support scroll regions reliably (some multiplexers, older emulators), FrankenTUI saves the cursor, clears the UI area, writes new log lines, redraws the UI, and restores the cursor. Wrapped in DEC 2026 sync brackets, this appears atomic to the user.
+For terminals that don't support scroll regions reliably (multiplexers, terminals that fail the DECSTBM self-test), log lines are batched and streamed at the next frame, explicit `flush`, or exit (or early, after 256 lines / 64 KiB). The writer erases the UI rows, writes the batch from the UI's first row as ordinary lines, lets the terminal's own line feed at the bottom row scroll the *whole* screen, and redraws the UI below the new lines. Every line therefore reaches scrollback exactly once and in order on any terminal, and no UI row ever does, because the UI rows are erased before anything scrolls. With DEC 2026 synchronized output the erase-and-redraw is applied atomically; multiplexers run without it, so the UI can flash briefly while a batch goes out. A UI anchored to the *top* of the screen cannot use this transport (a whole-screen scroll would push the UI into history): there the newest log line overwrites the bottom row and log lines do not reach scrollback.
 
 ### Strategy C: Hybrid
 
@@ -2853,10 +2853,12 @@ Scroll-region without synchronized output: the fast path is the same DECSTBM reg
 
 ### Key Invariants
 
-- Scrollback history is never destroyed
-- UI region never flickers (sync brackets guarantee atomicity)
-- Cursor position is restored exactly after each render cycle
-- Log output above the UI region is genuine terminal scrollback (you can scroll up to see it)
+With the UI anchored to the bottom (the default):
+
+- Every completed log line reaches the terminal's or multiplexer's scrollback exactly once, in order: with Overlay Redraw on any terminal, and through a scroll region on terminals that keep rows leaving a region that starts at row 1 (see Strategy A). No UI row enters scrollback while the program runs. Checked against an independent terminal emulator in `crates/ftui-runtime/tests/e2e_inline_mode_scrollback.rs`, and in real tmux 3.6 (both transports), GNU screen 4.09 and zellij 0.43 by `tests/e2e/scripts/test_inline_scrollback_mux.py`.
+- The UI never draws over a row that has not reached scrollback: the first frame scrolls the shell's last lines up to make room, and a growing inline-auto UI scrolls before drawing. (A terminal resize is the exception: FrankenTUI does not emulate the terminal's reflow.)
+- Each present saves and restores the cursor. On exit the final frame stays on screen and the cursor is parked at the start of an empty row below it, so the shell's next output never overwrites part of a UI row.
+- With synchronized output each frame is applied atomically. Hybrid and every multiplexer run without it, so a redraw there can briefly show partial rows.
 
 ---
 
@@ -3227,7 +3229,7 @@ Evidence events actually written by the runtime (grep for the `"event"` value):
 - `guardrail_snapshot`: memory and effect-queue guardrail state whenever a guardrail fires (queue depth is the live effect backlog)
 - `voi_decision`: the inline-auto height sampler's value-of-information decision (posterior, gain, cost, e-value)
 - `capability_decision`: one row per session for truecolor, synchronized output and the scroll-region policy: environment detection, probe outcome, multiplexer veto, operator switch, and the log-odds ledger behind the final value
-- `inline_strategy`: which inline strategy the writer selected from those capabilities (`scroll_region`, `hybrid`, `overlay_redraw`)
+- `inline_strategy`: which inline strategy the writer selected from those capabilities (`scroll_region`, `hybrid`, `overlay_redraw`) and where log lines go (`log_transport`: `decstbm`, `scroll_repaint` — the overlay whole-screen stream — or `single_row` for a top-anchored overlay, whose logs do not reach scrollback)
 - `fairness_config` / `fairness_decision`: the input-fairness guard's Jain-index decisions
 - `effect_queue_select`: scheduler job selection when the `EffectQueue` executor backend is enabled
 - `suspend` / `resume`: a job-control stop served (signal, size) and the resume after it (`size_changed`)

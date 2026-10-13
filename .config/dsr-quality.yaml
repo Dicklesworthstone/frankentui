@@ -51,6 +51,25 @@ tools:
       # leave the audit green while every close sailed through. Builds a
       # throwaway beads project under the run root and never deletes it.
       - bash scripts/check_close_policy_e2e.sh "${DSR_CLOSE_POLICY_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_close_policy/dsr}"
+  # The AGENTS.md "Landing the Plane" gate set on the native host, without RCH
+  # (forbidden until bd-g00-root-epic-ewths.6.24): `cargo` on this host's PATH
+  # is an RCH shim, so every cargo line carries RCH_CARGO_WRAPPER_BYPASS=1, the
+  # pinned toolchain and content fingerprints. The 2026-10-02 v0.9.0 wave ran
+  # these checks through `rch exec` from an ad hoc config and failed 4 of 5 on
+  # RCH itself (bd-g00-root-epic-ewths.6.37). Set CARGO_TARGET_DIR to a target
+  # directory this run owns; shared ones get poisoned by concurrent builds.
+  #   DSR_REPOS_FILE="$PWD/.config/dsr-quality.yaml" dsr quality \
+  #     --tool frankentui-full-gates -w "$PWD"
+  frankentui-full-gates:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - make gates
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') cargo fmt --all --check
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness clippy --workspace --all-targets --locked -- -D warnings
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTDOCFLAGS="-D warnings" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness doc --workspace --no-deps --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --workspace --no-fail-fast --locked
   # The baseline cache's provenance, atomicity and comparison logic
   # (bd-g00-root-epic-ewths.9.2 item 5). 24 tests, ~3 s, no timing assertions:
   # what is gated here is the *logic* that decides whether two baselines are
@@ -73,6 +92,17 @@ tools:
     language: rust
     required_checks:
       - bash tests/e2e/scripts/test_examples.sh
+  # G48 (bd-g00-root-epic-ewths.47.4): every inline log line reaches real
+  # multiplexer history. Needs tmux, GNU screen and zellij on the host; a
+  # missing one FAILS its cases unless named in FTUI_E2E_MUX_OUT_OF_SCOPE
+  # (logged). Sessions are private; captures are retained under
+  # DSR_INLINE_SCROLLBACK_OUTPUT, a new absolute directory outside the checkout.
+  frankentui-inline-scrollback:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness build --locked -p ftui --example agent_shell
+      - python3 -B tests/e2e/scripts/test_inline_scrollback_mux.py --agent-shell "${CARGO_TARGET_DIR:-target}/debug/examples/agent_shell" --lines 10000 --out "${DSR_INLINE_SCROLLBACK_OUTPUT:?Set DSR_INLINE_SCROLLBACK_OUTPUT to a new absolute directory outside the checkout}"
   frankentui-browser:
     repo: Dicklesworthstone/frankentui
     language: rust

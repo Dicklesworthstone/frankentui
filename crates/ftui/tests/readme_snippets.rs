@@ -87,6 +87,33 @@ fn readme_checker_fails_on_a_missing_snippet() {
     assert_in_readme(&["not_in_readme"]);
 }
 
+/// README tells users to `cargo run -p ftui-harness` and `cargo run -p
+/// ftui-demo-showcase`. Both crates ship several binaries, so without a
+/// `default-run` key cargo refuses ("could not determine which binary to
+/// run"), as `ftui-harness` did through v0.9.0 (bd-g00-root-epic-ewths.40.4).
+#[test]
+fn readme_cargo_run_commands_resolve_a_binary() {
+    for (package, manifest) in [
+        (
+            "ftui-harness",
+            include_str!("../../ftui-harness/Cargo.toml"),
+        ),
+        (
+            "ftui-demo-showcase",
+            include_str!("../../ftui-demo-showcase/Cargo.toml"),
+        ),
+    ] {
+        assert!(
+            README.contains(&format!("cargo run -p {package}")),
+            "README no longer documents `cargo run -p {package}`; update this test"
+        );
+        assert!(
+            manifest.contains(&format!("default-run = \"{package}\"")),
+            "`cargo run -p {package}` needs `default-run` in its Cargo.toml"
+        );
+    }
+}
+
 #[test]
 fn readme_minimal_example_is_the_shipped_example() {
     const EXAMPLE: &str = include_str!("../examples/minimal_inline.rs");
@@ -568,7 +595,7 @@ fn readme_queue_telemetry_snippet() {
     //   processed: 1038,         -- total tasks completed
     //   dropped: 2,              -- tasks dropped (backpressure/shutdown)
     //   high_water: 12,          -- peak queue depth observed
-    //   in_flight: 2,            -- currently executing
+    //   in_flight: 2,            -- enqueued − processed: accepted, not finished (process-wide)
     // }
     // README-SNIPPET-END: queue_telemetry
 
