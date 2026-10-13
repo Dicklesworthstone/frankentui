@@ -375,7 +375,11 @@ fn property_resize_never_panics() {
         (200, 60),
         (500, 200),
         (1000, 500),
-        (u16::MAX / 2, u16::MAX / 2),
+        // Large but bounded. (u16::MAX / 2)² allocated ~2 × 17 GB of cells and
+        // took 154 s, timing out the default gate (bd-g00-root-epic-ewths.6.39);
+        // the overflow clamping it was there for is pinned without allocating
+        // by `buffer::tests::adaptive_capacity_saturates_at_u16_max`.
+        (2000, 1000),
     ];
 
     for (w, h) in test_sizes {

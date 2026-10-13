@@ -12,23 +12,26 @@ If I tell you to do something, even if it goes against what follows below, YOU M
 
 ## RULE 0.5 - SUITE-WIDE RULES LIVE IN /data/projects/AGENTS.md
 
-The suite-wide rules in **`/data/projects/AGENTS.md`** bind you here too. Read it. Two sections
-are load-bearing for perf work and are NOT duplicated below, so they cannot drift out of sync:
+The suite-wide rules in **`/data/projects/AGENTS.md`** bind you here too. Read it.
 
-- **`## Named Reward-Hacking Patterns (ALL FORBIDDEN)`** — 12 named patterns, several already
-  observed in this suite: gate self-weakening (and the exact price of a legitimate gate fix),
-  proof-class inflation, golden regeneration reflex, commit-stream pumping, tautological tests,
-  easy-lever cherry-picking, close-pump abuse, scope-splitting, spec-editing as progress,
-  conformance metastasis, dependency smuggling, bench-path hardcoding.
-- **`### Work-Graph Discipline`** — JSONL is truth and `beads.db` is disposable, `br sync
-  --import-only` after every pull, single-writer on graph structure, closure on cited evidence
-  with blocker beads gated on their named probe, `br dep cycles` stays empty.
+This rule used to point at two sections there, `## Named Reward-Hacking Patterns (ALL
+FORBIDDEN)` and `### Work-Graph Discipline`, as "not duplicated below". **Neither exists**
+(checked 2026-10-13: not in `/data/projects/AGENTS.md` nor anywhere under `/data/projects`;
+the same pointer was copied into other repositories). Until the owner writes them, the rules
+they were meant to hold apply as stated here:
 
-The three that most often decide whether a number here is real: a **self-speedup is
-MAINTENANCE, not a win** — a win needs the incumbent live in the SAME invocation; **never
-weaken a gate to land a change**, and if a gate is genuinely defective, meet the evidence
-standard and publish the win/lose split of what the fix admits; and **reporting a loss is a
-success** — one line, revert, next lever, no retraction narrative.
+- **Reward-hacking patterns are forbidden**, by name: gate self-weakening, proof-class
+  inflation (a `path:` proof proves existence only), golden regeneration to force green,
+  commit-stream pumping, tautological tests, easy-lever cherry-picking, close-pump abuse,
+  scope-splitting to close the original, spec-editing as progress, conformance metastasis,
+  dependency smuggling, bench-path hardcoding.
+- **Work-graph discipline**: `.beads/issues.jsonl` is truth and `beads.db` is disposable;
+  `br sync --import-only` after every pull; one writer at a time on graph structure; close on
+  cited evidence, and a blocker bead only on its named probe; `br dep cycles` stays empty.
+- A **self-speedup is MAINTENANCE, not a win** — a win needs the incumbent live in the SAME
+  invocation; **never weaken a gate to land a change** — if a gate is genuinely defective,
+  meet the evidence standard and publish the win/lose split of what the fix admits; and
+  **reporting a loss is a success** — one line, revert, next lever, no retraction narrative.
 
 ---
 
@@ -311,8 +314,8 @@ Every component crate includes inline `#[cfg(test)]` unit tests alongside the im
 - Error conditions
 
 Cross-component integration tests live in each crate's own `tests/`
-directory -- 292 files, the largest being `ftui-runtime` (52),
-`ftui-harness` (46) and `ftui-demo-showcase` (46).
+directory -- 296 files on 2026-10-13, the largest being `ftui-runtime`
+(51), `ftui-harness` (48) and `ftui-demo-showcase` (46).
 
 **Not** in the repository-root `tests/`. That directory holds fixtures,
 baselines and captured artifacts, contains no `.rs` files, and could not run
@@ -459,7 +462,7 @@ Provides a layered terminal UI framework with an Elm/Bubbletea-style runtime, de
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                          Input Layer                              │
-│   TerminalSession (crossterm) → Event (ftui-core)                 │
+│   ftui-tty (Unix) / crossterm → Event (ftui-core)                 │
 └──────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -826,6 +829,19 @@ copies without deletion flags. Keep builds remote, check source hashes and the
 toolchain pin, and retain command results. Track the tooling fix in
 `bd-g00-root-epic-ewths.6.24`; the examples below apply only once this constraint
 is satisfied.
+
+**Staying off RCH takes deliberate steps on this host (verified 2026-10-13).**
+`cargo` on `PATH` is an RCH shim (`~/.rch/shims/cargo`, also reached through
+`~/.local/bin/cargo`; the toolchain's own `bin/cargo` is a wrapper too and the
+real binary is `cargo-rch-real`) that requires remote execution for build,
+test, check, clippy, doc, nextest and run. Separately, the Claude Code
+PreToolUse hook rewrites any Bash command line that mentions `cargo` **or
+`make`** (including `make gates`) into a remote run, whatever environment
+prefix it carries. The local route that works: put the commands in a script
+file that does `export RCH_CARGO_WRAPPER_BYPASS=1` and sets a private
+`CARGO_TARGET_DIR` (shared target directories get poisoned by concurrent
+agents), and run it with `bash /path/to/script.sh`. Local runs are
+investigative; DSR on a native host remains the verification of record.
 
 RCH offloads `cargo build`, `cargo test`, `cargo clippy`, and other compilation commands to a fleet of 8 remote Contabo VPS workers instead of building locally. This prevents compilation storms from overwhelming csd when many agents run simultaneously.
 

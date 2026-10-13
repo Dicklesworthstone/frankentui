@@ -240,8 +240,11 @@ RUN2_OUTPUT="$TRACE_OUTPUT_DIR/run2.txt"
 RUN1_FILTERED="$TRACE_OUTPUT_DIR/run1.filtered"
 RUN2_FILTERED="$TRACE_OUTPUT_DIR/run2.filtered"
 
-cargo test -p ftui-runtime schedule_trace::tests::unit_trace_hash_stable -- --nocapture > "$RUN1_OUTPUT" 2>&1 || true
-cargo test -p ftui-runtime schedule_trace::tests::unit_trace_hash_stable -- --nocapture > "$RUN2_OUTPUT" 2>&1 || true
+# schedule_trace is `#[cfg(feature = "experimental")]`: without the feature
+# both runs compile zero tests, both filtered outputs are empty, and the diff
+# below "passes" (bd-g00-root-epic-ewths.6.38).
+cargo test -p ftui-runtime --features experimental --lib schedule_trace::tests::unit_trace_hash_stable -- --nocapture > "$RUN1_OUTPUT" 2>&1 || true
+cargo test -p ftui-runtime --features experimental --lib schedule_trace::tests::unit_trace_hash_stable -- --nocapture > "$RUN2_OUTPUT" 2>&1 || true
 
 if command -v rg >/dev/null 2>&1; then
     rg '^test schedule_trace::tests::unit_trace_hash_stable' "$RUN1_OUTPUT" > "$RUN1_FILTERED" || true
@@ -250,6 +253,13 @@ else
     grep -E '^test schedule_trace::tests::unit_trace_hash_stable' "$RUN1_OUTPUT" > "$RUN1_FILTERED" || true
     grep -E '^test schedule_trace::tests::unit_trace_hash_stable' "$RUN2_OUTPUT" > "$RUN2_FILTERED" || true
 fi
+
+for run_filtered in "$RUN1_FILTERED" "$RUN2_FILTERED"; do
+    if ! grep -qx 'test schedule_trace::tests::unit_trace_hash_stable \.\.\. ok' "$run_filtered"; then
+        log_fail "unit_trace_hash_stable did not run and pass ($run_filtered); see run1/run2 logs"
+        exit 1
+    fi
+done
 
 if diff -q "$RUN1_FILTERED" "$RUN2_FILTERED" > /dev/null 2>&1; then
     log_success "Trace checksum is stable across runs"

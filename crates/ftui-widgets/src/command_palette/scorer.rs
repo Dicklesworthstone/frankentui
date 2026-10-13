@@ -823,8 +823,7 @@ impl BayesianScorer {
                 combined_bf *= gap_factor;
             }
 
-            let title_len = title.len().max(1);
-            let length_factor = 1.0 + (query.len() as f64 / title_len as f64) * 0.2;
+            let length_factor = 1.0 + query_coverage(query, title) * 0.2;
             combined_bf *= length_factor;
 
             let score = combined_bf / (1.0 + combined_bf);
@@ -881,13 +880,13 @@ impl BayesianScorer {
         }
 
         // Title length: prefer shorter (more specific) titles
-        let title_len = title.len().max(1);
-        let length_factor = 1.0 + (query.len() as f64 / title_len as f64) * 0.2;
+        let coverage = query_coverage(query, title);
+        let length_factor = 1.0 + coverage * 0.2;
         evidence.add(
             EvidenceKind::TitleLength,
             length_factor,
             EvidenceDescription::CoveragePercent {
-                percent: (query.len() as f64 / title_len as f64) * 100.0,
+                percent: coverage * 100.0,
             },
         );
 
@@ -902,24 +901,29 @@ impl BayesianScorer {
     }
 
     /// Count how many matched positions are at word boundaries.
+    ///
+    /// Positions are char indices into `title` (on the ASCII path they
+    /// coincide with byte indices), so non-ASCII titles are indexed by char:
+    /// indexing bytes made "Café Open" miss the boundary before "Open".
     fn count_word_boundaries(&self, positions: &[usize], title: &str) -> usize {
-        let title_bytes = title.as_bytes();
-        let mut count = 0;
-        for &pos in positions {
-            let is_boundary = if pos == 0 {
-                true
-            } else {
-                let prev = title_bytes
-                    .get(pos.saturating_sub(1))
-                    .copied()
-                    .unwrap_or(b' ');
-                prev == b' ' || prev == b'-' || prev == b'_'
-            };
-            if is_boundary {
-                count += 1;
-            }
+        let is_separator = |c: char| c == ' ' || c == '-' || c == '_';
+        if title.is_ascii() {
+            let title_bytes = title.as_bytes();
+            return positions
+                .iter()
+                .filter(|&&pos| {
+                    pos == 0
+                        || title_bytes
+                            .get(pos - 1)
+                            .is_none_or(|&prev| is_separator(char::from(prev)))
+                })
+                .count();
         }
-        count
+        let chars: Vec<char> = title.chars().collect();
+        positions
+            .iter()
+            .filter(|&&pos| pos == 0 || chars.get(pos - 1).is_none_or(|&prev| is_separator(prev)))
+            .count()
     }
 
     /// Calculate total gap between matched positions.
@@ -947,6 +951,17 @@ impl BayesianScorer {
 /// Only the expanding case costs anything. When both strings have the same
 /// number of chars - every title that is not Turkish dotted-I, in practice -
 /// this compares two counts and returns.
+/// Query length over title length, in chars (bytes on the all-ASCII fast
+/// path, where they coincide): byte lengths overweight multi-byte titles.
+fn query_coverage(query: &str, title: &str) -> f64 {
+    let (query_len, title_len) = if query.is_ascii() && title.is_ascii() {
+        (query.len(), title.len())
+    } else {
+        (query.chars().count(), title.chars().count())
+    };
+    query_len as f64 / title_len.max(1) as f64
+}
+
 fn remap_lower_positions_to_original(title: &str, title_lower: &str, positions: &mut [usize]) {
     let original_len = title.chars().count();
     if positions.is_empty() || original_len == title_lower.chars().count() {
@@ -3264,6 +3279,70 @@ mod tests {
         // Position 2 in "hello" is mid-word
         let count = scorer.count_word_boundaries(&[2], "hello");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn count_word_boundaries_indexes_chars_in_non_ascii_titles() {
+        let scorer = BayesianScorer::new();
+        // 'O' is char 5 but byte 6 of "Café Open"; the char before it is a
+        // space (the byte before it is the tail of 'é').
+        assert_eq!(scorer.count_word_boundaries(&[5], "Café Open"), 1);
+        assert_eq!(scorer.count_word_boundaries(&[3], "Café"), 0, "mid-word é");
+        assert_eq!(
+            scorer.count_word_boundaries(&[3], "日本-語"),
+            1,
+            "CJK after '-'"
+        );
+        assert_eq!(
+            scorer.count_word_boundaries(&[6], "مرحبا بك"),
+            1,
+            "RTL after space"
+        );
+        // 👩 ZWJ 💻 space D: 'D' is char 4.
+        assert_eq!(scorer.count_word_boundaries(&[4], "👩\u{200d}💻 Dev"), 1);
+        assert_eq!(scorer.count_word_boundaries(&[2], "👩\u{200d}💻 Dev"), 0);
+    }
+
+    #[test]
+    fn non_ascii_title_scores_like_its_ascii_twin() {
+        // Same match positions, same word boundary, same length in chars:
+        // the accent must not change the score (it cost the boundary bonus
+        // and inflated the length when both were counted in bytes).
+        for scorer in [BayesianScorer::new(), BayesianScorer::fast()] {
+            let ascii = scorer.score("open", "Cafe Open");
+            let accented = scorer.score("open", "Café Open");
+            assert_eq!(ascii.match_type, accented.match_type);
+            assert_eq!(ascii.match_positions, accented.match_positions);
+            assert!(
+                (ascii.score - accented.score).abs() < 1e-12,
+                "{} vs {}",
+                ascii.score,
+                accented.score
+            );
+        }
+    }
+
+    proptest::proptest! {
+        /// ASCII titles keep the exact pre-fix (byte-indexed) boundary count.
+        #[test]
+        fn ascii_word_boundaries_match_the_byte_reference(
+            title in "[a-z _-]{0,24}",
+            picks in proptest::collection::vec(0usize..24, 0..8),
+        ) {
+            let bytes = title.as_bytes();
+            let mut positions: Vec<usize> =
+                picks.into_iter().filter(|&p| p < bytes.len()).collect();
+            positions.sort_unstable();
+            positions.dedup();
+            let reference = positions
+                .iter()
+                .filter(|&&p| p == 0 || matches!(bytes[p - 1], b' ' | b'-' | b'_'))
+                .count();
+            proptest::prop_assert_eq!(
+                BayesianScorer::new().count_word_boundaries(&positions, &title),
+                reference
+            );
+        }
     }
 
     #[test]

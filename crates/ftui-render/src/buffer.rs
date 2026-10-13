@@ -4111,6 +4111,25 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_capacity_saturates_at_u16_max() {
+        // The growth headroom must clamp, not overflow, at extreme sizes;
+        // checked on the pure computation, without allocating the cells.
+        assert_eq!(
+            AdaptiveDoubleBuffer::compute_capacity(u16::MAX, u16::MAX),
+            (u16::MAX, u16::MAX)
+        );
+        let half = u16::MAX / 2;
+        assert_eq!(
+            AdaptiveDoubleBuffer::compute_capacity(half, half),
+            (half + ADAPTIVE_MAX_OVERAGE, half + ADAPTIVE_MAX_OVERAGE)
+        );
+        assert_eq!(
+            AdaptiveDoubleBuffer::compute_capacity(u16::MAX - 10, 1),
+            (u16::MAX, 1)
+        );
+    }
+
+    #[test]
     fn adaptive_stats_avoidance_ratio() {
         let mut stats = AdaptiveStats::default();
 

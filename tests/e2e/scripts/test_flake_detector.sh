@@ -113,7 +113,9 @@ log_info "Running flake detector unit tests..."
 TEST_START="$(now_ms)"
 
 TEST_OUTPUT="$OUTPUT_DIR/unit_tests.txt"
-if cargo test -p ftui-runtime flake_detector:: -- --nocapture 2>&1 | tee "$TEST_OUTPUT"; then
+# flake_detector is `#[cfg(feature = "experimental")]`: without the feature
+# zero tests compile and this step "passes" (bd-g00-root-epic-ewths.6.38).
+if cargo test -p ftui-runtime --features experimental --lib flake_detector:: -- --nocapture 2>&1 | tee "$TEST_OUTPUT"; then
     log_success "All unit tests passed"
 else
     log_fail "Unit tests failed"
@@ -130,33 +132,21 @@ log_debug "Tests completed in ${TEST_MS}ms"
 
 log_info "Verifying test outcomes..."
 
-# Check that stable run test passed (no false positives)
-if grep -q "unit_stable_run_no_false_positives ... ok" "$TEST_OUTPUT"; then
-    log_success "Stable run: no false positives"
-else
-    log_fail "Stable run test not found or failed"
-fi
-
-# Check that spike detection test passed
-if grep -q "unit_spike_detection ... ok" "$TEST_OUTPUT"; then
-    log_success "Spike detection: correctly identified"
-else
-    log_fail "Spike detection test not found or failed"
-fi
-
-# Check e-value non-negativity
-if grep -q "unit_eprocess_nonnegative ... ok" "$TEST_OUTPUT"; then
-    log_success "E-values: always non-negative"
-else
-    log_fail "E-value non-negativity test not found or failed"
-fi
-
-# Check optional stopping validity
-if grep -q "unit_optional_stopping ... ok" "$TEST_OUTPUT"; then
-    log_success "Optional stopping: preserves validity"
-else
-    log_fail "Optional stopping test not found or failed"
-fi
+# Each named property test must have run and passed; a missing test fails the
+# suite (it used to log and carry on to a hard-coded "pass").
+prop_status() {  # prints true/false on stdout; logging goes to stderr
+    if grep -q "$1 ... ok" "$TEST_OUTPUT"; then
+        log_success "$2" >&2
+        echo true
+    else
+        log_fail "$1 not found or failed"
+        echo false
+    fi
+}
+NO_FALSE_POSITIVES=$(prop_status unit_stable_run_no_false_positives "Stable run: no false positives")
+SPIKE_DETECTION=$(prop_status unit_spike_detection "Spike detection: correctly identified")
+EVALUE_NONNEGATIVE=$(prop_status unit_eprocess_nonnegative "E-values: always non-negative")
+OPTIONAL_STOPPING=$(prop_status unit_optional_stopping "Optional stopping: preserves validity")
 
 # =============================================================================
 # Final results
@@ -167,14 +157,23 @@ TOTAL_MS=$((END_TS - START_TS))
 
 # Count passed tests
 PASSED=$(grep -c " ... ok" "$TEST_OUTPUT" || echo "0")
+STATUS=pass
+if [[ "$PASSED" -lt 1 || "$NO_FALSE_POSITIVES" != true || "$SPIKE_DETECTION" != true \
+      || "$EVALUE_NONNEGATIVE" != true || "$OPTIONAL_STOPPING" != true ]]; then
+    STATUS=fail
+fi
 
 cat > "$OUTPUT_DIR/results_${TIMESTAMP}.jsonl" <<EOF
-{"event":"test_complete","status":"pass","total_ms":$TOTAL_MS,"build_ms":$BUILD_MS,"test_ms":$TEST_MS}
+{"event":"test_complete","status":"$STATUS","total_ms":$TOTAL_MS,"build_ms":$BUILD_MS,"test_ms":$TEST_MS}
 {"event":"tests","passed":$PASSED}
-{"event":"properties","no_false_positives":true,"spike_detection":true,"evalue_nonnegative":true,"optional_stopping_valid":true}
+{"event":"properties","no_false_positives":$NO_FALSE_POSITIVES,"spike_detection":$SPIKE_DETECTION,"evalue_nonnegative":$EVALUE_NONNEGATIVE,"optional_stopping_valid":$OPTIONAL_STOPPING}
 EOF
 
 log_info "================================================"
+if [[ "$STATUS" != pass ]]; then
+    log_fail "Flake Detector E2E Test FAILED (tests passed: $PASSED)"
+    exit 1
+fi
 log_success "Flake Detector E2E Test PASSED"
 log_info "Tests passed: $PASSED"
 log_info "Total time: ${TOTAL_MS}ms"
