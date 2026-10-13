@@ -97,11 +97,14 @@ tools:
   # missing one FAILS its cases unless named in FTUI_E2E_MUX_OUT_OF_SCOPE
   # (logged). Sessions are private; captures are retained under
   # DSR_INLINE_SCROLLBACK_OUTPUT, a new absolute directory outside the checkout.
+  # It also runs agent_shell --pty (G26, .32.5): an isatty-gated child per
+  # multiplexer, and under tmux the process-group cleanup on quit. cargo is an
+  # RCH shim on this host, hence RCH_CARGO_WRAPPER_BYPASS=1 (see full-gates).
   frankentui-inline-scrollback:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
-      - RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness build --locked -p ftui --example agent_shell
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness build --locked -p ftui --example agent_shell
       - python3 -B tests/e2e/scripts/test_inline_scrollback_mux.py --agent-shell "${CARGO_TARGET_DIR:-target}/debug/examples/agent_shell" --lines 10000 --out "${DSR_INLINE_SCROLLBACK_OUTPUT:?Set DSR_INLINE_SCROLLBACK_OUTPUT to a new absolute directory outside the checkout}"
   frankentui-browser:
     repo: Dicklesworthstone/frankentui
