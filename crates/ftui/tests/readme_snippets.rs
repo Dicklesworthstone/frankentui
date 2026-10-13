@@ -382,8 +382,9 @@ fn readme_accessibility_snippets() {
 #[test]
 fn readme_table_theme_snippet() {
     // README-SNIPPET: table_theme
-    // Six built-in presets (Aurora, Graphite, Neon, Slate, Solar, Orchard), each a
-    // complete set of header / stripe / selection effect rules
+    // Ten built-in presets (Aurora, Graphite, Neon, Slate, Solar, Orchard, Paper,
+    // Midnight, TerminalClassic, Modern), each a complete set of header / stripe /
+    // selection / hover styles
     let theme = TableTheme::preset(TablePresetId::Aurora);
     let resolver = theme.effect_resolver();
     // README-SNIPPET-END: table_theme

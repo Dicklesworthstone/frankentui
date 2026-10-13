@@ -1616,7 +1616,7 @@ Index by position:     O(log n) — walk tree using weights
 The `ftui_text::Editor` provides:
 
 - **Cursor model** with visual position (column) vs byte offset tracking
-- **Selection** with anchor/head semantics (Shift+Arrow, Shift+Click)
+- **Selection** with anchor/head semantics (Shift+Arrow; `TextArea` mouse input does not extend a selection with Shift+Click)
 - **Word movement** through `move_word_left()` / `move_word_right()`, with Unicode word-boundary detection; **paragraph movement** through `move_paragraph_up()` / `move_paragraph_down()`, landing on separating blank lines.
 - **Grouped undo/redo** joins adjacent typing runs. A new word after whitespace, a change in deletion direction, navigation, paste, or `break_undo_group()` starts a separate group. `set_coalesce_idle()` configures the idle interval (500 ms by default); callers supply monotonic milliseconds through `Editor::tick()`, so the editor does not read a wall clock itself.
 - **Native clipboard commands** through `Cmd::set_clipboard(text)` / `Cmd::get_clipboard()`: the runtime writes OSC 52 through `TerminalWriter`, and terminal replies arrive as `Event::Clipboard`. The encoded payload limit is 74,994 base64 bytes (at most 56,244 input bytes).
@@ -2561,14 +2561,14 @@ FrankenTUI ships 80+ direct `Widget` and `StatefulWidget` implementations across
 |--------|-------------|-------------|
 | `Block` | Container with borders/title | 7 named border styles, title alignment |
 | `Paragraph` | Text with wrapping | Word/char wrap, scroll |
-| `List` | Selectable items | Virtualized, custom highlight |
+| `List` | Selectable items | Clipped to the viewport, custom highlight (large lists: `VirtualizedList`) |
 | `Table` | Columnar data | Column constraints, row selection, themed |
 | `Input` | Text input | Cursor, selection, history |
 | `Textarea` | Multi-line input | Line numbers, syntax hooks |
-| `Tabs` | Tab bar | Closeable, reorderable |
+| `Tabs` | Tab bar | Key/mouse selection; close and reorder through the API (not bound to input) |
 | `Progress` | Progress bars | Determinate/indeterminate |
 | `Sparkline` | Inline charts | Min/max markers |
-| `Tree` | Hierarchical data | Expand/collapse, lazy loading |
+| `Tree` | Hierarchical data | Expand/collapse (children supplied up front) |
 | `CommandPalette` | Fuzzy search | Bayesian scoring with evidence ledger |
 | `Modal` | Dialog/overlay system | Stack‑based, focus capture |
 | `JsonView` | JSON tree viewer | Collapse/expand nodes |
@@ -2582,25 +2582,27 @@ Plus: `Align`, `Badge`, `CachedWidget`, `Columns`, `ConstraintOverlay`, `DebugOv
 
 ### Table Theming System
 
-The table widget has a dedicated theme engine (3,500+ lines in `ftui-style/src/table_theme.rs`) that goes far beyond simple row striping:
+The table widget has a dedicated theme engine (`ftui-style/src/table_theme.rs`) that goes beyond simple row striping:
 
 | Theme Feature | What It Controls |
 |---------------|-----------------|
 | **Row striping** | Alternating background colors with configurable period |
 | **Column emphasis** | Per-column foreground/background overrides |
-| **Header styling** | Separate style for header row with bottom border |
-| **Selection highlight** | Active row/cell highlight with blend modes |
-| **Hover state** | Mouse-over styling with CUSUM-stabilized transitions |
-| **Border variants** | 7 built-in border styles + Custom per table edge |
-| **Cell padding** | Per-cell horizontal/vertical padding |
+| **Header styling** | Separate style for the header row |
+| **Selection highlight** | Selected-row style merged over the row's style (blend modes apply to theme effect rules, not to selection) |
+| **Hover state** | Hovered-row style from mouse hit-testing (`TableState::hovered`), applied as-is |
+| **Border** | One border style for the table's block |
 | **Truncation** | Ellipsis, clip, or wrap per column |
 | **Alignment** | Left/center/right per column with Unicode-aware width |
+
+`TableTheme` also carries `padding` and `column_gap` fields; the `Table` widget does not apply them yet.
 
 Themes are composable; a base theme can be overlaid with per-instance overrides:
 
 ```rust
-// Six built-in presets (Aurora, Graphite, Neon, Slate, Solar, Orchard), each a
-// complete set of header / stripe / selection effect rules
+// Ten built-in presets (Aurora, Graphite, Neon, Slate, Solar, Orchard, Paper,
+// Midnight, TerminalClassic, Modern), each a complete set of header / stripe /
+// selection / hover styles
 let theme = TableTheme::preset(TablePresetId::Aurora);
 let resolver = theme.effect_resolver();
 ```

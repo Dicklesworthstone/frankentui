@@ -2865,6 +2865,44 @@ impl TextPreset {
         matches!(self, Self::Neon | Self::Fire | Self::Matrix)
     }
 
+    /// Display name, e.g. for a preset picker.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Neon => "Neon",
+            Self::Cyberpunk => "Cyberpunk",
+            Self::Matrix => "Matrix",
+            Self::Retro => "Retro",
+            Self::Typewriter => "Typewriter",
+            Self::Terminal => "Terminal",
+            Self::Cinematic => "Cinematic",
+            Self::Elegant => "Elegant",
+            Self::Minimal => "Minimal",
+            Self::Fire => "Fire",
+            Self::Ice => "Ice",
+            Self::Hologram => "Hologram",
+        }
+    }
+
+    /// One-line description of the look.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Neon => "Cyan/magenta wave with pulsing glow",
+            Self::Cyberpunk => "Glitch, chromatic aberration, animated gradient",
+            Self::Matrix => "Green cascade with fade trail and subtle glitch",
+            Self::Retro => "CRT scanlines, green phosphor, subtle flicker",
+            Self::Typewriter => "Character-by-character reveal with cursor",
+            Self::Terminal => "Solid green, subtle pulse",
+            Self::Cinematic => "Slow fade, gold gradient, soft glow",
+            Self::Elegant => "Organic pulse, gold/cream gradient, drop shadow",
+            Self::Minimal => "Subtle fade only, no color effects",
+            Self::Fire => "Fire gradient with upward wave motion",
+            Self::Ice => "Frost blue gradient with sparkle effect",
+            Self::Hologram => "Rainbow shift, scanlines, transparency pulse",
+        }
+    }
+
     /// Get an iterator over all preset variants.
     pub fn all() -> impl Iterator<Item = Self> {
         [

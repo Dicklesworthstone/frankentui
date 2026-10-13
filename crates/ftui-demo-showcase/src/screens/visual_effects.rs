@@ -28,7 +28,7 @@ use ftui_extras::canvas::{CanvasPixelRect, CanvasRef, Mode, Painter};
 use ftui_extras::markdown::render_markdown;
 use ftui_extras::text_effects::{
     AsciiArtStyle, AsciiArtText, ColorGradient, Direction, Easing, Reflection, StyledMultiLine,
-    StyledText, TextEffect, TransitionState,
+    StyledText, TextEffect, TextPreset, TransitionState,
 };
 use ftui_extras::visual_fx::{
     FxQuality, MetaballsCanvasAdapter, PlasmaCanvasAdapter, PlasmaPalette, ThemeInputs,
@@ -371,7 +371,7 @@ enum TextEffectsTab {
     Typography,
     /// Glitch, Chromatic, Scanline, Matrix
     SpecialFx,
-    /// Preset effect combinations (placeholder for bd-4r5h)
+    /// The ftui-extras `TextPreset` library, one preset per item
     Presets,
     /// User-toggleable effect combinations
     Combinations,
@@ -416,11 +416,11 @@ impl TextEffectsTab {
 
     fn effect_count(self) -> usize {
         match self {
-            Self::Gradients => 5,    // Horizontal, Vertical, Diagonal, Radial, Animated
-            Self::Animations => 6,   // Wave, Bounce, Shake, Cascade, Pulse, OrganicPulse
-            Self::Typography => 5,   // Shadow, Glow, Outline, Mirror, ASCII Art
-            Self::SpecialFx => 4,    // Glitch, Chromatic, Scanline, Matrix
-            Self::Presets => 3,      // Placeholder: neon, retro, elegant
+            Self::Gradients => 5,  // Horizontal, Vertical, Diagonal, Radial, Animated
+            Self::Animations => 6, // Wave, Bounce, Shake, Cascade, Pulse, OrganicPulse
+            Self::Typography => 5, // Shadow, Glow, Outline, Mirror, ASCII Art
+            Self::SpecialFx => 4,  // Glitch, Chromatic, Scanline, Matrix
+            Self::Presets => TextPreset::all().count(),
             Self::Combinations => 4, // Custom combo builder slots
         }
     }
@@ -494,11 +494,7 @@ impl TextEffectsDemo {
                 2 => "Scanline",
                 _ => "Matrix Style",
             },
-            TextEffectsTab::Presets => match self.effect_idx {
-                0 => "Neon Sign",
-                1 => "Retro Terminal",
-                _ => "Elegant Fade",
-            },
+            TextEffectsTab::Presets => self.preset().name(),
             TextEffectsTab::Combinations => "Custom Combo",
         }
     }
@@ -534,11 +530,7 @@ impl TextEffectsDemo {
                 2 => "CRT-style horizontal lines",
                 _ => "Digital rain character styling",
             },
-            TextEffectsTab::Presets => match self.effect_idx {
-                0 => "Glowing neon with pulsing animation",
-                1 => "Green phosphor terminal aesthetic",
-                _ => "Subtle fade with smooth transitions",
-            },
+            TextEffectsTab::Presets => self.preset().description(),
             TextEffectsTab::Combinations => "Mix and match effects with number keys",
         }
     }
@@ -569,7 +561,9 @@ impl TextEffectsDemo {
             TextEffectsTab::Animations => self.build_animation_effect(),
             TextEffectsTab::Typography => self.build_typography_effect(),
             TextEffectsTab::SpecialFx => self.build_special_fx_effect(),
-            TextEffectsTab::Presets => self.build_preset_effect(),
+            // A preset is a whole effect chain plus its own colour, easing
+            // and weight; the renderer builds it with StyledText::preset.
+            TextEffectsTab::Presets => TextEffect::None,
             TextEffectsTab::Combinations => self.build_combo_effect(),
         }
     }
@@ -681,26 +675,9 @@ impl TextEffectsDemo {
         }
     }
 
-    fn build_preset_effect(&self) -> TextEffect {
-        // Presets will be implemented in bd-4r5h
-        // For now, provide simple demonstrations
-        match self.effect_idx {
-            0 => TextEffect::PulsingGlow {
-                color: PackedRgba::rgb(0, 255, 200),
-                speed: 2.0,
-            },
-            1 => TextEffect::HorizontalGradient {
-                gradient: ColorGradient::new(vec![
-                    (0.0, PackedRgba::rgb(0, 180, 0)),
-                    (0.5, PackedRgba::rgb(0, 255, 0)),
-                    (1.0, PackedRgba::rgb(100, 255, 100)),
-                ]),
-            },
-            _ => TextEffect::Pulse {
-                speed: 0.8,
-                min_alpha: 0.5,
-            },
-        }
+    /// The `TextPreset` the Presets tab shows at `effect_idx`.
+    fn preset(&self) -> TextPreset {
+        TextPreset::all().nth(self.effect_idx).unwrap_or_default()
     }
 
     fn build_combo_effect(&self) -> TextEffect {
@@ -4544,6 +4521,11 @@ impl VisualEffectsScreen {
             TextEffectsTab::SpecialFx if demo.effect_idx >= 2 => {
                 self.render_special_fx_demo(frame, text_area, demo_text, demo);
             }
+            TextEffectsTab::Presets => {
+                StyledText::preset(demo.preset(), demo_text)
+                    .time(demo.time)
+                    .render(text_area, frame);
+            }
             _ => {
                 let styled = StyledText::new(demo_text)
                     .bold()
@@ -5496,6 +5478,59 @@ mod tests {
         screen.effect = EffectType::Plasma;
         screen.view(&mut frame, Rect::new(0, 0, 80, 24));
         assert!(screen.plasma_adapter.get().is_some());
+    }
+
+    /// `.23.22`: the Presets tab is the real `TextPreset` library (it used to
+    /// be three hand-rolled stand-ins): every preset is listed with its own
+    /// name and description and renders through `StyledText::preset`.
+    #[test]
+    fn presets_tab_shows_every_text_preset() {
+        let mut screen = VisualEffectsScreen {
+            demo_mode: DemoMode::TextEffects,
+            ..Default::default()
+        };
+        let mut pool = GraphemePool::new();
+        let area = Rect::new(0, 0, 100, 30);
+        {
+            let mut frame = Frame::new(100, 30, &mut pool);
+            screen.view(&mut frame, area);
+        }
+        assert_eq!(
+            TextEffectsTab::Presets.effect_count(),
+            TextPreset::all().count()
+        );
+        let mut names = std::collections::HashSet::new();
+        for (idx, preset) in TextPreset::all().enumerate() {
+            let demo = screen.text_effects_mut();
+            demo.tab = TextEffectsTab::Presets;
+            demo.effect_idx = idx;
+            // Late enough for the Typewriter reveal and fades to finish.
+            demo.time = 10.0;
+            assert_eq!(demo.current_effect_name(), preset.name());
+            assert_eq!(demo.current_effect_description(), preset.description());
+            assert!(names.insert(preset.name()), "duplicate preset name");
+
+            let mut frame = Frame::new(100, 30, &mut pool);
+            screen.view(&mut frame, area);
+            let rows: Vec<String> = (0..30)
+                .map(|y| {
+                    (0..100)
+                        .map(|x| {
+                            frame
+                                .buffer
+                                .get(x, y)
+                                .and_then(|cell| cell.content.as_char())
+                                .unwrap_or(' ')
+                        })
+                        .collect()
+                })
+                .collect();
+            assert!(
+                rows.iter().any(|row| row.contains(preset.name())),
+                "{} is not shown on the Presets tab",
+                preset.name()
+            );
+        }
     }
 
     // =========================================================================
