@@ -124,6 +124,8 @@ pub enum ProcessControlError {
 struct ProcessControlState {
     claimed: bool,
     status: ProcessControlStatus,
+    /// Latest requested PTY size as (columns, rows); sizes coalesce, not queue.
+    resize: Option<(u16, u16)>,
 }
 
 /// Cloneable interrupt control for exactly one [`ProcessSubscription`] run.
@@ -138,6 +140,9 @@ struct ProcessControlState {
 /// process-group signal. Linux requires a retained pidfd; if unavailable,
 /// delivery fails instead of falling back to a potentially reused PID. Other
 /// Unix platforms require the supervisor to remain the child's sole reaper.
+/// A [`ProcessSubscription::pty`] run is the exception: SIGINT goes to the
+/// child's whole process group, as Ctrl-C does in a terminal, and
+/// [`request_resize`](Self::request_resize) resizes its PTY.
 #[derive(Clone, Debug)]
 pub struct ProcessControl {
     id: u64,
@@ -167,6 +172,7 @@ impl ProcessControl {
                     can_restart: true,
                     interrupt: ProcessInterruptStatus::Idle,
                 },
+                resize: None,
             })),
         }
     }
@@ -210,6 +216,33 @@ impl ProcessControl {
         Ok(())
     }
 
+    /// Ask the supervisor to resize this run's PTY to `cols` x `rows` cells.
+    ///
+    /// The latest request replaces a pending one. A request made before the
+    /// child spawns sets its initial size. Otherwise the supervisor applies it
+    /// within one 50 ms poll, then sends SIGWINCH to the child's process group.
+    /// Zero dimensions become one. Runs without [`ProcessSubscription::pty`]
+    /// ignore resizes, and admission does not report whether one was applied.
+    pub fn request_resize(&self, cols: u16, rows: u16) -> Result<(), ProcessControlError> {
+        if !cfg!(unix) {
+            return Err(ProcessControlError::Unsupported);
+        }
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.status.closed {
+            return Err(ProcessControlError::Closed);
+        }
+        state.resize = Some((cols.max(1), rows.max(1)));
+        Ok(())
+    }
+
+    fn take_resize(&self) -> Option<(u16, u16)> {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .resize
+            .take()
+    }
+
     fn claim(&self) -> Option<ProcessControlRun> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.claimed {
@@ -242,14 +275,17 @@ impl ProcessControl {
             .can_restart = true;
     }
 
-    fn dispatch_interrupt(&self, child: &std::process::Child) {
+    fn dispatch_interrupt(&self, child: &std::process::Child, group: Option<&ProcessGroup>) {
         let status = self.status();
         if status.closed || status.interrupt != ProcessInterruptStatus::Pending {
             return;
         }
         // Only the supervisor calls this, before reaping. No state lock spans
         // the OS call, and no message queue is needed to publish its result.
-        let result = interrupt_child(child);
+        let result = match group {
+            Some(group) => group.interrupt(),
+            None => interrupt_child(child),
+        };
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.status.interrupt = match result {
             Ok(()) => ProcessInterruptStatus::Sent,
@@ -284,6 +320,79 @@ fn interrupt_child(_child: &std::process::Child) -> io::Result<()> {
         io::ErrorKind::Unsupported,
         "SIGINT is unsupported",
     ))
+}
+
+/// The session and process group of a [`ProcessSubscription::pty`] child,
+/// owned by its run.
+///
+/// The child starts a new session, so its PID is also its process group ID.
+/// Group signals are sent only while that leader is unreaped: an unreaped
+/// child keeps its PID reserved, and with it the group ID, so a signal can
+/// never reach a group that reused the ID. The group is swept with SIGKILL
+/// before the leader is reaped, so nothing that stayed in it outlives the run.
+/// A descendant that leaves the group (`setsid`, `setpgid`) is not tracked.
+#[cfg(unix)]
+struct ProcessGroup {
+    leader: rustix::process::Pid,
+    swept: bool,
+}
+
+#[cfg(unix)]
+impl ProcessGroup {
+    fn new(child: &std::process::Child) -> Self {
+        Self {
+            leader: rustix::process::Pid::from_child(child),
+            swept: false,
+        }
+    }
+
+    fn signal(&self, signal: rustix::process::Signal) -> io::Result<()> {
+        if self.swept {
+            return Err(io::Error::other("process group was already swept"));
+        }
+        rustix::process::kill_process_group(self.leader, signal).map_err(io::Error::from)
+    }
+
+    fn interrupt(&self) -> io::Result<()> {
+        self.signal(rustix::process::Signal::INT)
+    }
+
+    const fn is_swept(&self) -> bool {
+        self.swept
+    }
+
+    /// Send SIGKILL to every process still in the group, once.
+    fn kill(&mut self) -> io::Result<()> {
+        let result = self.signal(rustix::process::Signal::KILL);
+        self.swept = true;
+        result
+    }
+
+    /// Whether the leader has exited, leaving it unreaped.
+    fn leader_exited(&self) -> io::Result<bool> {
+        use rustix::process::{WaitId, WaitIdOptions, waitid};
+        let options = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
+        Ok(waitid(WaitId::Pid(self.leader), options)?.is_some())
+    }
+}
+
+/// Never constructed: PTY runs are refused before spawning off Unix.
+#[cfg(not(unix))]
+enum ProcessGroup {}
+
+#[cfg(not(unix))]
+impl ProcessGroup {
+    fn interrupt(&self) -> io::Result<()> {
+        match *self {}
+    }
+
+    const fn is_swept(&self) -> bool {
+        match *self {}
+    }
+
+    fn kill(&mut self) -> io::Result<()> {
+        match *self {}
+    }
 }
 
 /// Maximum queued input lines, excluding the one currently being written.
@@ -401,10 +510,25 @@ impl Drop for ProcessInputRun {
     }
 }
 
-fn write_process_input(
-    stdin: std::process::ChildStdin,
+/// A parent-owned pipe or PTY endpoint. Unix makes it nonblocking and polls it.
+#[cfg(unix)]
+trait ProcessEndpoint: std::os::fd::AsFd + Send + 'static {}
+#[cfg(unix)]
+impl<T: std::os::fd::AsFd + Send + 'static> ProcessEndpoint for T {}
+#[cfg(not(unix))]
+trait ProcessEndpoint: Send + 'static {}
+#[cfg(not(unix))]
+impl<T: Send + 'static> ProcessEndpoint for T {}
+
+/// Write queued lines, then `end_of_input` once input is closed.
+///
+/// A pipe signals EOF by closing, so its `end_of_input` is empty. A PTY has no
+/// write side to close: EOF is the VEOF byte (Ctrl-D) at the start of a line.
+fn write_process_input<W: Write + ProcessEndpoint>(
+    stdin: W,
     receiver: mpsc::Receiver<Box<str>>,
     stop: StopSignal,
+    end_of_input: &[u8],
 ) -> io::Result<()> {
     #[cfg(unix)]
     let mut stdin = process_pipe(stdin, stop.clone())?;
@@ -421,10 +545,154 @@ fn write_process_input(
             }
             Err(mpsc::RecvTimeoutError::Timeout) if stop.is_stopped() => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                match stdin.write_all(end_of_input) {
+                    // A stopping run closes input before it stops this worker,
+                    // and a child whose side is gone cannot read EOF anyway.
+                    Err(error) if stop.is_stopped() || is_hangup(&error) => {}
+                    result => result?,
+                }
+                break;
+            }
         }
     }
     Ok(())
+}
+
+/// A write found no reader: a closed pipe, or a PTY whose slave side is
+/// closed on systems that report EIO for it (Linux buffers the write instead).
+fn is_hangup(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error()) {
+        return true;
+    }
+    error.kind() == io::ErrorKind::BrokenPipe
+}
+
+/// The parent's read endpoint of a PTY.
+///
+/// Once no slave descriptor remains open, Linux reports EIO where a pipe
+/// reports end-of-file. Both mean the output is complete.
+#[cfg(unix)]
+struct PtyOutput(std::fs::File);
+
+#[cfg(unix)]
+impl Read for PtyOutput {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self.0.read(buffer) {
+            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error()) => {
+                Ok(0)
+            }
+            result => result,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl std::os::fd::AsFd for PtyOutput {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+/// Parent-side endpoints of one run's PTY, made before the child spawns.
+#[cfg(unix)]
+struct PtyEndpoints {
+    /// Kept by the supervisor to resize the PTY.
+    master: std::os::fd::OwnedFd,
+    output: PtyOutput,
+    input: Option<std::fs::File>,
+}
+
+/// Open a PTY of `(cols, rows)` and attach its slave to `cmd`.
+///
+/// stdout and stderr share the slave, which is also stdin when `stdin` is set;
+/// otherwise stdin stays as configured. Echo is off because the host shows its
+/// own input, and LF stays LF so captured lines do not gain a CR. The child
+/// starts a new session without a controlling terminal: it cannot open the
+/// host terminal through `/dev/tty`, and its PID becomes its process group ID.
+#[cfg(unix)]
+fn prepare_pty(
+    cmd: &mut Command,
+    (cols, rows): (u16, u16),
+    stdin: bool,
+) -> io::Result<PtyEndpoints> {
+    use rustix::fs::{Mode, OFlags};
+    use rustix::pty::OpenptFlags;
+    use rustix::termios::{LocalModes, OptionalActions, OutputModes};
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "netbsd"
+    ))]
+    let master =
+        rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)?;
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "netbsd"
+    )))]
+    let master = {
+        let master = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
+        rustix::io::fcntl_setfd(&master, rustix::io::FdFlags::CLOEXEC)?;
+        master
+    };
+    rustix::pty::grantpt(&master)?;
+    rustix::pty::unlockpt(&master)?;
+    let name = rustix::pty::ptsname(&master, Vec::new())?;
+    let slave = rustix::fs::open(
+        name.as_c_str(),
+        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let mut termios = rustix::termios::tcgetattr(&slave)?;
+    termios.local_modes.remove(LocalModes::ECHO);
+    termios.output_modes.remove(OutputModes::ONLCR);
+    rustix::termios::tcsetattr(&slave, OptionalActions::Now, &termios)?;
+    resize_pty(&master, cols, rows)?;
+
+    let output = PtyOutput(std::fs::File::from(master.try_clone()?));
+    let input = if stdin {
+        cmd.stdin(Stdio::from(slave.try_clone()?));
+        Some(std::fs::File::from(master.try_clone()?))
+    } else {
+        None
+    };
+    cmd.stdout(Stdio::from(slave.try_clone()?))
+        .stderr(Stdio::from(slave));
+    std::os::unix::process::CommandExt::setsid(cmd, true);
+    Ok(PtyEndpoints {
+        master,
+        output,
+        input,
+    })
+}
+
+#[cfg(unix)]
+fn resize_pty(master: impl std::os::fd::AsFd, cols: u16, rows: u16) -> io::Result<()> {
+    let size = rustix::termios::Winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    rustix::termios::tcsetwinsize(master, size).map_err(io::Error::from)
+}
+
+/// A new PTY's size: the host terminal's, from stdout then stdin, else 80x24.
+#[cfg(unix)]
+fn host_terminal_size() -> (u16, u16) {
+    [
+        rustix::termios::tcgetwinsize(io::stdout()),
+        rustix::termios::tcgetwinsize(io::stdin()),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|size| size.ws_col > 0 && size.ws_row > 0)
+    .map_or((80, 24), |size| (size.ws_col, size.ws_row))
 }
 
 // Only the parent-owned endpoint becomes nonblocking. The child's opposite
@@ -535,7 +803,9 @@ impl<P: Write + std::os::fd::AsFd> Write for ProcessPipe<P> {
 /// Other targets still use blocking pipes and bounded joins, so an inherited
 /// endpoint can keep a detached worker alive after cancellation.
 /// Input is closed by default; [`stdin`](Self::stdin) enables a bounded input
-/// worker. Descendant termination and reaping are not provided on any target.
+/// worker. Over pipes, descendants are neither terminated nor reaped on any
+/// target. [`pty`](Self::pty) runs the child on a pseudo-terminal in its own
+/// session, and ends its whole process group with the run.
 /// Cancellation is not an atomic write boundary: a prefix may already have
 /// reached the child, and an I/O syscall can race with the stop request.
 /// Optional [`control`](Self::control) admits interrupts independently of those
@@ -549,6 +819,7 @@ pub struct ProcessSubscription<M: Send + 'static> {
     input: Option<ProcessInput>,
     control: Option<ProcessControl>,
     partial_output: bool,
+    pty: bool,
     id: SubId,
     explicit_id: bool,
     make_msg: std::sync::Arc<dyn Fn(ProcessEvent) -> M + Send + Sync>,
@@ -694,6 +965,41 @@ fn forward_lines<R: Read, M: Send + 'static>(
     Ok(())
 }
 
+/// What every output reader of one run shares.
+struct LineReaders<M: Send + 'static> {
+    sender: SubscriptionSender<M>,
+    stop: StopSignal,
+    partial_output: bool,
+    make_msg: std::sync::Arc<dyn Fn(ProcessEvent) -> M + Send + Sync>,
+}
+
+impl<M: Send + 'static> LineReaders<M> {
+    /// Forward `reader`'s lines and previews from a new thread.
+    fn spawn<R: Read + ProcessEndpoint>(
+        &self,
+        reader: R,
+        line_event: fn(String) -> ProcessEvent,
+        partial_event: fn(String) -> ProcessEvent,
+    ) -> std::thread::JoinHandle<Result<(), ProcessReadError>> {
+        let sender = self.sender.clone();
+        let stop = self.stop.clone();
+        let partial_output = self.partial_output;
+        let make_msg = std::sync::Arc::clone(&self.make_msg);
+        std::thread::spawn(move || {
+            #[cfg(unix)]
+            let reader = process_pipe(reader, stop.clone()).map_err(ProcessReadError::Io)?;
+            forward_lines(
+                reader,
+                sender,
+                stop,
+                partial_output,
+                |line| (make_msg.as_ref())(line_event(line)),
+                |prefix| (make_msg.as_ref())(partial_event(prefix)),
+            )
+        })
+    }
+}
+
 fn take_reader_error<E: std::fmt::Display>(
     handle: &mut Option<std::thread::JoinHandle<Result<(), E>>>,
     stream: &str,
@@ -792,8 +1098,47 @@ fn try_wait_child(
     result
 }
 
-fn cleanup_child(child: &mut std::process::Child, wait_error: &mut Option<String>) -> ChildCleanup {
-    let prior_error = match try_wait_child(child, wait_error) {
+/// [`try_wait_child`] for a run that may own its child's process group.
+///
+/// An exited leader of an unswept group is reaped only after the group is
+/// swept, while its unreaped PID still reserves the group ID.
+fn try_wait_leader(
+    child: &mut std::process::Child,
+    wait_error: &mut Option<String>,
+    group: Option<&mut ProcessGroup>,
+) -> io::Result<Option<std::process::ExitStatus>> {
+    #[cfg(unix)]
+    if let Some(group) = group
+        && !group.is_swept()
+    {
+        match group.leader_exited() {
+            Ok(false) => return Ok(None),
+            Ok(true) => {
+                if let Err(error) = group.kill()
+                    && error.raw_os_error() != Some(rustix::io::Errno::SRCH.raw_os_error())
+                {
+                    tracing::warn!(%error, "process group sweep after leader exit failed");
+                }
+            }
+            Err(error) => {
+                wait_error.get_or_insert_with(|| error.to_string());
+                return Err(error);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    if let Some(group) = group {
+        match *group {}
+    }
+    try_wait_child(child, wait_error)
+}
+
+fn cleanup_child(
+    child: &mut std::process::Child,
+    wait_error: &mut Option<String>,
+    mut group: Option<&mut ProcessGroup>,
+) -> ChildCleanup {
+    let prior_error = match try_wait_leader(child, wait_error, group.as_deref_mut()) {
         Ok(Some(status)) => return ChildCleanup::reaped(status, false, ""),
         Ok(None) => String::new(),
         Err(error) => {
@@ -806,7 +1151,12 @@ fn cleanup_child(child: &mut std::process::Child, wait_error: &mut Option<String
             context
         }
     };
-    if let Err(error) = child.kill() {
+    // An owned group is killed whole; the leader is one of its members.
+    let kill = match group {
+        Some(group) if !group.is_swept() => group.kill(),
+        _ => child.kill(),
+    };
+    if let Err(error) = kill {
         let context = format!("{prior_error}child kill failed: {error}; ");
         // An exit can race with kill. Observe it once; never block waiting for
         // a still-running child after the termination request was rejected.
@@ -840,16 +1190,18 @@ fn output_failure_event(
     error: &str,
     child: &mut std::process::Child,
     wait_error: &mut Option<String>,
+    group: Option<&mut ProcessGroup>,
 ) -> ProcessEvent {
-    cleanup_failure_event(error, &cleanup_child(child, wait_error))
+    cleanup_failure_event(error, &cleanup_child(child, wait_error, group))
 }
 
 fn stopped_process_event(
     reason: &str,
     child: &mut std::process::Child,
     wait_error: &mut Option<String>,
+    group: Option<&mut ProcessGroup>,
 ) -> ProcessEvent {
-    let cleanup = cleanup_child(child, wait_error);
+    let cleanup = cleanup_child(child, wait_error, group);
     let terminated = cleanup.status.is_some_and(|status| {
         #[cfg(unix)]
         {
@@ -891,38 +1243,28 @@ fn reap_child_in_background(
 }
 
 impl<M: Send + 'static> ProcessSubscription<M> {
-    fn computed_id(
-        program: &str,
-        args: &[String],
-        env: &[(String, String)],
-        timeout: Option<Duration>,
-        input: Option<&ProcessInput>,
-        control: Option<&ProcessControl>,
-        partial_output: bool,
-    ) -> SubId {
+    fn computed_id(&self) -> SubId {
         let mut h = DefaultHasher::new();
         "ProcessSubscription".hash(&mut h);
-        program.hash(&mut h);
-        args.hash(&mut h);
-        env.hash(&mut h);
-        timeout.map(|duration| duration.as_nanos()).hash(&mut h);
-        input.map(|input| input.id).hash(&mut h);
-        control.map(ProcessControl::generation).hash(&mut h);
-        partial_output.hash(&mut h);
+        self.program.hash(&mut h);
+        self.args.hash(&mut h);
+        self.env.hash(&mut h);
+        self.timeout
+            .map(|duration| duration.as_nanos())
+            .hash(&mut h);
+        self.input.as_ref().map(|input| input.id).hash(&mut h);
+        self.control
+            .as_ref()
+            .map(ProcessControl::generation)
+            .hash(&mut h);
+        self.partial_output.hash(&mut h);
+        self.pty.hash(&mut h);
         h.finish()
     }
 
     fn refresh_id(&mut self) {
         if !self.explicit_id {
-            self.id = Self::computed_id(
-                &self.program,
-                &self.args,
-                &self.env,
-                self.timeout,
-                self.input.as_ref(),
-                self.control.as_ref(),
-                self.partial_output,
-            );
+            self.id = self.computed_id();
         }
     }
 
@@ -934,20 +1276,21 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         program: impl Into<String>,
         make_msg: impl Fn(ProcessEvent) -> M + Send + Sync + 'static,
     ) -> Self {
-        let program = program.into();
-        let id = Self::computed_id(&program, &[], &[], None, None, None, false);
-        Self {
-            program,
+        let mut subscription = Self {
+            program: program.into(),
             args: Vec::new(),
             env: Vec::new(),
             timeout: None,
             input: None,
             control: None,
             partial_output: false,
-            id,
+            pty: false,
+            id: 0,
             explicit_id: false,
             make_msg: std::sync::Arc::new(make_msg),
-        }
+        };
+        subscription.refresh_id();
+        subscription
     }
 
     /// Add a command-line argument.
@@ -1030,6 +1373,38 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         self
     }
 
+    /// Run the child on a pseudo-terminal instead of pipes (Unix; default: false).
+    ///
+    /// The child's stdout and stderr are the PTY, so `isatty` holds and
+    /// programs keep their terminal behavior: color, line-buffered output,
+    /// progress lines. Both streams arrive as [`ProcessEvent::Stdout`] and
+    /// [`ProcessEvent::StdoutPartial`]. With [`stdin`](Self::stdin), stdin is
+    /// the PTY as well, each line is written as typed input, and closing input
+    /// sends one end-of-file (Ctrl-D); the line discipline holds at most 4095
+    /// bytes of one unfinished line on Linux. Without it, stdin is `/dev/null`.
+    /// Echo is off and LF is not translated to CRLF; a child may change that.
+    ///
+    /// The child leads a new session with no controlling terminal, so it
+    /// cannot reach the host terminal through `/dev/tty`. Its process group
+    /// belongs to the run: [`ProcessControl::request_interrupt`] sends SIGINT
+    /// to the whole group, as Ctrl-C would. When the leader exits, and before
+    /// it is reaped, every process left in the group receives SIGKILL, which
+    /// also lets output reach end-of-file. Cancellation and timeout kill the
+    /// group the same way. A descendant that starts its own session or group
+    /// is not followed.
+    ///
+    /// The PTY starts at the size given by
+    /// [`ProcessControl::request_resize`] before spawn, else at the host
+    /// terminal's size (stdout, then stdin), else 80x24. Off Unix the run ends
+    /// with [`ProcessEvent::Error`] before spawning. Changing this setting
+    /// changes the automatic subscription ID.
+    #[must_use]
+    pub fn pty(mut self, enabled: bool) -> Self {
+        self.pty = enabled;
+        self.refresh_id();
+        self
+    }
+
     /// Override the subscription ID (for explicit deduplication control).
     #[must_use]
     pub fn with_id(mut self, id: SubId) -> Self {
@@ -1086,6 +1461,28 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
         };
         let (_input_guard, input_receiver) = input_run.unzip();
 
+        let fail_before_spawn = |detail: String| {
+            if let Some(control) = &self.control {
+                control.close();
+            }
+            if let Some(input) = &self.input {
+                input.close();
+            }
+            tracing::warn!(
+                target: crate::telemetry_schema::TARGET_PROCESS,
+                sub_id,
+                program = %self.program,
+                error = %detail,
+                "process spawn failed"
+            );
+            let _ = send_terminal_message(
+                &sender,
+                &stop,
+                self.timeout.map(|timeout| spawn_start + timeout),
+                (self.make_msg.as_ref())(ProcessEvent::Error(detail)),
+            );
+        };
+
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args)
             .stdout(Stdio::piped())
@@ -1105,42 +1502,54 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             std::os::linux::process::CommandExt::create_pidfd(&mut cmd, true);
         }
 
-        let mut child = match cmd.spawn() {
+        #[cfg(unix)]
+        let pty = if self.pty {
+            let size = self
+                .control
+                .as_ref()
+                .and_then(ProcessControl::take_resize)
+                .unwrap_or_else(host_terminal_size);
+            match prepare_pty(&mut cmd, size, input_receiver.is_some()) {
+                Ok(pty) => Some(pty),
+                Err(error) => {
+                    fail_before_spawn(format!(
+                        "Failed to open a PTY for '{}': {error}",
+                        self.program
+                    ));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        #[cfg(not(unix))]
+        if self.pty {
+            fail_before_spawn(format!(
+                "Failed to spawn '{}': PTY mode requires Unix",
+                self.program
+            ));
+            return;
+        }
+
+        let spawned = cmd.spawn();
+        // The parent's copies of a PTY slave must close, or the PTY could never
+        // report end-of-file once the child's side is gone.
+        drop(cmd);
+        let mut child = match spawned {
             Ok(c) => {
                 tracing::debug!(
                     target: crate::telemetry_schema::TARGET_PROCESS,
                     sub_id,
                     program = %self.program,
                     args = ?self.args,
+                    pty = self.pty,
                     spawn_us = spawn_start.elapsed().as_micros() as u64,
                     "process spawned"
                 );
                 c
             }
             Err(e) => {
-                if let Some(control) = &self.control {
-                    control.close();
-                }
-                if let Some(input) = &self.input {
-                    input.close();
-                }
-                tracing::warn!(
-                    target: crate::telemetry_schema::TARGET_PROCESS,
-                    sub_id,
-                    program = %self.program,
-                    error = %e,
-                    "process spawn failed"
-                );
-                let message = (self.make_msg.as_ref())(ProcessEvent::Error(format!(
-                    "Failed to spawn '{}': {}",
-                    self.program, e
-                )));
-                let _ = send_terminal_message(
-                    &sender,
-                    &stop,
-                    self.timeout.map(|timeout| spawn_start + timeout),
-                    message,
-                );
+                fail_before_spawn(format!("Failed to spawn '{}': {}", self.program, e));
                 return;
             }
         };
@@ -1149,9 +1558,26 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             control.started(child.id());
         }
 
+        // A PTY run reads, writes, and resizes through the master, and owns
+        // the child's process group. A pipe run uses the child's own pipes.
+        #[cfg(unix)]
+        let (pty_master, pty_output, pty_input, mut group) = match pty {
+            Some(PtyEndpoints {
+                master,
+                output,
+                input,
+            }) => (
+                Some(master),
+                Some(output),
+                input,
+                Some(ProcessGroup::new(&child)),
+            ),
+            None => (None, None, None, None),
+        };
+        #[cfg(not(unix))]
+        let mut group: Option<ProcessGroup> = None;
+
         let deadline = self.timeout.map(|t| web_time::Instant::now() + t);
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
         let make_msg_ref = std::sync::Arc::clone(&self.make_msg);
         // Use the cancellation token for cooperative stop coordination.
         let token = stop.cancellation_token().clone();
@@ -1170,50 +1596,38 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             reader_trigger.stop();
             stop_input();
         };
-        let mut input_handle = input_receiver
-            .zip(child.stdin.take())
-            .map(|(receiver, stdin)| {
-                std::thread::spawn(move || write_process_input(stdin, receiver, input_stop))
-            });
-        let reader_sender = sender.with_stop_signal(reader_stop.clone());
+        let mut input_handle = input_receiver.and_then(|receiver| {
+            #[cfg(unix)]
+            if let Some(master) = pty_input {
+                return Some(std::thread::spawn(move || {
+                    write_process_input(master, receiver, input_stop, b"\x04")
+                }));
+            }
+            child.stdin.take().map(|stdin| {
+                std::thread::spawn(move || write_process_input(stdin, receiver, input_stop, b""))
+            })
+        });
+        let readers = LineReaders {
+            sender: sender.with_stop_signal(reader_stop.clone()),
+            stop: reader_stop.clone(),
+            partial_output: self.partial_output,
+            make_msg: std::sync::Arc::clone(&make_msg_ref),
+        };
         let poll_interval = Duration::from_millis(50);
-        let partial_output = self.partial_output;
-        let mut stdout_handle = stdout.map(|stdout| {
-            let sender_out = reader_sender.clone();
-            let stop_out = reader_stop.clone();
-            let make_msg_out = std::sync::Arc::clone(&make_msg_ref);
-            std::thread::spawn(move || {
-                #[cfg(unix)]
-                let stdout =
-                    process_pipe(stdout, stop_out.clone()).map_err(ProcessReadError::Io)?;
-                forward_lines(
-                    stdout,
-                    sender_out,
-                    stop_out,
-                    partial_output,
-                    |line| (make_msg_out.as_ref())(ProcessEvent::Stdout(line)),
-                    |prefix| (make_msg_out.as_ref())(ProcessEvent::StdoutPartial(prefix)),
-                )
+        #[cfg(unix)]
+        let pty_stdout = pty_output
+            .map(|output| readers.spawn(output, ProcessEvent::Stdout, ProcessEvent::StdoutPartial));
+        #[cfg(not(unix))]
+        let pty_stdout = None;
+        let mut stdout_handle = pty_stdout.or_else(|| {
+            child.stdout.take().map(|stdout| {
+                readers.spawn(stdout, ProcessEvent::Stdout, ProcessEvent::StdoutPartial)
             })
         });
-        let mut stderr_handle = stderr.map(|stderr| {
-            let sender_err = reader_sender.clone();
-            let stop_err = reader_stop.clone();
-            let make_msg_err = std::sync::Arc::clone(&make_msg_ref);
-            std::thread::spawn(move || {
-                #[cfg(unix)]
-                let stderr =
-                    process_pipe(stderr, stop_err.clone()).map_err(ProcessReadError::Io)?;
-                forward_lines(
-                    stderr,
-                    sender_err,
-                    stop_err,
-                    partial_output,
-                    |line| (make_msg_err.as_ref())(ProcessEvent::Stderr(line)),
-                    |prefix| (make_msg_err.as_ref())(ProcessEvent::StderrPartial(prefix)),
-                )
-            })
-        });
+        let mut stderr_handle = child
+            .stderr
+            .take()
+            .map(|stderr| readers.spawn(stderr, ProcessEvent::Stderr, ProcessEvent::StderrPartial));
 
         let mut child_wait_error = None;
         let mut final_event = loop {
@@ -1224,9 +1638,14 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 .or_else(|| take_reader_error(&mut input_handle, "stdin write failed"))
             {
                 stop_process_io();
-                break output_failure_event(&error, &mut child, &mut child_wait_error);
+                break output_failure_event(
+                    &error,
+                    &mut child,
+                    &mut child_wait_error,
+                    group.as_mut(),
+                );
             }
-            match try_wait_child(&mut child, &mut child_wait_error) {
+            match try_wait_leader(&mut child, &mut child_wait_error, group.as_mut()) {
                 Ok(Some(status)) => {
                     let event = process_exit_event(status);
                     if let ProcessEvent::Exited(code) = &event {
@@ -1261,6 +1680,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                         &format!("wait error: {e}"),
                         &mut child,
                         &mut child_wait_error,
+                        group.as_mut(),
                     );
                 }
             }
@@ -1278,8 +1698,12 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 // Keep the child's pipes open until termination is observed.
                 // Closing a reader first can turn our kill into SIGPIPE while
                 // the child is blocked writing to a full model queue.
-                let event =
-                    stopped_process_event("process timed out", &mut child, &mut child_wait_error);
+                let event = stopped_process_event(
+                    "process timed out",
+                    &mut child,
+                    &mut child_wait_error,
+                    group.as_mut(),
+                );
                 stop_process_io();
                 break event;
             }
@@ -1292,13 +1716,32 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     reason = "cancellation",
                     "killing process"
                 );
-                let event =
-                    stopped_process_event("process canceled", &mut child, &mut child_wait_error);
+                let event = stopped_process_event(
+                    "process canceled",
+                    &mut child,
+                    &mut child_wait_error,
+                    group.as_mut(),
+                );
                 stop_process_io();
                 break event;
             }
             if let Some(control) = &self.control {
-                control.dispatch_interrupt(&child);
+                control.dispatch_interrupt(&child, group.as_ref());
+            }
+            #[cfg(unix)]
+            if let (Some(master), Some(group), Some(control)) = (&pty_master, &group, &self.control)
+                && let Some((cols, rows)) = control.take_resize()
+                && let Err(error) = resize_pty(master, cols, rows)
+                    .and_then(|()| group.signal(rustix::process::Signal::WINCH))
+            {
+                tracing::debug!(
+                    target: crate::telemetry_schema::TARGET_PROCESS,
+                    sub_id,
+                    cols,
+                    rows,
+                    %error,
+                    "PTY resize was not applied"
+                );
             }
         };
 
@@ -1307,7 +1750,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             // Closing admission is not proof of cleanup. Only an observed
             // reaped status permits a consumer to offer a safe restart.
             if matches!(
-                try_wait_child(&mut child, &mut child_wait_error),
+                try_wait_leader(&mut child, &mut child_wait_error, group.as_mut()),
                 Ok(Some(_))
             ) {
                 control.confirm_reaped();
@@ -1328,7 +1771,12 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     .or_else(|| take_reader_error(&mut input_handle, "stdin write failed"))
                 {
                     reader_trigger.stop();
-                    final_event = output_failure_event(&error, &mut child, &mut child_wait_error);
+                    final_event = output_failure_event(
+                        &error,
+                        &mut child,
+                        &mut child_wait_error,
+                        group.as_mut(),
+                    );
                     break;
                 }
                 if stdout_handle.is_none() && stderr_handle.is_none() {
@@ -1365,13 +1813,15 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 ProcessEvent::Exited(_) | ProcessEvent::Signaled(_)
             )
         {
-            final_event = output_failure_event(&error, &mut child, &mut child_wait_error);
+            final_event =
+                output_failure_event(&error, &mut child, &mut child_wait_error, group.as_mut());
         }
 
         // Keep ownership when foreground cleanup could not confirm reaping.
         // A late wait can update restart eligibility, but the error already
-        // observed by this run remains an error. Descendants are not managed.
-        match try_wait_child(&mut child, &mut child_wait_error) {
+        // observed by this run remains an error. Pipe runs do not manage
+        // descendants; a PTY run sweeps its group before reaping the leader.
+        match try_wait_leader(&mut child, &mut child_wait_error, group.as_mut()) {
             Ok(Some(_)) => {
                 if let Some(control) = &self.control {
                     control.confirm_reaped();
@@ -1534,7 +1984,7 @@ mod tests {
             let (mut child, _stdin, mut output) = spawn_cleanup_probe();
             let mut wait_error = None;
             let start = Instant::now();
-            let event = stopped_process_event(reason, &mut child, &mut wait_error);
+            let event = stopped_process_event(reason, &mut child, &mut wait_error, None);
             let elapsed = start.elapsed();
             let observed = child.try_wait().unwrap();
             let mut tail = String::new();
@@ -1567,12 +2017,12 @@ mod tests {
         .expect("actual natural exit");
         assert_eq!(tail, "RELEASED release\n");
         assert_eq!(status.code(), Some(67));
-        let cleanup = cleanup_child(&mut child, &mut wait_error);
+        let cleanup = cleanup_child(&mut child, &mut wait_error, None);
         assert_eq!(cleanup.status.unwrap().code(), Some(67));
         assert!(!cleanup.kill_sent);
         assert_eq!(cleanup.detail, "child reaped: Exited(67)");
         assert_eq!(
-            stopped_process_event("process canceled", &mut child, &mut wait_error),
+            stopped_process_event("process canceled", &mut child, &mut wait_error, None),
             ProcessEvent::Error(
                 "process canceled; child reaped: Exited(67); stdout/stderr output is incomplete"
                     .to_owned()
@@ -1597,7 +2047,7 @@ mod tests {
         // This exercises an explicitly expired helper deadline on a healthy
         // child, not an unkillable kernel task. Capture the refusal first;
         // the following explicit cleanup must not count as foreground proof.
-        let cleanup = cleanup_child(&mut child, &mut wait_error);
+        let cleanup = cleanup_child(&mut child, &mut wait_error, None);
         assert!(matches!(result, Ok(None)));
         assert!(matches!(still_running, Ok(None)));
         assert!(elapsed < Duration::from_secs(1));
@@ -1677,7 +2127,7 @@ mod tests {
                 other => {
                     // Retained pidfd keeps this failure cleanup safe even if
                     // the exact child was reaped outside std::Child.
-                    let cleanup = cleanup_child(&mut child, &mut wait_error);
+                    let cleanup = cleanup_child(&mut child, &mut wait_error, None);
                     panic!("external exact-child wait failed: {other:?}; {cleanup:?}");
                 }
             }
@@ -1695,12 +2145,12 @@ mod tests {
                 eprintln!("retained pidfd recovered exit67; ECHILD branch not exercised");
                 assert_eq!(status.code(), Some(67));
                 assert!(wait_error.is_none());
-                let cleanup = cleanup_child(&mut child, &mut wait_error);
+                let cleanup = cleanup_child(&mut child, &mut wait_error, None);
                 assert_eq!(cleanup.status.unwrap().code(), Some(67));
                 assert!(!cleanup.kill_sent);
                 assert_eq!(cleanup.detail, "child reaped: Exited(67)");
                 assert_eq!(
-                    stopped_process_event("process canceled", &mut child, &mut wait_error),
+                    stopped_process_event("process canceled", &mut child, &mut wait_error, None),
                     ProcessEvent::Error(
                         "process canceled; child reaped: Exited(67); stdout/stderr output is incomplete"
                             .to_owned()
@@ -1715,7 +2165,7 @@ mod tests {
                 );
                 let error_text = error.to_string();
                 assert_eq!(wait_error.as_deref(), Some(error_text.as_str()));
-                let cleanup = cleanup_child(&mut child, &mut wait_error);
+                let cleanup = cleanup_child(&mut child, &mut wait_error, None);
                 let kill_error =
                     io::Error::from_raw_os_error(rustix::io::Errno::SRCH.raw_os_error());
                 let expected = format!(
@@ -1725,7 +2175,7 @@ mod tests {
                 assert!(!cleanup.kill_sent);
                 assert_eq!(cleanup.detail, expected);
                 assert_eq!(
-                    stopped_process_event("process canceled", &mut child, &mut wait_error),
+                    stopped_process_event("process canceled", &mut child, &mut wait_error, None),
                     ProcessEvent::Error(format!(
                         "process canceled; {expected}; stdout/stderr output is incomplete"
                     ))
@@ -1777,12 +2227,12 @@ mod tests {
                 .to_string(),
             saved_error
         );
-        let cleanup = cleanup_child(&mut child, &mut wait_error);
+        let cleanup = cleanup_child(&mut child, &mut wait_error, None);
         assert!(cleanup.status.is_none());
         assert!(!cleanup.kill_sent);
         assert_eq!(cleanup.detail, expected);
         assert_eq!(
-            stopped_process_event("process canceled", &mut child, &mut wait_error),
+            stopped_process_event("process canceled", &mut child, &mut wait_error, None),
             ProcessEvent::Error(format!(
                 "process canceled; {expected}; stdout/stderr output is incomplete"
             ))
@@ -1813,7 +2263,7 @@ mod tests {
                 .to_string(),
             saved_error
         );
-        let cleanup = cleanup_child(&mut child, &mut wait_error);
+        let cleanup = cleanup_child(&mut child, &mut wait_error, None);
         assert!(cleanup.status.is_none());
         assert!(!cleanup.kill_sent);
         assert_eq!(cleanup.detail, expected);
@@ -2479,7 +2929,7 @@ mod tests {
             .unwrap();
         let (stop, trigger) = StopSignal::new();
         trigger.stop();
-        let result = write_process_input(child.stdin.take().unwrap(), receiver, stop);
+        let result = write_process_input(child.stdin.take().unwrap(), receiver, stop, b"");
         child.kill().unwrap();
         child.wait().unwrap();
         assert_eq!(
@@ -2684,7 +3134,7 @@ mod tests {
             task_sender
                 .send(std::fs::read_link("/proc/thread-self").unwrap())
                 .unwrap();
-            write_process_input(stdin, receiver, stop)
+            write_process_input(stdin, receiver, stop, b"")
         });
         await_pipe_wait(&std::path::Path::new("/proc").join(task_receiver.recv().unwrap()));
         trigger.stop();
@@ -3355,7 +3805,7 @@ os.write(1,b'tail\r')
         let still_running = child.try_wait();
         // Retain observations before explicit cleanup; cleanup is not the
         // evidence that the stop oracle left a live child under its owner.
-        let cleanup = cleanup_child(&mut child, &mut None);
+        let cleanup = cleanup_child(&mut child, &mut None, None);
         assert_eq!(observed, Ok(false), "a running child has no SIGSTOP event");
         assert!(matches!(still_running, Ok(None)));
         assert!(cleanup.kill_sent);
@@ -3574,15 +4024,14 @@ os.write(1,b'tail\r')
     fn echo_captures_stdout() {
         let sub = ProcessSubscription::new("echo", TestMsg::Proc).arg("hello world");
         let (tx, rx) = stdmpsc::sync_channel(256);
-        let (signal, trigger) = StopSignal::new();
+        let (signal, _trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
             sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
-        // Wait for process to complete
-        thread::sleep(Duration::from_millis(500));
-        trigger.stop();
+        // The child exits by itself. Stopping after a fixed sleep raced that
+        // exit and reported Killed under load.
         handle.join().unwrap();
 
         let msgs: Vec<TestMsg> = rx.try_iter().collect();
@@ -3677,14 +4126,12 @@ os.write(1,b'tail\r')
         let sub =
             ProcessSubscription::new("env", TestMsg::Proc).env("FTUI_TEST_VAR", "test_value_42");
         let (tx, rx) = stdmpsc::sync_channel(256);
-        let (signal, trigger) = StopSignal::new();
+        let (signal, _trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
             sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
-        thread::sleep(Duration::from_millis(500));
-        trigger.stop();
         handle.join().unwrap();
 
         let msgs: Vec<TestMsg> = rx.try_iter().collect();
@@ -3699,14 +4146,12 @@ os.write(1,b'tail\r')
     fn multiple_args_via_args_method() {
         let sub = ProcessSubscription::new("echo", TestMsg::Proc).args(["hello", "world"]);
         let (tx, rx) = stdmpsc::sync_channel(256);
-        let (signal, trigger) = StopSignal::new();
+        let (signal, _trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
             sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
-        thread::sleep(Duration::from_millis(500));
-        trigger.stop();
         handle.join().unwrap();
 
         let msgs: Vec<TestMsg> = rx.try_iter().collect();
@@ -3724,14 +4169,12 @@ os.write(1,b'tail\r')
             .arg("-c")
             .arg("echo error_msg >&2");
         let (tx, rx) = stdmpsc::sync_channel(256);
-        let (signal, trigger) = StopSignal::new();
+        let (signal, _trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
             sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
-        thread::sleep(Duration::from_millis(500));
-        trigger.stop();
         handle.join().unwrap();
 
         let msgs: Vec<TestMsg> = rx.try_iter().collect();
@@ -3748,14 +4191,12 @@ os.write(1,b'tail\r')
             .arg("-c")
             .arg("exit 42");
         let (tx, rx) = stdmpsc::sync_channel(256);
-        let (signal, trigger) = StopSignal::new();
+        let (signal, _trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
             sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
-        thread::sleep(Duration::from_millis(500));
-        trigger.stop();
         handle.join().unwrap();
 
         let msgs: Vec<TestMsg> = rx.try_iter().collect();
@@ -3772,14 +4213,12 @@ os.write(1,b'tail\r')
             .arg("-c")
             .arg("kill -TERM $$");
         let (tx, rx) = stdmpsc::sync_channel(256);
-        let (signal, trigger) = StopSignal::new();
+        let (signal, _trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
             sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
-        thread::sleep(Duration::from_millis(500));
-        trigger.stop();
         handle.join().unwrap();
 
         let msgs: Vec<TestMsg> = rx.try_iter().collect();
@@ -3837,14 +4276,12 @@ os.write(1,b'tail\r')
         {
             let sub = ProcessSubscription::new("true", TestMsg::Proc);
             let (tx, rx) = stdmpsc::sync_channel(256);
-            let (signal, trigger) = StopSignal::new();
+            let (signal, _trigger) = StopSignal::new();
 
             let handle = thread::spawn(move || {
                 sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
             });
 
-            thread::sleep(Duration::from_millis(500));
-            trigger.stop();
             handle.join().unwrap();
 
             let msgs: Vec<TestMsg> = rx.try_iter().collect();
@@ -3915,14 +4352,12 @@ os.write(1,b'tail\r')
             .arg("-c")
             .arg("echo FIRST && echo SECOND >&2 && exit 0");
         let (tx, rx) = stdmpsc::sync_channel(256);
-        let (signal, trigger) = StopSignal::new();
+        let (signal, _trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
             sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
-        thread::sleep(Duration::from_millis(500));
-        trigger.stop();
         handle.join().unwrap();
 
         let msgs: Vec<TestMsg> = rx.try_iter().collect();
@@ -4664,5 +5099,336 @@ os._exit(7)
                 .any(|m| matches!(m, TestMsg::Proc(ProcessEvent::Killed))),
             "expected Killed event, got: {msgs:?}"
         );
+    }
+
+    #[cfg(unix)]
+    fn shell(script: &str) -> ProcessSubscription<ProcessEvent> {
+        ProcessSubscription::new("sh", |event| event)
+            .args(["-c", script])
+            .timeout(Duration::from_secs(10))
+    }
+
+    #[cfg(unix)]
+    fn pty_shell(script: &str) -> ProcessSubscription<ProcessEvent> {
+        shell(script).pty(true)
+    }
+
+    #[cfg(unix)]
+    fn start_process(
+        sub: ProcessSubscription<ProcessEvent>,
+    ) -> (
+        stdmpsc::Receiver<ProcessEvent>,
+        StopTrigger,
+        thread::JoinHandle<()>,
+    ) {
+        let (sender, events) = stdmpsc::sync_channel(16 * 1024);
+        let (stop, trigger) = StopSignal::new();
+        let handle =
+            thread::spawn(move || sub.run(SubscriptionSender::new(sender, stop.clone()), stop));
+        (events, trigger, handle)
+    }
+
+    #[cfg(unix)]
+    fn is_terminal_event(event: &ProcessEvent) -> bool {
+        matches!(
+            event,
+            ProcessEvent::Exited(_)
+                | ProcessEvent::Signaled(_)
+                | ProcessEvent::Killed
+                | ProcessEvent::Error(_)
+        )
+    }
+
+    /// Events up to and including the first that satisfies `done`.
+    #[cfg(unix)]
+    fn events_until(
+        events: &stdmpsc::Receiver<ProcessEvent>,
+        done: impl Fn(&ProcessEvent) -> bool,
+    ) -> Vec<ProcessEvent> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut seen = Vec::new();
+        loop {
+            match events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(event) => {
+                    let finished = done(&event);
+                    seen.push(event);
+                    if finished {
+                        return seen;
+                    }
+                }
+                Err(error) => panic!("expected event did not arrive ({error:?}); saw {seen:?}"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn run_to_end(sub: ProcessSubscription<ProcessEvent>) -> Vec<ProcessEvent> {
+        let (events, _trigger, handle) = start_process(sub);
+        let seen = events_until(&events, is_terminal_event);
+        handle.join().expect("supervisor finished");
+        seen
+    }
+
+    #[cfg(unix)]
+    fn stdout(lines: &[&str]) -> Vec<ProcessEvent> {
+        lines
+            .iter()
+            .map(|line| ProcessEvent::Stdout((*line).to_owned()))
+            .collect()
+    }
+
+    /// The PID printed as `<prefix><pid>` in `event`.
+    #[cfg(target_os = "linux")]
+    fn printed_pid(event: &ProcessEvent, prefix: &str) -> i32 {
+        match event {
+            ProcessEvent::Stdout(line) => line
+                .strip_prefix(prefix)
+                .and_then(|pid| pid.parse().ok())
+                .unwrap_or_else(|| panic!("expected {prefix}<pid>, got {line:?}")),
+            other => panic!("expected {prefix}<pid>, got {other:?}"),
+        }
+    }
+
+    /// A process that exited, or was killed and awaits reaping, is gone.
+    #[cfg(target_os = "linux")]
+    fn process_is_gone(pid: i32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+            stat.rsplit_once(')')
+                .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_until_gone(pid: i32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if process_is_gone(pid) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_child_sees_a_terminal_on_stdout_and_stderr_and_lf_stays_lf() {
+        let script = "for fd in 0 1 2; do if [ -t $fd ]; then echo \"fd$fd=tty\"; \
+                      else echo \"fd$fd=other\"; fi; done; echo to-stderr >&2; printf 'crlf\\r\\n'";
+        assert_eq!(
+            run_to_end(pty_shell(script)),
+            [
+                stdout(&["fd0=other", "fd1=tty", "fd2=tty", "to-stderr", "crlf"]),
+                vec![ProcessEvent::Exited(0)]
+            ]
+            .concat(),
+            "stdin is /dev/null without input; stderr shares the PTY; ONLCR would leave \"crlf\\r\""
+        );
+
+        // Planted negative: the same child over pipes sees no terminal at all.
+        let piped = run_to_end(shell(script));
+        for expected in [
+            ProcessEvent::Stdout("fd1=other".to_owned()),
+            ProcessEvent::Stdout("fd2=other".to_owned()),
+            ProcessEvent::Stderr("to-stderr".to_owned()),
+            ProcessEvent::Exited(0),
+        ] {
+            assert!(
+                piped.contains(&expected),
+                "{expected:?} missing from {piped:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_input_is_typed_without_echo_and_close_sends_one_eof() {
+        let input = ProcessInput::new();
+        let script = "[ -t 0 ] && echo stdin=tty; \
+                      while IFS= read -r line; do echo \"got:$line\"; done; echo eof";
+        let (events, _trigger, handle) = start_process(pty_shell(script).stdin(input.clone()));
+        assert_eq!(
+            events_until(&events, |event| event
+                == &ProcessEvent::Stdout("stdin=tty".to_owned())),
+            stdout(&["stdin=tty"])
+        );
+        input.try_send_line("alpha".to_owned()).unwrap();
+        input.try_send_line("🦀 beta $HOME".to_owned()).unwrap();
+        input.close();
+        assert_eq!(
+            events_until(&events, is_terminal_event),
+            [
+                stdout(&["got:alpha", "got:🦀 beta $HOME", "eof"]),
+                vec![ProcessEvent::Exited(0)]
+            ]
+            .concat(),
+            "an echoing PTY would repeat each typed line before its reply"
+        );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_input_closed_after_the_child_exits_is_not_an_error() {
+        let input = ProcessInput::new();
+        input.try_send_line("never read".to_owned()).unwrap();
+        // The child exits without reading. Closing input then finds no slave
+        // to deliver end-of-file to, which must not turn the exit into an error.
+        assert_eq!(
+            run_to_end(pty_shell("echo bye").stdin(input)),
+            [stdout(&["bye"]), vec![ProcessEvent::Exited(0)]].concat()
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_size_follows_resize_requests_before_and_during_the_run() {
+        let control = ProcessControl::new();
+        control.request_resize(100, 30).unwrap();
+        let script = "stty size <&1; trap 'stty size <&1; exit 7' WINCH; echo ready; \
+                      while :; do sleep 0.05; done";
+        let (events, _trigger, handle) = start_process(pty_shell(script).control(control.clone()));
+        assert_eq!(
+            events_until(&events, |event| event
+                == &ProcessEvent::Stdout("ready".to_owned())),
+            stdout(&["30 100", "ready"])
+        );
+        control.request_resize(120, 40).unwrap();
+        assert_eq!(
+            events_until(&events, is_terminal_event),
+            [stdout(&["40 120"]), vec![ProcessEvent::Exited(7)]].concat(),
+            "the new size must be set before SIGWINCH reaches the child"
+        );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resize_requests_coalesce_clamp_and_close_with_the_run() {
+        let control = ProcessControl::new();
+        control.request_resize(0, 0).unwrap();
+        assert_eq!(control.take_resize(), Some((1, 1)));
+        control.request_resize(80, 24).unwrap();
+        control.request_resize(132, 50).unwrap();
+        assert_eq!(control.take_resize(), Some((132, 50)));
+        assert_eq!(control.take_resize(), None);
+        control.close();
+        assert_eq!(
+            control.request_resize(80, 24),
+            Err(ProcessControlError::Closed)
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_interrupt_reaches_every_process_in_the_group() {
+        // The inner shell is a separate process in the outer one's group. A
+        // trapped SIGINT ends its `wait` at once; unsignaled, it waits out one
+        // bounded sleep, so the pipe-mode run neither leaks it nor depends on
+        // how fast a loaded host spawns processes.
+        let script = "trap 'echo parent-int; exit 4' INT; \
+                      sh -c 'trap \"echo child-int; exit 5\" INT; echo ready; \
+                      sleep 2 & wait $!'; echo unreachable";
+        let interrupted = |sub: ProcessSubscription<ProcessEvent>| {
+            let control = ProcessControl::new();
+            let (events, _trigger, handle) = start_process(sub.control(control.clone()));
+            events_until(&events, |event| {
+                event == &ProcessEvent::Stdout("ready".to_owned())
+            });
+            control.request_interrupt().unwrap();
+            let rest = events_until(&events, is_terminal_event);
+            handle.join().unwrap();
+            assert_eq!(control.status().interrupt, ProcessInterruptStatus::Sent);
+            rest
+        };
+        assert_eq!(
+            interrupted(pty_shell(script)),
+            [
+                stdout(&["child-int", "parent-int"]),
+                vec![ProcessEvent::Exited(4)]
+            ]
+            .concat()
+        );
+        // Planted negative: over pipes only the immediate child is signaled,
+        // so the inner shell finishes its loop without ever seeing SIGINT.
+        assert_eq!(
+            interrupted(shell(script)),
+            [stdout(&["parent-int"]), vec![ProcessEvent::Exited(4)]].concat()
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn pty_cancel_kills_the_whole_group_and_pipe_cancel_does_not() {
+        let script = "sleep 30 & echo \"bg=$!\"; while :; do sleep 0.05; done";
+        let canceled = |sub: ProcessSubscription<ProcessEvent>| {
+            let (events, trigger, handle) = start_process(sub);
+            let started = events_until(&events, |event| matches!(event, ProcessEvent::Stdout(_)));
+            let background = printed_pid(&started[0], "bg=");
+            trigger.stop();
+            handle.join().unwrap();
+            (background, events.try_iter().collect::<Vec<_>>())
+        };
+
+        let (background, rest) = canceled(pty_shell(script));
+        assert_eq!(rest, [ProcessEvent::Killed]);
+        assert!(
+            wait_until_gone(background),
+            "background member {background} survived its PTY run"
+        );
+
+        // Planted negative: a pipe run kills only its immediate child.
+        let (background, rest) = canceled(shell(script));
+        assert_eq!(rest, [ProcessEvent::Killed]);
+        let survived = !process_is_gone(background);
+        let _ = rustix::process::kill_process(
+            rustix::process::Pid::from_raw(background).expect("positive PID"),
+            rustix::process::Signal::KILL,
+        );
+        assert!(survived, "the pipe-mode contrast no longer holds");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn pty_leader_exit_ends_lingering_group_members_and_output() {
+        let start = Instant::now();
+        let events = run_to_end(pty_shell("sleep 30 & echo \"bg=$!\"; echo done"));
+        // A member holding the PTY open would otherwise delay end-of-file by 30 s.
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "run took {:?}",
+            start.elapsed()
+        );
+        assert_eq!(
+            events[1..],
+            [stdout(&["done"]), vec![ProcessEvent::Exited(0)]].concat()
+        );
+        let background = printed_pid(&events[0], "bg=");
+        assert!(
+            wait_until_gone(background),
+            "background member {background} outlived its leader"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_delivers_ten_thousand_lines_in_order_like_pipes() {
+        let expected: Vec<_> = (1..=10_000)
+            .map(|line| ProcessEvent::Stdout(line.to_string()))
+            .chain([ProcessEvent::Exited(0)])
+            .collect();
+        for (mode, sub) in [
+            ("pty", pty_shell("seq 1 10000")),
+            ("pipe", shell("seq 1 10000")),
+        ] {
+            let start = Instant::now();
+            let events = run_to_end(sub);
+            eprintln!("{mode}: 10000 lines in {:?}", start.elapsed());
+            assert!(
+                events == expected,
+                "{mode} run delivered {} events",
+                events.len()
+            );
+        }
     }
 }

@@ -11,15 +11,17 @@
 //! child, and a second press within two seconds quits. F5 starts a fresh run
 //! after final output and confirmed child cleanup. Active input treats Q as text.
 //!
-//! `--log-mode=sanitized|sgr-only|raw`, `--ui-height=N`,
+//! `--pty`, `--log-mode=sanitized|sgr-only|raw`, `--ui-height=N`,
 //! `--exit-when-child-exits`, and `--exit-after-ms=N` select session behavior.
+//! `--pty` gives the child a pseudo-terminal and its own process group, which
+//! Ctrl-C interrupts and quitting kills.
 //! CLI log mode and deadline override `FTUI_AGENT_SHELL_LOG_MODE` and
 //! `FTUI_AGENT_SHELL_EXIT_AFTER_MS`. Raw mode trusts child terminal commands.
 //! Pending prompts are sanitized previews; only completed lines enter logs.
 //! Three-row input remains usable without a border consuming its only row.
 //! `[stdin queued]` reports admission, not acknowledgment by the child.
-//! Process-tree cleanup, binary streaming, and physical hyperlink activation
-//! are not supplied by this example. Named example tracing is not installed.
+//! Without `--pty`, process-tree cleanup is not supplied; binary streaming and
+//! physical hyperlink activation never are. Named example tracing is not installed.
 
 use ftui::agent_shell::{CHILD_LINK_RETENTION_LINES, StreamingHarness, StreamingOptions};
 use ftui::{App, ScreenMode};

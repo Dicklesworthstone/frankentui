@@ -1,4 +1,5 @@
 #![cfg_attr(unix, feature(unix_send_signal))]
+#![cfg_attr(unix, feature(process_setsid))]
 #![cfg_attr(target_os = "linux", feature(linux_pidfd))]
 #![forbid(unsafe_code)]
 

@@ -29,7 +29,10 @@
 //! the canonical agent shell enables it by default.
 //! Ctrl-C requests an interrupt; press again within two seconds to quit.
 //! F5 restarts after final output arrives and child cleanup is confirmed.
-//! Quitting stops the immediate child, not an entire descendant tree.
+//! Over pipes, quitting stops the immediate child, not its descendants.
+//! `--pty` runs the child on a pseudo-terminal sized to the terminal, in its
+//! own session: `isatty` holds, stderr arrives as output, Ctrl-C signals the
+//! whole process group, and quitting or child exit kills what remains of it.
 //! Three-row chrome reserves status/input/hint rows, without an input border
 //! that would consume the editor's only row. The input echo reports admission
 //! as `[stdin queued]`; it does not claim that the child has read those bytes.
@@ -210,6 +213,7 @@ pub struct StreamingOptions {
     log_mode: SanitizeMode,
     ui_height: u16,
     exit_after: Option<Duration>,
+    pty: bool,
 }
 
 impl Default for StreamingOptions {
@@ -221,6 +225,7 @@ impl Default for StreamingOptions {
             log_mode: SanitizeMode::Strip,
             ui_height: 15,
             exit_after: None,
+            pty: false,
         }
     }
 }
@@ -319,6 +324,7 @@ impl StreamingOptions {
             match argument.as_str() {
                 "--exit-when-child-exits" => options.exit_when_child_exits = true,
                 "--stdin" => options.stdin = true,
+                "--pty" => options.pty = true,
                 "--ui-height" | "--exit-after-ms" => {
                     let value = arguments.next().ok_or_else(|| {
                         std::io::Error::new(
@@ -365,9 +371,9 @@ impl StreamingOptions {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         if require_command {
-                            "usage: agent_shell [--exit-when-child-exits] [--log-mode=sanitized|sgr-only|raw] [--ui-height=N] [--exit-after-ms=N] -- COMMAND ARGS..."
+                            "usage: agent_shell [--pty] [--exit-when-child-exits] [--log-mode=sanitized|sgr-only|raw] [--ui-height=N] [--exit-after-ms=N] -- COMMAND ARGS..."
                         } else {
-                            "usage: streaming [--stdin] [--exit-when-child-exits] [--log-mode=sanitized|sgr-only|raw] [--ui-height=N] [--exit-after-ms=N] [-- COMMAND ARGS...]"
+                            "usage: streaming [--stdin] [--pty] [--exit-when-child-exits] [--log-mode=sanitized|sgr-only|raw] [--ui-height=N] [--exit-after-ms=N] [-- COMMAND ARGS...]"
                         },
                     ));
                 }
@@ -403,6 +409,12 @@ impl StreamingOptions {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "--stdin requires a command after --",
+            ));
+        }
+        if options.pty && options.command.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "--pty requires a command after --",
             ));
         }
         if options.command.is_empty() {
@@ -468,6 +480,13 @@ pub enum Msg {
     },
     /// Poll control completion and session time.
     PollControl,
+    /// The terminal's new size; a `--pty` child's PTY follows it.
+    Resize {
+        /// Columns.
+        width: u16,
+        /// Rows.
+        height: u16,
+    },
     /// A terminal event that does not change this model.
     Noop,
 }
@@ -477,6 +496,7 @@ impl From<Event> for Msg {
         match e {
             Event::Key(k) => Msg::Key(k),
             Event::Paste(paste) => Msg::Paste(paste),
+            Event::Resize { width, height } => Msg::Resize { width, height },
             _ => Msg::Noop,
         }
     }
@@ -685,7 +705,11 @@ impl StreamingHarness {
         let message = match &status.interrupt {
             ProcessInterruptStatus::Idle => None,
             ProcessInterruptStatus::Pending => Some("Interrupt pending.".to_owned()),
-            ProcessInterruptStatus::Sent => Some("SIGINT sent to the immediate child.".to_owned()),
+            ProcessInterruptStatus::Sent => Some(if self.options.pty {
+                "SIGINT sent to the child's process group.".to_owned()
+            } else {
+                "SIGINT sent to the immediate child.".to_owned()
+            }),
             ProcessInterruptStatus::Failed(error) => Some(format!("Interrupt failed: {error}")),
             ProcessInterruptStatus::Canceled => {
                 Some("Interrupt canceled before sending.".to_owned())
@@ -882,6 +906,13 @@ impl Model for StreamingHarness {
                     return self.apply_control_status(control.status());
                 }
             }
+            Msg::Resize { width, height } if self.options.pty => {
+                // A finished run refuses resizes; its successor starts at the
+                // terminal's size.
+                if let Some(control) = &self.process_control {
+                    let _ = control.request_resize(width, height);
+                }
+            }
             Msg::Process { event, .. } => {
                 let status = match event {
                     ProcessEvent::StdoutPartial(text) => {
@@ -994,12 +1025,13 @@ impl Model for StreamingHarness {
         };
         let lines_text = if self.process_control.is_some() {
             format!(
-                "L:{} B:{} E:{} {:.1}s {}",
+                "L:{} B:{} E:{} {:.1}s {}{}",
                 self.line_count,
                 self.byte_count,
                 self.stderr_count,
                 self.run_elapsed.as_secs_f64(),
-                self.options.log_mode_name()
+                self.options.log_mode_name(),
+                if self.options.pty { " pty" } else { "" }
             )
         } else {
             format!("Lines: {}", self.line_count)
@@ -1078,6 +1110,7 @@ impl Model for StreamingHarness {
                 })
                 .args(arguments.iter().cloned())
                 .partial_output(true)
+                .pty(self.options.pty)
                 .control(control.clone());
                 if let Some(input) = &self.process_input {
                     subscription = subscription.stdin(input.clone());
@@ -1639,6 +1672,97 @@ mod tests {
                 std::io::ErrorKind::InvalidInput
             );
         }
+    }
+
+    #[test]
+    fn pty_option_needs_a_child_and_reaches_its_subscription_and_status() {
+        let parse = |arguments: &[&str]| {
+            StreamingOptions::parse_agent_shell(
+                arguments.iter().map(|argument| (*argument).to_owned()),
+                None,
+                None,
+            )
+        };
+        let pty = parse(&["--pty", "--", "sh", "--pty"]).unwrap();
+        assert!(pty.pty);
+        assert_eq!(pty.command, ["sh", "--pty"], "child arguments stay literal");
+        let piped = parse(&["--", "sh", "--pty"]).unwrap();
+        assert!(!piped.pty);
+        for error in [
+            parse(&["--pty"]).unwrap_err(),
+            StreamingOptions::parse(["--pty".to_owned()], None, None).unwrap_err(),
+        ] {
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+
+        // Same command and run handles: only PTY mode tells the identities apart.
+        let mut pty_model = StreamingHarness::new(pty);
+        let mut piped_model = StreamingHarness::new(piped);
+        piped_model.process_control = pty_model.process_control.clone();
+        piped_model.process_input = pty_model.process_input.clone();
+        assert_ne!(
+            pty_model.subscriptions()[0].id(),
+            piped_model.subscriptions()[0].id()
+        );
+
+        let status = |model: &mut StreamingHarness| {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(100, 3, &mut pool);
+            model.view(&mut frame);
+            (0..100)
+                .map(|x| {
+                    frame
+                        .buffer
+                        .get(x, 0)
+                        .unwrap()
+                        .content
+                        .as_char()
+                        .unwrap_or(' ')
+                })
+                .collect::<String>()
+        };
+        assert!(status(&mut pty_model).contains("sanitized pty"));
+        assert!(!status(&mut piped_model).contains("pty"));
+    }
+
+    #[test]
+    fn pty_mode_reports_group_interrupts_and_takes_resize_messages() {
+        assert!(matches!(
+            Msg::from(Event::Resize {
+                width: 132,
+                height: 50
+            }),
+            Msg::Resize {
+                width: 132,
+                height: 50
+            }
+        ));
+        let mut model = StreamingHarness::new(
+            StreamingOptions::parse_agent_shell(
+                ["--pty", "--", "cat"].map(str::to_owned),
+                None,
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            model.update(Msg::Resize {
+                width: 132,
+                height: 50
+            }),
+            Cmd::None
+        ));
+        // A supplied snapshot, not a signal: the wording names the group.
+        assert!(matches!(
+            model.apply_control_status(ProcessControlStatus {
+                pid: Some(4321),
+                closed: false,
+                can_restart: false,
+                interrupt: ProcessInterruptStatus::Sent,
+            }),
+            Cmd::Log { text, mode: SanitizeMode::Strip }
+                if text == "[process control] SIGINT sent to the child's process group."
+        ));
     }
 
     #[test]

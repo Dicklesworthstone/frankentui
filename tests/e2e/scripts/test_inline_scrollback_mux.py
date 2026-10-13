@@ -14,6 +14,13 @@ agent_shell with the multiplexer identity removed, once taking the DECSTBM
 scroll-region path and once with overlay forced (`FTUI_SCROLL_REGION=0`), so
 both inline transports are measured in one real emulator.
 
+Every multiplexer also runs the child under `agent_shell --pty`, gated on
+`[ -t 0 ] && [ -t 1 ] && [ -t 2 ]`: its lines exist only if the child saw a
+terminal on all three. Under tmux, two cases quit agent_shell through its
+session deadline while the child's background `sleep 60` runs, then probe that
+PID before the pane closes (the pane's SIGHUP would blur the contrast): with
+`--pty` it must be gone, over pipes it survives (the control, killed after).
+
 A multiplexer that is not installed FAILS its cases as
 `missing_prerequisite` unless it is listed in `FTUI_E2E_MUX_OUT_OF_SCOPE`
 (comma separated; logged). Nothing outside the output directory is written,
@@ -95,6 +102,20 @@ def analyse(transcript: str, expected: int, is_agent: bool) -> dict:
         "done_marker_on_own_row": done_clean,
         "final_status_current": final_status,
         "ok": ok,
+    }
+
+
+ORPHAN = re.compile(r"^ORPHAN=(gone|alive)\s*$")
+
+
+def analyse_quit(transcript: str, expect_orphan: bool) -> dict:
+    """Check the pane shell's probe of the child's background process."""
+    probes = [m.group(1) for r in transcript.splitlines() if (m := ORPHAN.match(r))]
+    orphan = probes[0] if len(probes) == 1 else None
+    return {
+        "orphan": orphan,
+        "expected_orphan": "alive" if expect_orphan else "gone",
+        "ok": orphan == ("alive" if expect_orphan else "gone"),
     }
 
 
@@ -282,32 +303,55 @@ def main() -> int:
     n = args.lines
     child = f"seq 1 {n}"
     agent_cmd = f"{shlex.quote(str(agent))} --exit-when-child-exits -- {child}"
+    tty_child = shlex.quote(f"[ -t 0 ] && [ -t 1 ] && [ -t 2 ] && {child}")
+    pty_cmd = f"{shlex.quote(str(agent))} --pty --exit-when-child-exits -- sh -c {tty_child}"
     # The trailing sleep lets the multiplexer drain the pty before the
     # pane's process exits (tmux drops unread output of a dead pane).
     done = f"echo {DONE_MARKER} rc=$?; sleep 1"
 
+    def quit_cmd(case: str, pty: bool) -> str:
+        """agent_shell quits at its deadline; the pane shell then probes the
+        child's background PID, retrying while a killed one awaits reaping."""
+        pid_file = shlex.quote(str(out / f"{case}.{RUN_ID}.pid"))
+        quit_child = shlex.quote(
+            f"sleep 60 & echo $! > {pid_file}; echo started; while :; do sleep 0.1; done")
+        mode = "--pty " if pty else ""
+        return (f"{shlex.quote(str(agent))} {mode}--exit-after-ms=2000 -- sh -c {quit_child}; "
+                f"pid=$(cat {pid_file}); for i in 1 2 3 4 5 6 7 8 9 10; do "
+                f"kill -0 \"$pid\" 2>/dev/null || break; sleep 0.2; done; "
+                f"if kill -0 \"$pid\" 2>/dev/null; then echo ORPHAN=alive; kill -9 \"$pid\"; "
+                f"else echo ORPHAN=gone; fi; {done}")
+
+    # kind: "control" and "agent" are scrollback cases; ("quit", orphan
+    # expected) probes process-tree cleanup when agent_shell quits.
     cases = {
         "tmux": [
-            ("control_seq", f"{child}; {done}", False),
-            ("agent_shell", f"{agent_cmd}; {done}", True),
+            ("control_seq", f"{child}; {done}", "control"),
+            ("agent_shell", f"{agent_cmd}; {done}", "agent"),
+            ("agent_shell_pty", f"{pty_cmd}; {done}", "agent"),
             # TERM=tmux* alone also counts as tmux identity (mux wins), so
             # both markers go to reach the DECSTBM path inside tmux;
             # FTUI_SCROLL_REGION=1 skips the 150 ms CPR self-test, which a
             # loaded host can time out (silently falling back to overlay).
             ("agent_shell_no_mux_identity_region",
              f"env -u TMUX -u TMUX_PANE TERM=xterm-256color FTUI_SCROLL_REGION=1 "
-             f"{agent_cmd}; {done}", True),
+             f"{agent_cmd}; {done}", "agent"),
             ("agent_shell_no_mux_identity_overlay",
              f"env -u TMUX -u TMUX_PANE TERM=xterm-256color FTUI_SCROLL_REGION=0 "
-             f"{agent_cmd}; {done}", True),
+             f"{agent_cmd}; {done}", "agent"),
+            ("agent_shell_pty_quit", quit_cmd("agent_shell_pty_quit", True), ("quit", False)),
+            ("agent_shell_pipe_quit_control", quit_cmd("agent_shell_pipe_quit_control", False),
+             ("quit", True)),
         ],
         "screen": [
-            ("control_seq", f"{child}; {done}", False),
-            ("agent_shell", f"{agent_cmd}; {done}", True),
+            ("control_seq", f"{child}; {done}", "control"),
+            ("agent_shell", f"{agent_cmd}; {done}", "agent"),
+            ("agent_shell_pty", f"{pty_cmd}; {done}", "agent"),
         ],
         "zellij": [
-            ("control_seq", f"{child}; {done}", False),
-            ("agent_shell", f"{agent_cmd}; {done}", True),
+            ("control_seq", f"{child}; {done}", "control"),
+            ("agent_shell", f"{agent_cmd}; {done}", "agent"),
+            ("agent_shell_pty", f"{pty_cmd}; {done}", "agent"),
         ],
     }
     drivers = {"tmux": Tmux, "screen": Screen, "zellij": Zellij}
@@ -331,13 +375,14 @@ def main() -> int:
             version = driver.version()
             try:
                 driver.start()
-                for case, cmd, is_agent in cases[mux]:
+                for case, cmd, kind in cases[mux]:
                     started = time.monotonic()
                     try:
                         text = driver.capture(case, cmd, args.timeout)
                         (out / f"{mux}.{case}.{RUN_ID}.txt").write_text(text)
-                        row = {"mux": mux, "version": version, "case": case,
-                               **analyse(text, n, is_agent)}
+                        checks = (analyse_quit(text, kind[1]) if isinstance(kind, tuple)
+                                  else analyse(text, n, kind == "agent"))
+                        row = {"mux": mux, "version": version, "case": case, **checks}
                         row["status"] = "pass" if row.pop("ok") else "fail"
                     except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as err:
                         row = {"mux": mux, "version": version, "case": case,

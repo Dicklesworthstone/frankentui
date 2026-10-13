@@ -104,6 +104,9 @@ FTUI_DEMO_SCREEN=18 cargo run -p ftui-demo-showcase  # Visual Effects
 
 # Agent shell with a real child process
 cargo run -p ftui --example agent_shell -- --exit-when-child-exits -- seq 1 10000
+
+# The child on a pseudo-terminal (isatty, own process group; Unix)
+cargo run -p ftui --example agent_shell -- --pty --log-mode=sgr-only --exit-when-child-exits -- ls --color=auto
 ```
 
 Run `cargo run -p ftui-demo-showcase -- --help` for screen numbers and options.

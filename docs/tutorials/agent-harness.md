@@ -23,6 +23,7 @@ cargo run -p ftui-harness --example streaming
 cargo run -p ftui --example agent_shell -- --exit-when-child-exits -- seq 1 10000
 cargo run -p ftui --example agent_shell -- --exit-when-child-exits -- cat
 cargo run -p ftui --example agent_shell -- -- cat
+cargo run -p ftui --example agent_shell -- --pty --log-mode=sgr-only --exit-when-child-exits -- ls --color=auto
 ```
 
 `agent_shell` requires a command after `--`. It defaults to three UI rows,
@@ -34,6 +35,22 @@ stays open after exit. Use `--ui-height=15` to show the retained log viewer abov
 the input row. The streaming demo retains its 15-row default and requires
 `--stdin` to enable child input. Both executables assemble the same model through
 `App`; neither calls the other's entry point.
+
+`--pty` (Unix) runs the child on a pseudo-terminal through
+`ProcessSubscription::pty(true)`, so programs that check `isatty` behave as they
+do in a terminal: color, line-buffered output, prompts. stdout and stderr share
+the PTY, so stderr lines arrive as ordinary output (`E:` stays 0); stdin is the
+PTY too, each queued line is typed input, and Ctrl-D sends one end-of-file. The
+line discipline holds at most 4095 bytes of one unfinished input line on Linux.
+Echo is off and LF stays LF unless the child changes its terminal settings. The
+PTY starts at the terminal's size and follows resizes (SIGWINCH reaches the
+child's group). The child leads its own session without a controlling terminal,
+so it cannot write to the host terminal through `/dev/tty`. Ctrl-C sends SIGINT
+to its whole process group, as a terminal would; when the child exits, or the
+shell quits, every process left in that group is killed, so a background job
+cannot hold output open or outlive the session. A descendant that starts its
+own session or process group is not followed. `tests/e2e/scripts/test_inline_scrollback_mux.py`
+checks this under tmux, GNU screen and zellij.
 
 ## Part 1: Hello World Harness (< 50 LOC)
 
@@ -227,7 +244,8 @@ control, pending requests and failed signals produce explicit feedback.
 `SIGINT sent` means the OS accepted the signal operation, not that a handler
 acknowledged it. A child that handles the signal can keep reading queued input,
 and requesting EOF does not disable interrupts. On an exited child, Ctrl-C or
-`q` quits immediately. Signals target the immediate child, not its descendants.
+`q` quits immediately. Over pipes, signals target the immediate child, not its
+descendants; with `--pty` they target the child's process group.
 
 Without `--exit-when-child-exits`, press F5 after the terminal event to rerun the
 same command and arguments. Restart also requires confirmed child cleanup;
@@ -239,7 +257,7 @@ The model preserves the log viewer and unsubmitted draft, emits one
 `[process] RESTART` boundary, resets per-run counters and creates fresh control
 and input handles. Each process event carries its run generation, so late
 stdout, stderr or terminal events from the previous run cannot change the new
-run. This is same-command restart; process-tree control is unsupported.
+run. This is same-command restart; process-tree control requires `--pty`.
 
 The runtime's shared subscription queue holds at most 256 messages, and a loop
 iteration drains at most 64 before returning to terminal work. After a full
@@ -294,10 +312,12 @@ Natural exit waits for captured output delivery; timeout/cancellation can
 interrupt that drain, and a full canceled queue may prevent final-status
 delivery. A descendant that keeps a captured pipe open can delay natural
 completion indefinitely unless a timeout or cancellation interrupts the drain.
-The example stops the immediate child. A descendant can also retain stdin and
-keep an input worker blocked after cancellation; a blocked write may deliver a
-prefix before it returns. Byte-transparent partial log output, descendant cleanup and the
-remaining CLI/registry workflow are still unfinished agent-shell work.
+Over pipes the example stops only the immediate child. A descendant can also
+retain stdin and keep an input worker blocked after cancellation; a blocked
+write may deliver a prefix before it returns. `--pty` closes both gaps for
+descendants that stay in the child's process group: the group is killed before
+the child is reaped. Byte-transparent partial log output and the remaining
+CLI/registry workflow are still unfinished agent-shell work.
 
 Choose a log policy in the model's returned command:
 
