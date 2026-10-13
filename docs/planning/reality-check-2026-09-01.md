@@ -1,6 +1,209 @@
-# FrankenTUI Reality Check and Bridge Plan (updated 2026-09-10)
+# FrankenTUI Reality Check and Bridge Plan (updated 2026-10-13)
 
-## Current assessment: 2026-09-08, after publication of 0.7.0
+## Current assessment: 2026-10-13, at v0.9.0 (`befbd247`)
+
+### Verdict
+
+The kernel works, and this pass ran it rather than reading about it. The whole workspace compiles warning-free
+under `cargo check`, strict Clippy and strict rustdoc. 26,288 of 26,293 default tests pass. All 45 showcase
+screens start, render real UI and restore the terminal under a PTY. The README's front-page example compiles
+by construction, and all 17 library crates are on crates.io at 0.9.0. The September 1 failures that made the
+project unusable — a non-compiling example, no default backend, flicker-free off on common terminals, a
+hanging test binary — are fixed.
+
+It does not yet deliver the vision, for four reasons that have replaced the old ones:
+
+1. **The primary target fails where it is used.** In real tmux 3.6 a plain `seq 1 500` leaves 500 of 500 lines
+   in pane history; `agent_shell` streaming the same child leaves **0 of 500**. Inside tmux, screen, zellij
+   and WezTerm, and on any terminal that misses the 150 ms CPR self-test, the writer uses Overlay Redraw and
+   rewrites one row per log line, so scrollback never accumulates. `bd-th0p6` diagnosed this in August and was
+   closed after a cosmetic fix. No bead tracked it until today (G48).
+2. **Verification is not running.** GitHub Actions has been off since September 6. The only full DSR quality
+   run since then, the v0.9.0 candidate wave of October 2, failed 4 of 5 checks on infrastructure: RCH
+   refused fmt, clippy's completion went unconfirmed, nextest rejected an RCH `--config` argument, and doc was
+   terminated. That wave also ran through RCH, which AGENTS.md forbids. v0.9.0 shipped without a recorded
+   full clippy, test or doc pass.
+3. **The truth gates pass without establishing truth.** `make gates` is green. Yet the reachability gate
+   matches bare names in comments and strings, so `ftui-core::animation` counts as used because a widget
+   has its own `animation` module. The README check only inspects sections carrying a literal marker, and a
+   `path:` proof marks a theorem row "proven". On top of that, one E2E script in `run_all` runs zero tests and
+   reports a stable checksum. About 70 README statements are false or contradicted elsewhere in README,
+   including headline features: shadow-run lane validation does not exist, and "80+ widgets" in
+   ftui-widgets is really 70 implementations on 55 types.
+4. **The swarm has stopped and the tracker no longer steers.** No open bead has been touched since
+   September 24. 35 in-progress claims are 24–37 days idle and hidden from `br ready`. bv's top two picks
+   are already done. Three owner questions have waited since early September.
+
+The "alien artifact" layer is now honestly labelled where it is quarantined ("Where it runs: nowhere"), but
+unlabelled restatements elsewhere still present the same code as live. Examples: GRAPA, Count-Min/PAC-Bayes,
+the queueing scheduler, the degradation diagram, and the SAT tile skip, which the default certified diff
+path never runs (G49).
+
+### What was run (2026-10-13)
+
+All commands ran locally on the shared 128-core host (load average 33–186) against `befbd247` with a clean
+tree. They are **investigative evidence, not DSR acceptance**.
+
+| Check | Result |
+|---|---|
+| `make gates` | pass (23 s); ledger 152 rows: 56 proven, 56 retracted, 34 pending-doc, 6 pending-code |
+| `cargo fmt --check` | pass |
+| `cargo check --workspace --all-targets` | pass (596 s); only the known `nix 0.28` future-incompat note |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass (388 s) |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass (238 s) |
+| `cargo nextest run --workspace --no-fail-fast` | 26,293 run: **26,288 pass, 4 fail, 1 timeout**, 9 skipped (411 s). In isolation 3×: the 4 failures pass (load-sensitive: 2 pane-splitter PTY drags, a mermaid cache count, a subscription idle-wait); `property_resize_never_panics` times out every time (154 s) → `.6.39` |
+| PTY, 45 screens (alt, deterministic, 2.5 s each) | 45/45 exit 0, no panic, alt enter = leave, cursor visible, ICANON/ECHO restored; `pty_canonicalize` renders show real UI |
+| PTY, inline dashboard / q-quit / `minimal_inline` / `getting_started` / harness `minimal` / `agent_shell` 10k lines | all exit 0, terminal restored |
+| `FTUI_SYNC_OUTPUT=1` (alt dashboard, VFX, inline, agent_shell) | DEC 2026 brackets balanced (31/31, 189/189, 31/31, 5/5) |
+| Scrollback per identity (`agent_shell … seq 1 500`) | forced scroll region: DECSTBM + 501 LF (works); no-CPR PTY, TMUX identity, kitty without CPR reply: 0 LF, 501 single-row overwrites |
+| Real tmux 3.6 (private socket) | control `seq`: 500/500 in history; agent_shell: **0/500**, `history_size` 0; final status stale (`L:448` of 500); teardown leaves an uncleared row |
+| Real tmux, raw `CSI 1;27 r` + 100 LF | 100/100 lines in history — the mux veto on DECSTBM is not justified for current tmux |
+| `cargo run -p ftui-harness` (README twice) | fails: "could not determine which binary to run" (3 bins, no `default-run`) |
+| DSR history | only `frankentui-wave-w1` (2026-10-02, failed 4/5 on infrastructure) and a fmt-only rerun since 2026-09-24 |
+
+Five read-only audit agents checked about 120 README claims against the code (render, runtime/math,
+widgets/text/layout/input/i18n/a11y, showcase/web/distribution, and stubs/dead code/test theater). The most
+consequential findings were re-verified by hand: the certified-diff tautology, the evidence-sink stdout
+default, the Shadow no-op, the PID floor, the byte/char palette bug, the zero-test schedule_trace script, the
+reachability regex, and the harness command.
+
+**Disclosure.** `cargo` on this host is an RCH shim, and the Claude Code hook rewrites command lines that
+contain `cargo`. Twice this session a cargo command reached `rch exec` despite the AGENTS.md prohibition.
+The first was the initial `cargo check`, queued remotely for about 4 minutes and then killed. The second was
+`cargo run -p ftui-harness`, which failed remotely in 1.9 s before compiling anything. Every result above
+came from local execution with `RCH_CARGO_WRAPPER_BYPASS=1` set inside script files. UBS was not run
+(AGENTS.md no-deletion constraint).
+
+### The five questions
+
+1. **What works?** Kernel, facade, default backend selection, the native terminal lifecycle (including
+   SIGTSTP), inline mode with a DECSTBM scroll region, sync output where policy allows it, the 45-screen
+   showcase, the agent_shell model on a terminal that verifies the scroll region, the Mondrian conformal
+   frame gate (on by default), the KeyMap system, TextArea mouse, i18n formatting, the a11y tree collection,
+   crates.io and GitHub release distribution, and the deployed browser demo (hashes match its manifest).
+2. **What does not?**
+   - Scrollback in multiplexers (G48).
+   - Verification infrastructure (`.6.37`).
+   - Shadow/lane validation (`.30.6`).
+   - Default-path diff optimizations (G49).
+   - The one-writer rule: the evidence sink can write to stdout, and `eprintln!` fires on task panic (`.33.4`).
+   - Runtime contract details: `Cmd::tick` is a recurring rate; LongPress needs a tick; the PID floor is
+     SimpleBorders; the fairness guard does the opposite of its doc; EffectQueue memory is unbounded (G51).
+   - An OS accessibility bridge (`.13.10`).
+   - An in-repo browser renderer (`.29.*`).
+   - ~70 README statements (`.5.8`).
+3. **What blocks?**
+   - A verification path that actually runs on a native host without RCH (`.6.37`).
+   - A design decision for multiplexer scrollback (`.47.1`).
+   - Owner answers (`.49.3`).
+   - The idle swarm (`.49.1`).
+   None of these is a hard technical wall.
+4. **Would finishing every open bead close the gap?** Before this pass, no: G48 had no bead (its predecessor
+   was closed), and G49, G51, the gate-soundness and vacuous-test problems, and the AGENTS.md dangling
+   reference were untracked. With the 43 beads filed today, yes for everything found. That holds only if
+   closes require the stated tests. Bead count is not the measure; the vision scorecard (`.42.6`) and the
+   flagship journey (`.42.7`) are.
+5. **What had no bead?** See "New gaps" below. Every item now has an owner bead.
+
+### Vision checklist: rows that changed since 2026-09-08
+
+Rows not listed keep their 2026-09-08 status (historical table below). Bead prefix `bd-g00-root-epic-ewths`
+omitted.
+
+| # | Promise | 2026-10-13 status | Evidence / owner |
+|---|---|---|---|
+| 1 | Inline scrollback, stable chrome | **PARTIAL (critical)** — works with a verified DECSTBM region; in muxes and no-CPR terminals only the latest log line survives | real tmux 0/500; G48 `.47` |
+| 3 | One terminal writer | PARTIAL — evidence sink stdout default, task-panic `eprintln!`, no-op lock on native-only builds | `.33.4` |
+| 4 | Restore terminal on exit/panic | WORKING for exits exercised (45 screens + examples, termios restored); SIGTSTP on both backends; inline teardown leaves an uncleared row | PTY probe; `.47.6` |
+| 6 | Accurate widget inventory | **FALSE as stated** — 70 impls / 55 types in ftui-widgets (93 workspace) | `.5.8`, `.5.11` |
+| 8 | Reproducible browser delivery | PARTIAL — live site matches manifest; renderer only in git history; browser matrix unproven | `.29.*`, `.49.3` |
+| 9 | Bayesian diff selection | WORKING (on by default), but it prices span scans the default path never performs | G49 `.48` |
+| 10 | BOCPD | DECIDED: opt-in after losing the differential replay 6/6 (2026-09-23) | `bd-h8l3d`, `bd-i25qn` |
+| 12 | Anytime-valid budget monitoring | **NOT AS CLAIMED** — fixed λ; budget.rs disclaims Ville; README restates wealth/GRAPA as live | `.43.3`, `.43.5`, `.5.8` |
+| 15 | Allocation CUSUM | WORKING in production (OR-combined, diagnostic only); README says AND and "experimental" | `.5.8` |
+| 20 | Width cache | PARTIAL — S3-FIFO on `grapheme_width`; `display_width` bypasses it for most non-ASCII text | `.31.11` |
+| 27/28 | Macro / simulator | WORKING; `Cmd::batch` and SetTickStrategy semantics differ | `.50.5`, `.50.6` |
+| 29 | Frame arena | WORKING (reset per frame); used by TextInput and the dashboard only | `.5.8` |
+| 31 | Synchronized output | WORKING where policy enables it (brackets balanced); off in muxes by policy | PTY probe |
+| 35 | Test infrastructure | PARTIAL — 26,288/26,293 pass; one consistent timeout; vacuous scripts and assertion-free tests | `.6.38`, `.6.39` |
+| 37 | PID degradation | PARTIAL — PID (not PI); default floor SimpleBorders | `.50.4` |
+| 38 | Input fairness | WIRED, but the intervention contradicts its doc and rarely fires | `.50.3` |
+| 48 | Queue scheduling | Opt-in only (default Spawned, aging 0); EffectQueue memory unbounded | `.50.1`, `.5.8` |
+| 52 | Lanes / shadow execution | **NOT IMPLEMENTED** — Shadow only logs; Legacy ≡ Structured | `.30.6` |
+| 60 | Gestures | PARTIAL — LongPress requires a tick rate | `.50.2` |
+| 61 | Input protocols | PARTIAL — DCS discarded, APC → Alt+_, SGR-Pixels unparsed | `.27.*` |
+| 66 | Published libraries | WORKING at 0.9.0 (17/17 on crates.io); GitHub release ships 6 showcase binaries README doesn't mention | `.5.8` |
+| 68 | Doctor verification | PARTIAL — E2E exits 0 without vhs/ffmpeg; codegen emits silent placeholders; coverage still failing | `.28.6`, `.28.8` |
+| 70 | Mandatory quality gates | **NOT RUNNING** on any schedule; last DSR wave failed on infrastructure | `.6.37`, `.42.6` |
+
+New rows: 72 "README facts are generated, not typed" (`.5.11`); 73 "the truth gates are sound" (`.5.9`);
+74 "the tracker reflects the tree" (G50 `.49`).
+
+### New gaps and where they live (bead prefix `bd-g00-root-epic-ewths` omitted)
+
+| Gap | Severity | Beads |
+|---|---|---|
+| G48 Inline log output must reach scrollback in every strategy | Critical | `.47` epic; `.47.1` measure+ADR, `.47.2` terminal-model oracle (test-first), `.47.3` implementation (blocked by .1/.2), `.47.4` real-mux E2E, `.47.5` docs now, `.47.6` agent_shell final-frame/teardown |
+| Verification does not run; v0.9.0 shipped unverified | Critical | `.6.37` (RCH×nextest, DSR without RCH, full receipt), `.6.38` (vacuous E2E/tests), `.6.39` (nextest failures/timeout) |
+| G49 Default diff path bypasses span/SAT/block scans behind a tautological certificate | Major | `.48` epic; `.48.1` paired bench (+ plan §0.12 budgets), `.48.2` independent witness/fastest path, `.48.3` default-path proptests, `.48.4` docs |
+| G50 Tracker integrity and swarm restart | Major | `.49` epic; `.49.1` stale claims, `.49.2` reconcile done-but-open, `.49.3` owner questions, `.49.4` freshness report |
+| G51 Runtime contract mismatches | Major | `.50` epic; `.50.1` EffectQueue bound, `.50.2` LongPress, `.50.3` fairness guard, `.50.4` degradation floor, `.50.5` Cmd semantics + ActionMapper, `.50.6` silent no-op commands |
+| Truth gates unsound | Major | `.5.9` |
+| README second truth pass (~70 items) | Major | `.5.8` (now blocks `.5.5`), `.5.11` generated facts |
+| AGENTS.md dangling Rule 0.5, RCH/cargo-shim reality | Major | `.5.10` |
+| Shadow/lane validation does not exist | Major | `.30.6` (blocked on owner `.49.3`) |
+| One-writer violations | Major | `.33.4` |
+| `cargo run -p ftui-harness` broken | Major (docs-facing) | `.40.4` |
+| Doctor vacuous E2E / silent codegen placeholders | Major | `.28.8` |
+| Widget features stated but missing; palette non-ASCII bug | Minor | `.23.22`, `.23.21` |
+| Width cache bypass | Minor | `.31.11` |
+| Evidence/telemetry contract | Minor | `.26.8` |
+| Math errors (rough path invariance, alpha-investing, GRAPA objective) | Minor (experimental) | `.43.5` |
+| agent_shell PTY child mode + process group | Major for the primary target | `.32.5` |
+| Executable vision scorecard; flagship journey acceptance | Major (ambition) | `.42.6`, `.42.7` |
+
+### Ambition rounds and refinement (applied to the beads, not a new plan)
+
+- **Round 1** asked whether this delivers the vision or only fixes defects. It added the flagship
+  agent-harness journey (`.42.7`): real tmux, screen and zellij; 100k mixed and hostile lines from a PTY
+  child; typed input, a resize storm, Ctrl-C and restart; every line in history exactly once. It also added
+  the plan's §0.12 present budgets, measured on the default path in a release lane (`.48.1`).
+- **Round 2** asked what stops this class of drift from coming back. It added README/AGENTS numbers generated
+  from the tree and gated (`.5.11`), plus a stale-claim and false-close freshness report (`.49.4`).
+- **Round 3** looked for mathematics with real payoff. Two additions:
+  - A scroll-aware repaint for overlay transport (`.47.3`): shift the diff baseline by k rows after a
+    k-line scroll, so repaint costs O(changed cells), with a proptest proving equivalence to a full repaint.
+  - An incremental per-row fingerprint witness for the render certificate (`.48.2`): a row marked dirty but
+    unchanged is skipped, false-skip probability per row ≤ 2⁻⁶⁴ under the mixing assumption, with sampled
+    exact verification.
+- **Five refinement passes:**
+  1. Cross-references corrected to real IDs, and dependencies added. Test-first: `.47.3` waits on oracle
+     `.47.2`. `.30.6` waits on the owner. `.5.5` waits on the inventory.
+  2. Test coverage. Every implementation bead names its unit, property and PTY tests, and negative controls
+     where a gate is involved.
+  3. A coverage cross-check of every audit finding against the beads. Two omissions found: never-compiled
+     files missing from the deletion question, and the silent no-op commands (`.50.6`).
+  4. Overlap with existing beads. `related` links added to `.32.1`, `.23.20`, `.5.3`, `.6.24`, `bd-jkr00`
+     and `bd-pu3ye`.
+  5. Consistency. The `.47.3` baseline invalidation was reconciled with the round-3 design.
+- **Validation:** `br dep cycles` reports none; `br ready` went from 22 to 53 claimable beads; G48's
+  measurement and oracle are ready at P0.
+
+### Recommended order
+
+1. `.6.37`: get one full, RCH-free verification receipt for HEAD.
+2. `.47.5`: truthful scrollback wording now.
+3. `.47.1` + `.47.2` → `.47.3` → `.47.4`.
+4. `.40.4` (one-line fix).
+5. `.49.1`/`.49.2`: restart the swarm on a truthful graph.
+6. `.5.9` + `.6.38`: make the gates able to fail.
+7. `.33.4`, then G51.
+8. G49 is measurement-gated.
+9. `.42.6`/`.42.7` make the next reality check a command.
+
+Owner questions (`.49.3`) unblock the browser story, Shadow, and the deletions.
+
+## Historical assessment: 2026-09-08, after publication of 0.7.0
 
 **FrankenTUI is a working, published native terminal UI framework. It does not
 yet deliver the full README vision. Publication is complete; comprehensive
@@ -1986,7 +2189,7 @@ end-to-end speedups need equal-history and equal-output comparisons. This audit
 did not rerun controlled performance benchmarks, a physical terminal matrix,
 Windows/macOS sessions, real screen readers, or browser GPU rendering.
 
-## Current vision checklist: 2026-09-08
+## Vision checklist: 2026-09-08 (rows changed on 2026-10-13 are superseded by the table at the top)
 
 These numbered goals preserve the original 71-row checklist. WORKING refers to
 the bounded implemented/tested behavior, not certification on every host.
@@ -2077,7 +2280,7 @@ and fixtures do not prove an absent browser renderer or universal source importe
 Optional SSH transport and machine-checked TLA+ ambitions remain explicit G38
 decisions, not silently dropped requirements.
 
-## Bridge plan: current G01–G47 obligations
+## Bridge plan: G01–G47 obligations (extended by G48–G51 and new children on 2026-10-13, see top)
 
 Retain the original detailed implementation and companion-test beads. The epic
 suffixes below belong to `bd-g00-root-epic-ewths`. Closed implementation tasks
