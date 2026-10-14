@@ -626,6 +626,14 @@ pub struct TerminalWriter<W: Write> {
     inline_strategy: InlineStrategy,
     /// Whether a scroll region is currently active.
     scroll_region_active: bool,
+    /// Whether the bottom margin row of a bottom-anchored DECSTBM region
+    /// still holds a completed pre-region line (from `reserve_inline_rows`
+    /// or `flush_pending_logs`) that must scroll up before the next
+    /// DECSTBM log write starts at column 1.
+    decstbm_row_occupied: bool,
+    /// 0-indexed cursor column on the DECSTBM log row after a partial log
+    /// write (one that did not end with `\n`).
+    decstbm_col: u16,
     /// DECSTBM self-test verdict (`None`: not run).
     scroll_region_verified: Option<bool>,
     /// Strategy fallback taken because of the self-test, exported with the
@@ -829,6 +837,8 @@ impl<W: Write> TerminalWriter<W> {
             cursor_visible: true,
             inline_strategy,
             scroll_region_active: false,
+            decstbm_row_occupied: false,
+            decstbm_col: 0,
             scroll_region_verified: None,
             strategy_fallback: None,
             last_inline_region: None,
@@ -1074,6 +1084,9 @@ impl<W: Write> TerminalWriter<W> {
         if self.scroll_region_active {
             let _ = self.deactivate_scroll_region();
         }
+        self.decstbm_row_occupied =
+            self.inline_rows_reserved && matches!(self.ui_anchor, UiAnchor::Bottom);
+        self.decstbm_col = 0;
     }
 
     /// Take a reusable render buffer sized for the current frame.
@@ -1478,6 +1491,10 @@ impl<W: Write> TerminalWriter<W> {
             let clear_end = curr_start.min(prev_end);
             if clear_end > prev_start {
                 self.clear_rows(prev_start, clear_end - prev_start)?;
+                if matches!(self.ui_anchor, UiAnchor::Bottom) {
+                    self.decstbm_row_occupied = false;
+                    self.decstbm_col = 0;
+                }
             }
         }
 
@@ -2661,6 +2678,10 @@ impl<W: Write> TerminalWriter<W> {
         if mode == SanitizeMode::Raw {
             tracing::debug!(target: crate::telemetry_schema::TARGET_RUNTIME_LOG, mode = "raw", bytes = text.len());
         }
+        if logical_line && self.scroll_region_active && self.decstbm_col > 0 {
+            self.decstbm_row_occupied = true;
+            self.decstbm_col = 0;
+        }
         // Even publicly constructed Text variants must cross this boundary.
         let sanitized = sanitize_with(text, mode);
         let sanitized = if logical_line {
@@ -2713,10 +2734,21 @@ impl<W: Write> TerminalWriter<W> {
             // A DECSTBM region matching the current effective height is
             // active: parking at its bottom margin lets every LF scroll the
             // log region alone, accumulating lines into scrollback.
+            if text.is_empty() {
+                return Ok(());
+            }
             if !self.position_cursor_for_log(visible_height)? {
                 return Ok(());
             }
-            self.write_log_payload(text, mode)?;
+            let normalized;
+            let payload = if text.contains('\n') {
+                normalized = text.replace("\r\n", "\n").replace('\n', "\r\n");
+                normalized.as_str()
+            } else {
+                text
+            };
+            self.write_log_payload(payload, mode)?;
+            self.advance_decstbm_col(payload);
             return self.writer().flush();
         }
 
@@ -2755,7 +2787,9 @@ impl<W: Write> TerminalWriter<W> {
             SanitizeMode::SgrOnly => {
                 std::borrow::Cow::Owned(sgr_overlay_log_line(text, usize::from(self.term_width)))
             }
-            SanitizeMode::Raw => std::borrow::Cow::Borrowed(text),
+            SanitizeMode::Raw => {
+                std::borrow::Cow::Borrowed(text.split(['\n', '\r']).next().unwrap_or(""))
+            }
         };
         if line.is_empty() {
             return Ok(());
@@ -2783,21 +2817,56 @@ impl<W: Write> TerminalWriter<W> {
         }
         let write_result: io::Result<()> = (|| {
             self.writer().write_all(SGR_RESET)?;
-            for line in text.split_inclusive(['\n', '\r']) {
-                if line.ends_with(['\n', '\r']) {
-                    let (body, newline) = line.split_at(line.len() - 1);
-                    self.writer().write_all(body.as_bytes())?;
+            let bytes = text.as_bytes();
+            let mut start = 0;
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+                    self.writer().write_all(&bytes[start..i])?;
                     self.writer().write_all(SGR_RESET)?;
-                    self.writer().write_all(newline.as_bytes())?;
+                    self.writer().write_all(b"\r\n")?;
+                    i += 2;
+                    start = i;
+                } else if bytes[i] == b'\n' || bytes[i] == b'\r' {
+                    self.writer().write_all(&bytes[start..i])?;
+                    self.writer().write_all(SGR_RESET)?;
+                    self.writer().write_all(&bytes[i..=i])?;
+                    i += 1;
+                    start = i;
                 } else {
-                    self.writer().write_all(line.as_bytes())?;
+                    i += 1;
                 }
+            }
+            if start < bytes.len() {
+                self.writer().write_all(&bytes[start..])?;
             }
             Ok(())
         })();
         let reset_result = self.writer().write_all(SGR_RESET);
         write_result?;
         reset_result
+    }
+
+    fn advance_decstbm_col(&mut self, payload: &str) {
+        if payload.ends_with('\n') {
+            self.decstbm_col = 0;
+            return;
+        }
+        let (tail, reset_col) = match payload.rsplit_once(['\n', '\r']) {
+            Some((_, after)) => (after, true),
+            None => (payload, false),
+        };
+        let sanitized_tail = sanitize(tail);
+        let width = u16::try_from(ftui_core::text_width::display_width(&sanitized_tail))
+            .unwrap_or(u16::MAX);
+        let base = if reset_col { 0 } else { self.decstbm_col };
+        let new_col = base.saturating_add(width);
+        let term_width = self.term_width.max(1);
+        self.decstbm_col = if new_col >= term_width {
+            new_col % term_width
+        } else {
+            new_col
+        };
     }
 
     /// Split sanitized log text into complete lines and batch them for the
@@ -2837,6 +2906,8 @@ impl<W: Write> TerminalWriter<W> {
         for _ in 1..ui_height.min(self.term_height) {
             self.writer().write_all(b"\r\n")?;
         }
+        self.decstbm_row_occupied = true;
+        self.decstbm_col = 0;
         Ok(())
     }
 
@@ -2937,6 +3008,8 @@ impl<W: Write> TerminalWriter<W> {
         // the bottom row when there is no UI), and the cursor is on the last
         // of those rows.
         self.log_floor = Some(self.term_height - height);
+        self.decstbm_row_occupied = true;
+        self.decstbm_col = 0;
         self.cursor_ui_row = height.checked_sub(1).map(|last| (last, height));
 
         if repaint {
@@ -3018,6 +3091,8 @@ impl<W: Write> TerminalWriter<W> {
             });
         }
         self.log_floor = Some(current.start);
+        self.decstbm_row_occupied = self.decstbm_row_occupied || self.decstbm_col > 0;
+        self.decstbm_col = 0;
         self.prev_buffer = None;
         Ok(())
     }
@@ -3050,8 +3125,20 @@ impl<W: Write> TerminalWriter<W> {
             }
         };
 
-        // Move to the target row, column 1 (1-indexed)
-        write!(self.writer(), "\x1b[{};1H", log_row)?;
+        if matches!(self.ui_anchor, UiAnchor::Bottom) && self.decstbm_row_occupied {
+            // `reserve_inline_rows` or `flush_pending_logs` left a completed
+            // line on `log_row`; scroll the DECSTBM region up one row before
+            // writing at column 1 so that line is never overwritten.
+            write!(self.writer(), "\x1b[{};1H\r\n", log_row)?;
+            self.decstbm_row_occupied = false;
+            self.decstbm_col = 0;
+        } else {
+            let col = self
+                .decstbm_col
+                .saturating_add(1)
+                .min(self.term_width.max(1));
+            write!(self.writer(), "\x1b[{};{}H", log_row, col)?;
+        }
         Ok(true)
     }
 
@@ -3089,6 +3176,8 @@ impl<W: Write> TerminalWriter<W> {
         self.prev_buffer = None;
         self.stale_frame = None;
         self.log_floor = None;
+        self.decstbm_row_occupied = false;
+        self.decstbm_col = 0;
         self.last_inline_region = None;
         self.cursor_ui_row = None;
         self.reset_diff_strategy();
@@ -6379,8 +6468,7 @@ mod tests {
                     assert_eq!(output.contains("\x1b[2J"), mode == SanitizeMode::Raw);
                     // Only the top-anchored overlay keeps a single row; the
                     // region and the bottom-anchored stream keep every line.
-                    let every_line =
-                        scroll_region || mode == SanitizeMode::Raw || anchor == UiAnchor::Bottom;
+                    let every_line = scroll_region || anchor == UiAnchor::Bottom;
                     assert_eq!(output.contains('\n'), every_line);
                     assert_eq!(output.contains("second"), every_line);
                     // Region: its bottom margin (row 6). Bottom overlay: the
@@ -6395,7 +6483,7 @@ mod tests {
                     if mode == SanitizeMode::SgrOnly {
                         assert!(output.contains("colored\x1b[0m"));
                         match (anchor, scroll_region) {
-                            (_, true) => assert!(output.contains("\x1b[0m\nsecond\x1b[0m")),
+                            (_, true) => assert!(output.contains("\x1b[0m\r\nsecond\x1b[0m")),
                             (UiAnchor::Bottom, false) => {
                                 assert!(output.contains("\x1b[0msecond\x1b[0m\r\n"));
                             }
@@ -6755,7 +6843,7 @@ mod tests {
             writer.flush().unwrap();
             assert!(contains_bytes(
                 &writer.writer().inner().get_ref()[before..],
-                b"first\nsecond\n"
+                b"first\r\nsecond\r\n"
             ));
         }
     }

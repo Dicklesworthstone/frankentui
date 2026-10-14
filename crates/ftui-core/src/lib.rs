@@ -1362,7 +1362,8 @@ pub mod text_width {
         fn grapheme_width_with_cjk_preserves_multi_codepoint_emoji_and_widens_ambiguous() {
             // Multi-codepoint emoji clusters must occupy 2 cells in both
             // non-CJK and CJK modes (never summing scalar codepoints to 4 or 8).
-            for emoji in ["😀", "👨‍👩‍👧‍👦", "👋🏽", "👍🏻", "🇯🇵", "🇺🇸", "🏳️‍🌈", "🏃🏿‍♂️", "👩🏻‍💻"] {
+            for emoji in ["😀", "👨‍👩‍👧‍👦", "👋🏽", "👍🏻", "🇯🇵", "🇺🇸", "🏳️‍🌈", "🏃🏿‍♂️", "👩🏻‍💻"]
+            {
                 assert_eq!(
                     grapheme_width_with_cjk(emoji, false),
                     2,

@@ -1109,3 +1109,160 @@ fn overlay_stream_survives_a_shrink_that_deletes_rows_below_the_cursor() {
         );
     }
 }
+
+// ============================================================================
+// 17. DECSTBM preserves shell & pre-UI logs on log_row, normalizes CRLF, and
+//     tracks partial-line columns (bd-g00-root-epic-ewths.51)
+// ============================================================================
+
+#[test]
+fn scroll_region_preserves_shell_and_pre_ui_logs_on_log_row() {
+    // 1. Shell output before Frame 0: `reserve_inline_rows` leaves `shell 030`
+    // on `log_row` (1-indexed row 19); the first DECSTBM write must scroll it
+    // up rather than overwriting it at column 1.
+    let mut emu = Emulator::new(80, 24);
+    for i in 1..=30 {
+        emu.feed(format!("shell {i:03}\r\n").as_bytes());
+    }
+    let out = SharedOutput::default();
+    let mut writer = TerminalWriter::new(
+        out.clone(),
+        ScreenMode::Inline { ui_height: 5 },
+        UiAnchor::Bottom,
+        scroll_region_caps(),
+    );
+    writer.set_size(80, 24);
+    writer
+        .present_ui(&ui_frame(80, 5, "D1"), None, true)
+        .unwrap();
+    writer.write_log("app 001\n").unwrap();
+    writer.write_log("app 002\n").unwrap();
+    writer.flush().unwrap();
+
+    emu.feed(&out.bytes());
+    let visible = emu.visible();
+    assert_lines_in_order(&visible[..19], "shell ", &numbered("shell ", 15..=30));
+    assert_lines_in_order(&visible[..19], "app ", &numbered("app ", 1..=2));
+    for y in 0..5 {
+        assert_eq!(visible[19 + y], format!("UI-D1-row{y}"));
+    }
+    drop(writer);
+
+    // 2. Pre-Frame-0 logs flushed via `flush_pending_logs(false)` before
+    // `activate_scroll_region`: `pre 005` sits on `log_row` when DECSTBM
+    // activates and must not be overwritten by `post 001`.
+    let out2 = SharedOutput::default();
+    let mut writer2 = TerminalWriter::new(
+        out2.clone(),
+        ScreenMode::Inline { ui_height: 5 },
+        UiAnchor::Bottom,
+        scroll_region_caps(),
+    );
+    writer2.set_size(80, 24);
+    for i in 1..=5 {
+        writer2.write_log(&format!("pre {i:03}\n")).unwrap();
+    }
+    writer2
+        .present_ui(&ui_frame(80, 5, "D2"), None, true)
+        .unwrap();
+    for i in 1..=3 {
+        writer2.write_log(&format!("post {i:03}\n")).unwrap();
+    }
+    writer2.flush().unwrap();
+
+    let mut emu2 = Emulator::new(80, 24);
+    emu2.feed(&out2.bytes());
+    let visible2 = emu2.visible();
+    assert_lines_in_order(&visible2[..19], "pre ", &numbered("pre ", 1..=5));
+    assert_lines_in_order(&visible2[..19], "post ", &numbered("post ", 1..=3));
+    for y in 0..5 {
+        assert_eq!(visible2[19 + y], format!("UI-D2-row{y}"));
+    }
+    drop(writer2);
+}
+
+#[test]
+fn scroll_region_normalizes_crlf_and_preserves_partial_lines() {
+    use ftui_runtime::LogSink;
+
+    let out = SharedOutput::default();
+    let mut writer = TerminalWriter::new(
+        out.clone(),
+        ScreenMode::Inline { ui_height: 5 },
+        UiAnchor::Bottom,
+        scroll_region_caps(),
+    );
+    writer.set_size(80, 24);
+    writer
+        .present_ui(&ui_frame(80, 5, "S"), None, true)
+        .unwrap();
+
+    // Multi-line write with bare `\n` must not staircase in raw mode.
+    writer.write_log("alpha\nbeta\ngamma\n").unwrap();
+
+    // Partial writes across an interleaved UI present must continue at the
+    // column where the partial write ended rather than overwriting column 1.
+    writer.write_log("part1 ").unwrap();
+    writer
+        .present_ui(&ui_frame(80, 5, "S"), Some((2, 1)), true)
+        .unwrap();
+    writer.write_log("part2\n").unwrap();
+
+    // LogSink partial flush + completion under DECSTBM.
+    {
+        let mut sink = LogSink::new(&mut writer);
+        write!(sink, "sink-head ").unwrap();
+        sink.flush().unwrap();
+        writeln!(sink, "sink-tail").unwrap();
+    }
+    writer.flush().unwrap();
+
+    let mut emu = Emulator::new(80, 24);
+    emu.feed(&out.bytes());
+    let visible = emu.visible();
+    let log_rows: Vec<&str> = visible[..19]
+        .iter()
+        .map(String::as_str)
+        .filter(|r| !r.is_empty())
+        .collect();
+    assert_eq!(
+        log_rows,
+        vec![
+            "alpha",
+            "beta",
+            "gamma",
+            "part1 part2",
+            "sink-head sink-tail"
+        ]
+    );
+    drop(writer);
+}
+
+#[test]
+fn top_anchor_overlay_raw_log_clamps_newlines_and_preserves_ui() {
+    let out = SharedOutput::default();
+    let mut writer = TerminalWriter::new(
+        out.clone(),
+        ScreenMode::Inline { ui_height: 5 },
+        UiAnchor::Top,
+        basic_caps(),
+    );
+    writer.set_size(80, 24);
+    writer
+        .present_ui(&ui_frame(80, 5, "TOP"), None, true)
+        .unwrap();
+    writer
+        .write_log_raw("\x1b[32mraw-status-line\nsecond-line\r\nthird-line\n")
+        .unwrap();
+    writer.flush().unwrap();
+
+    let mut emu = Emulator::new(80, 24);
+    emu.feed(&out.bytes());
+    assert_no_ui_rows_in_history(&mut emu);
+    let visible = emu.visible();
+    for y in 0..5 {
+        assert_eq!(visible[y], format!("UI-TOP-row{y}"), "top UI row {y}");
+    }
+    assert_eq!(visible[23], "raw-status-line");
+    drop(writer);
+}
