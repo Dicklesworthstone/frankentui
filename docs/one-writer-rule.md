@@ -139,18 +139,21 @@ fn main() -> Result<()> {
 
 ### Sanitize by Default
 
-FrankenTUI sanitizes untrusted output by default (see [ADR-006](adr/ADR-006-untrusted-output-policy.md)):
+FrankenTUI sanitizes untrusted output by default (see [ADR-006](adr/ADR-006-untrusted-output-policy.md)) and provides three explicit log routing modes on `TerminalWriter`, `LogSink`, and `Cmd`:
 
-- Control sequences (CSI, OSC, DCS, APC) are stripped
-- C0 controls except TAB, LF, CR are removed
-- Prevents escape sequence injection attacks
+- **Strip (default)**: `writer.write_log(line)` / `LogSink::new(&mut writer)` / `Cmd::log(line)` strips all escape sequences (CSI, OSC, DCS, APC, PM, SOS) and C0/C1 controls except TAB, LF, and CR.
+- **SGR-only (semi-trusted)**: `writer.write_log_sgr_only(line)` / `LogSink::sgr_only(&mut writer)` / `Cmd::log_sgr_only(line)` retains bounded SGR styling (`CSI [0-9;:]* m`, up to 64 bytes), strips all other escapes (including OSC 8), and appends `\x1b[0m` per line.
+- **Raw (explicit opt-in)**: `writer.write_log_raw(line)` / `LogSink::raw(&mut writer)` / `Cmd::log_raw(line)` passes bytes through unchanged and emits a `ftui.sanitize` debug trace.
 
 ```rust
-// Safe: content is sanitized
-log.write_all(user_input.as_bytes())?;
+// Safe by default: strips all escape sequences
+writer.write_log(&untrusted_llm_output)?;
 
-// Dangerous: raw passthrough, use only for trusted sources
-log.write_raw(trusted_tool_output)?;
+// Semi-trusted: keeps SGR colors, strips cursor/title/OSC escapes, resets each line
+writer.write_log_sgr_only(&colored_tool_output)?;
+
+// Trusted only: explicit raw passthrough
+writer.write_log_raw(&trusted_ansi_stream)?;
 ```
 
 ### When Raw Passthrough is Appropriate

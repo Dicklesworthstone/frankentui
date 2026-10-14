@@ -68,21 +68,26 @@ Untrusted output (LLM streams, user input, tool output) can smuggle control sequ
 
 | Mitigation | Implementation | Status |
 |------------|----------------|--------|
-| Sanitize by default | Strip CSI/OSC/DCS/APC sequences (ADR-006) | Implemented |
-| Explicit raw opt-in | `write_raw()` requires explicit call | Designed |
-| Adversarial PTY tests | Feed malicious sequences, verify invariants | Planned |
-| C0 control filtering | Only TAB/LF/CR allowed | Implemented |
+| Sanitize by default | Strip CSI/OSC/DCS/APC/PM/SOS sequences (`write_log`, `LogSink::new`, ADR-006) | Implemented |
+| Semi-trusted SGR-only mode | Bounded `CSI [0-9;:]* m` (<= 64 B) + per-line `\x1b[0m` reset (`write_log_sgr_only`, `LogSink::sgr_only`) | Implemented |
+| Explicit raw opt-in | `write_log_raw()`, `LogSink::raw()`, `Cmd::log_raw()`, `Text::raw()` require explicit call; emits `ftui.sanitize` debug trace | Implemented (`bd-g00-root-epic-ewths.33.1`) |
+| Adversarial PTY tests | Feed `ADVERSARIAL_PAYLOADS` through PTY log/command paths and verify termios + screen invariants (`pty_terminal_lifecycle.rs`) | Implemented (`bd-g00-root-epic-ewths.33.2`) |
+| Inline never clears screen | Property test asserting inline output never emits `2J`, `3J`, `?1049h`, or `ESC c` (`inline_never_clears_screen`) | Implemented (`bd-g00-root-epic-ewths.33.2`) |
+| C0/C1 control filtering | Only TAB/LF/CR allowed; DEL and C1 controls (`0x80..=0x9F`) stripped | Implemented |
 
 ### Test Suites
 
-- **Adversarial tests**: bd-397 - escape injection scenarios
-- **Fuzz tests**: Random bytes through log paths
-- **State leakage tests**: Verify no terminal state changes after malicious content
+- **Adversarial PTY tests**: `crates/ftui-harness/tests/pty_terminal_lifecycle.rs` (`pty_log_injection_preserves_text_style_and_terminal_state`, `pty_model_log_commands_preserve_text_style_and_terminal_state`, `pty_log_raw_requires_explicit_opt_in_and_restores_termios`, `alt_screen_mode_is_the_only_path_to_1049h`)
+- **Inline screen-preservation property tests**: `crates/ftui-harness/tests/proptest_flicker_invariants.rs` (`inline_never_clears_screen`) and `crates/ftui-render/src/sanitize.rs` (`proptest_adversarial::*`)
+- **Fuzz tests**: `fuzz/fuzz_targets/fuzz_sanitize.rs` and `fuzz/fuzz_targets/fuzz_sanitize_sgr_only.rs`
 
 ### Beads
 
 - bd-397: Create adversarial tests for escape injection
 - bd-10i.8.5: Implement LogSink for in-process output routing
+- bd-g00-root-epic-ewths.33.1: Implement `write_log_raw`, `write_log_sgr_only`, `LogSink::raw/sgr_only`, `sanitize_sgr_only`
+- bd-g00-root-epic-ewths.33.2: Adversarial PTY injection tests, `inline_never_clears_screen` proptest, SGR-only fuzz target
+- bd-g00-root-epic-ewths.33.3: Accept ADR-006 and update R2 risk register
 
 ### Related ADRs
 

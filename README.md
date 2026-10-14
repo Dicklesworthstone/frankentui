@@ -2466,6 +2466,22 @@ seed.wrapping_mul(6364136223846793005).wrapping_add(1)
 
 This is a convention, not a compiler guarantee: no `clippy::arithmetic_side_effects` lint is enabled, so a bare `+` on a coordinate would compile. The `unsafe` ban above *is* enforced — `#![forbid(unsafe_code)]` is present in all 20 crates.
 
+### Untrusted Output Sanitization (ADR-006)
+
+Agent harnesses and CLI tools routinely display untrusted LLM streams, subprocess logs, and user input. FrankenTUI sanitizes log output by default ([ADR-006](docs/adr/ADR-006-untrusted-output-policy.md)) so injected CSI/OSC/DCS/APC sequences cannot move the cursor, forge prompts, enter alternate screen, or corrupt terminal state:
+
+```rust,no_run
+// 1. Default (strip): removes all escape sequences and C0/C1 controls except TAB/LF/CR
+writer.write_log(untrusted_stream)?;         // or LogSink::new(&mut writer) / Cmd::log(..)
+
+// 2. Semi-trusted (SGR-only): keeps bounded SGR color codes (CSI [0-9;:]* m, <= 64 B),
+//    strips cursor/OSC/mode escapes, and appends \x1b[0m before each newline
+writer.write_log_sgr_only(colored_tool_log)?; // or LogSink::sgr_only(&mut writer) / Cmd::log_sgr_only(..)
+
+// 3. Trusted (explicit raw opt-in): no global switch; emits ftui.sanitize debug trace
+writer.write_log_raw(trusted_ansi)?;          // or LogSink::raw(&mut writer) / Cmd::log_raw(..)
+```
+
 ### Flicker-Free Proof Sketch
 
 `crates/ftui-render/tests/no_flicker_proof.rs` tests diff equivalence and DEC 2026 sync-bracket framing in `ftui-render` (`certified_and_dirty_diff_match_full_diff_and_wrap_sync_brackets`), while the full 6-theorem proof sketch and adversarial counterexample suite live in `crates/ftui-harness/tests/render_no_flicker_proof.rs`:
