@@ -50,7 +50,8 @@ use tracing::{trace, warn};
 ///
 /// # Mathematical Model
 ///
-/// Let `e_t = frame_time_t − target` be the error signal at frame `t`.
+/// Let `e_t = (frame_time_t − target) / target` be the normalized error signal
+/// at frame `t` (positive when over budget).
 ///
 /// The PID control output is:
 ///
@@ -225,8 +226,15 @@ pub struct EProcessConfig {
     /// Minimum σ floor to prevent division by zero.
     /// Default: 1.0 ms.
     pub sigma_floor_ms: f64,
-    /// Warmup frames before e-process activates. During warmup, fall back
-    /// to PID-only decisions.
+    /// Warmup frame threshold before e-process degradation activates.
+    ///
+    /// Because `frames_observed` is incremented before the gate check,
+    /// `should_degrade` returns `false` while `frames_observed < warmup_frames`
+    /// (the first `warmup_frames - 1` observations) so cold-start jitter cannot
+    /// trigger degradation before `sigma_ema` calibrates, and activates on the
+    /// `warmup_frames`-th observation. `should_upgrade` returns `true` during
+    /// warmup so PID-driven recovery remains permitted.
+    /// Default: 10.
     pub warmup_frames: u32,
 }
 
@@ -310,7 +318,7 @@ impl EProcessState {
     /// Check if evidence supports degradation.
     fn should_degrade(&self, config: &EProcessConfig) -> bool {
         if self.frames_observed < config.warmup_frames {
-            return false; // Fall back to PID during warmup
+            return false; // Suppress degradation while sigma_ema calibrates during warmup
         }
         self.e_value > 1.0 / config.alpha
     }
@@ -1179,9 +1187,10 @@ impl RenderBudget {
     /// Logs a warning when degradation occurs. An attached controller is
     /// kept in sync so it reasons (and can later upgrade) from the actual
     /// level. External callers may degrade past the controller's
-    /// `degradation_floor` — emergency paths (guardrails, risk gates)
-    /// deliberately outrank the visual-quality floor; the controller itself
-    /// never degrades further once at or past it.
+    /// `degradation_floor` — emergency paths (memory/queue guardrails)
+    /// deliberately outrank the visual-quality floor; frame-time gates
+    /// that should honor the configured floor use
+    /// [`degrade_respecting_floor`](Self::degrade_respecting_floor).
     pub fn degrade(&mut self) {
         let from = self.degradation;
         self.degradation = self.degradation.next();
@@ -1198,6 +1207,31 @@ impl RenderBudget {
             );
         }
         let _ = from; // Suppress unused warning when tracing is disabled
+    }
+
+    /// Return the configured degradation floor from the attached controller,
+    /// or [`DegradationLevel::SkipFrame`] if no controller is attached.
+    #[inline]
+    pub fn degradation_floor(&self) -> DegradationLevel {
+        self.controller
+            .as_ref()
+            .map_or(DegradationLevel::SkipFrame, |ctrl| {
+                ctrl.config().degradation_floor
+            })
+    }
+
+    /// Degrade to the next level only if currently below [`degradation_floor`](Self::degradation_floor).
+    ///
+    /// Returns `true` if the degradation level increased, or `false` if
+    /// already at or beyond the configured floor (or [`DegradationLevel::SkipFrame`]).
+    pub fn degrade_respecting_floor(&mut self) -> bool {
+        let floor = self.degradation_floor();
+        if self.degradation >= floor {
+            return false;
+        }
+        let from = self.degradation;
+        self.degrade();
+        self.degradation > from
     }
 
     /// Keep an attached controller's level in lockstep with the budget's.
@@ -4613,6 +4647,102 @@ mod tests {
             assert_eq!(t.recovery_streak, 0);
             assert_eq!(t.total_degrades, 0);
             assert_eq!(t.total_recoveries, 0);
+        }
+
+        #[test]
+        fn degrade_respecting_floor_honors_controller_floor_and_syncs_level() {
+            let mut budget = RenderBudget::new(Duration::from_millis(16)).with_controller(
+                BudgetControllerConfig {
+                    degradation_floor: DegradationLevel::NoStyling,
+                    ..Default::default()
+                },
+            );
+
+            assert_eq!(budget.degradation_floor(), DegradationLevel::NoStyling);
+            assert!(budget.degrade_respecting_floor());
+            assert_eq!(budget.degradation(), DegradationLevel::SimpleBorders);
+            assert_eq!(
+                budget.controller().unwrap().level(),
+                DegradationLevel::SimpleBorders
+            );
+
+            assert!(budget.degrade_respecting_floor());
+            assert_eq!(budget.degradation(), DegradationLevel::NoStyling);
+            assert_eq!(
+                budget.controller().unwrap().level(),
+                DegradationLevel::NoStyling
+            );
+
+            // At the floor, degrade_respecting_floor must hold instead of advancing to EssentialOnly.
+            assert!(!budget.degrade_respecting_floor());
+            assert_eq!(budget.degradation(), DegradationLevel::NoStyling);
+        }
+
+        #[test]
+        fn virtual_clock_overload_traverses_full_ladder_and_recovers_deterministically() {
+            let make_budget = || {
+                RenderBudget::new(Duration::from_millis(16)).with_controller(
+                    BudgetControllerConfig {
+                        target: Duration::from_millis(16),
+                        degradation_floor: DegradationLevel::SkipFrame,
+                        ..Default::default()
+                    },
+                )
+            };
+
+            let run_virtual_trace = |budget: &mut RenderBudget| -> Vec<DegradationLevel> {
+                let mut observed_levels = Vec::new();
+                // 1) Warmup observations (frames_observed 1..10): warmup suppresses degradation
+                for frame in 0..9 {
+                    budget.record_frame_time(Duration::from_millis(80));
+                    budget.next_frame();
+                    assert_eq!(
+                        budget.degradation(),
+                        DegradationLevel::Full,
+                        "warmup frame {frame} must not degrade"
+                    );
+                    observed_levels.push(budget.degradation());
+                }
+                // 2) Sustained 80ms overload drives step-by-step through all 6 levels to SkipFrame
+                for _ in 0..40 {
+                    budget.record_frame_time(Duration::from_millis(80));
+                    budget.next_frame();
+                    observed_levels.push(budget.degradation());
+                }
+                assert_eq!(budget.degradation(), DegradationLevel::SkipFrame);
+
+                // 3) Sustained 4ms recovery frames restore fidelity all the way back to Full
+                for _ in 0..240 {
+                    budget.record_frame_time(Duration::from_millis(4));
+                    budget.next_frame();
+                    observed_levels.push(budget.degradation());
+                }
+                assert_eq!(budget.degradation(), DegradationLevel::Full);
+                observed_levels
+            };
+
+            let mut budget_a = make_budget();
+            let mut budget_b = make_budget();
+            let path_a = run_virtual_trace(&mut budget_a);
+            let path_b = run_virtual_trace(&mut budget_b);
+
+            // Determinism: identical virtual-clock duration sequences produce identical paths
+            assert_eq!(path_a, path_b);
+
+            // Verify every level in the 6-level ladder was visited in order during degradation
+            for expected in [
+                DegradationLevel::Full,
+                DegradationLevel::SimpleBorders,
+                DegradationLevel::NoStyling,
+                DegradationLevel::EssentialOnly,
+                DegradationLevel::Skeleton,
+                DegradationLevel::SkipFrame,
+            ] {
+                assert!(
+                    path_a.contains(&expected),
+                    "expected ladder traversal to visit {expected:?}"
+                );
+            }
         }
     }
 }

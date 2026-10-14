@@ -7472,8 +7472,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                     action = "defer_to_budget_controller",
                     "conformal bound unavailable"
                 );
-            } else if prediction.risk {
-                self.budget.degrade();
+            } else if prediction.risk && self.budget.degrade_respecting_floor() {
                 info!(
                     bucket = %prediction.bucket,
                     upper_us = ?prediction.upper_us,
@@ -15512,6 +15511,40 @@ mod tests {
         );
         assert_eq!(prediction.upper_us, None);
         assert!(!predictor.is_calibrated(&prediction));
+    }
+
+    #[test]
+    fn headless_calibrated_conformal_risk_gate_respects_degradation_floor() {
+        use ftui_render::budget::DegradationLevel;
+        let config = ProgramConfig::default()
+            .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)))
+            .with_conformal_config(ConformalConfig {
+                alpha: 0.2,
+                min_samples: 5,
+                window_size: 32,
+                q_default: 10_000_000.0,
+            });
+        let mut program = headless_program_with_config(TestModel { value: 0 }, config);
+        let key = BucketKey::from_context(ScreenMode::AltScreen, DiffStrategy::Full, 80, 24);
+        if let Some(predictor) = program.conformal_predictor.as_mut() {
+            for _ in 0..10 {
+                predictor.observe(key, 5_000_000.0, 20_000_000.0);
+            }
+        }
+        // Calibrated conformal predictor now predicts risk (upper_us > budget_us),
+        // while fast 1ms frame times keep the PID controller from degrading on its own.
+        // Repeated risky renders must clamp at the default floor (SimpleBorders)
+        // rather than bypassing the floor all the way to SkipFrame.
+        for _ in 0..5 {
+            program.budget.record_frame_time(Duration::from_millis(1));
+            program.dirty = true;
+            program.render_frame().expect("calibrated conformal gate");
+        }
+        assert_eq!(
+            program.budget.degradation(),
+            DegradationLevel::SimpleBorders,
+            "calibrated conformal risk gate must honor the controller degradation_floor"
+        );
     }
 
     /// With `ProgramConfig::gestures` set, raw mouse events still reach

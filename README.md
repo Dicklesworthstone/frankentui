@@ -1676,11 +1676,12 @@ When frame rendering exceeds its time budget, FrankenTUI executes a **principled
 Conformal Frame Guard
   │ "frame will likely exceed budget"
   ▼
-Budget Controller (PID)
-  │ computes control signal from frame-time error
+Budget Controller (PID + E-Process Gate)
+  │ computes control signal from normalized frame-time error (after 10-frame warmup)
   ▼
 Degradation Level Selection
   │ Full → SimpleBorders → NoStyling → EssentialOnly → Skeleton → SkipFrame
+  │ (default controller/conformal floor: SimpleBorders; deeper levels via floor config or guardrails)
   ▼
 Widget Priority Filtering
   │ high-priority widgets rendered first
@@ -1692,8 +1693,8 @@ Evidence Emission
 **Key properties:**
 - **Recoverable**: when load drops, the cascade automatically restores visual fidelity
 - **Observable**: every degradation event is logged with conformal prediction context
-- **Widget-aware**: critical widgets (input fields, status bars) degrade last
-- **Deterministic**: same input sequence always produces the same degradation path
+- **Widget-aware**: critical widgets (input fields, status bars) degrade last; `BudgetControllerConfig::default()` sets `degradation_floor = DegradationLevel::SimpleBorders` (honored by both the PID/e-process controller and the conformal risk gate) so routine frame-time spikes simplify borders without stripping styling or widgets unless a deeper floor is configured or hard memory/queue `FrameGuardrails` intervene
+- **Deterministic over frame-time traces**: `BudgetController::update(frame_time)` is a pure state machine — feeding the same `Duration` sequence (via `record_frame_time` or `DeterministicClock`) always produces the exact same degradation path (live `Program` runs feed measured wall-clock `elapsed()` durations)
 
 ---
 
@@ -1958,23 +1959,23 @@ Intuition: a single metric tells us when to yield so the UI feels responsive.
 
 ### PID / PI Control (Frame Pacing)
 
-Frame‑time control is classic feedback control.
+Frame‑time control is classic feedback control over normalized error $e_t = (\text{frame\_ms} - \text{target\_ms}) / \text{target\_ms}$:
 
 $$
 u_t = K_p e_t + K_i \sum e_t + K_d \Delta e_t
 $$
 
-Intuition: if we’re too slow, dial down; if we’re too fast, allow more detail. PI is the default because it’s robust and cheap.
+Intuition: if we’re too slow, dial down; if we’re too fast, allow more detail. Production `BudgetController` uses full 3-term PID gains by default (`Kp = 0.5, Ki = 0.05, Kd = 0.2`) gated by an anytime-valid e-process (`warmup_frames = 10`, where degradation is suppressed during cold-start calibration while upgrades remain permitted).
 
 ### MPC (Model Predictive Control) Evaluation
 
-We test MPC vs PI to prove we’re not leaving performance on the table.
+We benchmark 3-step receding-horizon MPC against a stripped 2-term PI baseline (`Kp = 0.5, Ki = 0.05, Kd = 0`) in `mpc_vs_pi_evaluation` to verify whether lookahead control is worth its per-frame solver cost.
 
 $$
 \min_{u_{t:t+H}} \sum_{k=0}^H \|y_{t+k}-y^*\|^2 + \rho\,\|u_{t+k}\|^2
 $$
 
-Intuition: MPC looks ahead but costs more; the tests show PI is already good enough for TUI pacing.
+Intuition: MPC looks ahead but costs more; the evaluation suite shows single-loop PID/PI control is already sufficient for TUI pacing.
 
 ### Count‑Min Sketch (Approximate Counts)
 
@@ -2053,8 +2054,8 @@ The visual effects screen is deterministic math, not “random shader noise.” 
 | **Staggered Cascades** | List animations | $offset_i=D\cdot ease(i/(n-1))$ | Coordinated, non‑uniform entrances |
 | **Sine Pulse** | Attention pulses | $p(t)=\sin(\pi t)$ | Smooth 0→1→0 emphasis |
 | **Perceived Luminance** | Dark/light probe | $Y=0.299R+0.587G+0.114B$ | Reliable theme defaults |
-| **PID / PI** | Degradation control | $u_t=K_pe_t+K_i\sum e_t+K_d\Delta e_t$ | Smooth frame‑time stabilization |
-| **MPC** | Control evaluation | $\min_{u_{t:t+H}}\sum\|y_{t+k}-y^*\|^2+\rho\|u_{t+k}\|^2$ | Confirms PI is sufficient |
+| **PID / PI** | Degradation control | $u_t=K_pe_t+K_i\sum e_t+K_d\Delta e_t$ (`Kp=0.5, Ki=0.05, Kd=0.2`) | Smooth frame‑time stabilization |
+| **MPC** | Control evaluation | $\min_{u_{t:t+H}}\sum\|y_{t+k}-y^*\|^2+\rho\|u_{t+k}\|^2$ | Confirms PID/PI is sufficient |
 | **VOI Sampling** | Expensive measurements | $\mathrm{VOI}=\mathrm{Var}-\mathbb{E}[\mathrm{Var}\mid\text{sample}]$ | Lower overhead in steady state |
 | **Jain’s Fairness** | Input guard | $F=(\sum x_i)^2/(n\sum x_i^2)$ | Prevents UI render from starving input |
 | **Count‑Min Sketch** | Width cache + timeline aggregation | $\hat f(x)=\min_j C_{j,h_j(x)}$ | Fast approximate counts |
@@ -2536,14 +2537,17 @@ Frame time is regulated with a PID controller:
 Error:        e_t = (actual_ms - target_ms) / target_ms   // normalized; POSITIVE = over budget
 Control:      u_t = Kp·e_t + Ki·Σe + Kd·Δe
 Integral:     Σe clamped to ±5.0 (anti-windup)
+E-Process:    warmup_frames = 10 (degradation suppressed during calibration), α = 0.05, β = 0.5
 Degradation:  Full → SimpleBorders → NoStyling → EssentialOnly → Skeleton → SkipFrame
+Floor:        degradation_floor = SimpleBorders by default (honored by PID + conformal gate;
+              raise floor or trigger FrameGuardrails for deeper levels)
 
 Gains: Kp=0.5, Ki=0.05, Kd=0.2 (tuned for 16ms / 60fps)
 ```
 
 The error is a **fraction of the budget, not milliseconds**, and positive means the frame ran long — so a rising `u_t` degrades. The gains above are tuned for that normalized form; feeding them raw milliseconds would scale the response by the budget. An earlier version of this block had the error as `target_ms - actual_ms`, which is both un-normalized and the opposite sign, and would have had the controller degrading on *fast* frames.
 
-When frames exceed budget, the renderer automatically degrades visual fidelity to maintain responsiveness.
+When frames exceed budget after the 10-frame e-process warm-up, the renderer degrades visual fidelity up to the configured `degradation_floor` (`SimpleBorders` by default, or up to `SkipFrame` when configured) and recovers automatically once frame times drop.
 
 ### Input Fairness Guard
 
