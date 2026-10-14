@@ -192,6 +192,8 @@ pub struct StreamingHarness {
     process_closed: bool,
     process_can_restart: bool,
     interrupt_status: ProcessInterruptStatus,
+    /// The terminal size last reported, which a restarted PTY child starts at.
+    pty_size: Option<(u16, u16)>,
     quit_armed_at: Option<Instant>,
     control_feedback: Option<String>,
     stdout_preview: Option<String>,
@@ -538,6 +540,7 @@ impl StreamingHarness {
             process_closed: false,
             process_can_restart: true,
             interrupt_status: ProcessInterruptStatus::Idle,
+            pty_size: None,
             quit_armed_at: None,
             control_feedback: None,
             stdout_preview: None,
@@ -777,6 +780,11 @@ impl StreamingHarness {
         let previous = control.generation();
         let control = ProcessControl::new();
         let generation = control.generation();
+        // Without this the new PTY would start at the size the host terminal
+        // reports to an ioctl, or 80x24 when neither stdout nor stdin is one.
+        if let Some((width, height)) = self.pty_size {
+            let _ = control.request_resize(width, height);
+        }
         self.process_control = Some(control);
         self.process_input = self.options.stdin.then(ProcessInput::new);
         self.process_pid = None;
@@ -908,7 +916,8 @@ impl Model for StreamingHarness {
             }
             Msg::Resize { width, height } if self.options.pty => {
                 // A finished run refuses resizes; its successor starts at the
-                // terminal's size.
+                // size recorded here.
+                self.pty_size = Some((width, height));
                 if let Some(control) = &self.process_control {
                     let _ = control.request_resize(width, height);
                 }
@@ -1763,6 +1772,34 @@ mod tests {
             Cmd::Log { text, mode: SanitizeMode::Strip }
                 if text == "[process control] SIGINT sent to the child's process group."
         ));
+    }
+
+    #[test]
+    fn pty_restart_starts_the_new_run_at_the_last_reported_size() {
+        let mut model = StreamingHarness::new(
+            StreamingOptions::parse_agent_shell(
+                ["--pty", "--", "cat"].map(str::to_owned),
+                None,
+                None,
+            )
+            .unwrap(),
+        );
+        let _ = model.update(Msg::Resize {
+            width: 132,
+            height: 50,
+        });
+        let first = model.process_control.as_ref().unwrap().generation();
+        let _ = model.update(process_message(&model, ProcessEvent::Exited(0)));
+        let _ = model.restart_child_with_status(ProcessControlStatus {
+            pid: None,
+            closed: true,
+            can_restart: true,
+            interrupt: ProcessInterruptStatus::Idle,
+        });
+        let control = model.process_control.as_ref().unwrap();
+        assert_ne!(control.generation(), first, "F5 starts a new run");
+        let expected = cfg!(unix).then_some((132, 50));
+        assert_eq!(control.pending_resize(), expected);
     }
 
     #[test]

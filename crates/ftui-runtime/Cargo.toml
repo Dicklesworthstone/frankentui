@@ -95,6 +95,11 @@ toml = { version = "1.1.6", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.3", features = ["event", "process", "pty", "termios"] }
+# Spawns a `ProcessSubscription::pty` child with the PTY as its controlling
+# terminal (setsid + TIOCSCTTY between fork and exec). That step has to run in
+# the child before exec, which std only offers through the unsafe `pre_exec`,
+# and this crate forbids unsafe code; pty-process does it on rustix alone.
+pty-process = "0.5.3"
 
 [dev-dependencies]
 ftui-core = { path = "../ftui-core", version = "0.9.0", features = ["test-helpers"] }
