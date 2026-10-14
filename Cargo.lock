@@ -1277,9 +1277,9 @@ dependencies = [
 
 [[package]]
 name = "fastapi-output"
-version = "0.4.4"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82186ea1d296c5a94dc0c2c740a922742bbc9b8971360a9be5e9624cad73e024"
+checksum = "067706f4ad7ed17a1873053afd2938bb8727fca7ebf6939303a7261e676069fc"
 dependencies = [
  "crossterm",
  "parking_lot",
