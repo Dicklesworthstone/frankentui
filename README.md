@@ -1272,7 +1272,7 @@ where `d_t` is signed distance to the current target boundary, `k` is drift allo
 
 **Result:** single‑cell jitter doesn’t cause hover flicker, but intentional crossings still switch within a couple frames.
 
-**Where it runs:** `ListState::default().with_hover_stabilizer(HoverStabilizerConfig::default())` routes the list's mouse-move hover through the stabilizer (default: 1-cell hysteresis band, drift allowance 0.5, threshold 2.0, 500 ms hold); without it `hovered` follows the raw hit test. The showcase's mouse playground uses the same type directly. `Table` has no hover state, so nothing to stabilize there yet.
+**Where it runs:** `ListState::default().with_hover_stabilizer(HoverStabilizerConfig::default())` routes the list's mouse-move hover through the stabilizer (default: 1-cell hysteresis band, drift allowance 0.5, threshold 2.0, 500 ms hold); without it `hovered` follows the raw hit test. The showcase's mouse playground uses the same type directly. `TableState::hovered` tracks raw mouse-move row hits (`Table` renders `TableTheme.row_hover` when set) without routing through `HoverStabilizer` yet.
 
 ### Gesture Recognition State Machine
 

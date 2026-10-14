@@ -3,7 +3,7 @@
 # This Makefile provides convenient targets for building and developing FrankenTUI.
 # The reference libraries are automatically synchronized before builds.
 
-.PHONY: all build check test clean sync-refs setup help clippy fmt-check reachability claims gates env-docs
+.PHONY: all build check test clean sync-refs setup help clippy fmt-check reachability claims gates env-docs close-audit baseline-benches
 
 # Default target
 all: build
@@ -104,6 +104,9 @@ help:
 	@echo "  make fmt-check  - Check formatting"
 	@echo "  make reachability - Fail on pub modules nothing references"
 	@echo "  make claims     - Validate the claims ledger and experimental sections"
-	@echo "  make gates      - All non-cargo gates (~6s): reachability, claims, env-docs"
+	@echo "  make env-docs   - Validate binary environment variable docs"
+	@echo "  make close-audit - Validate bead close evidence"
+	@echo "  make baseline-benches - Validate tests/baseline.json benchmark IDs"
+	@echo "  make gates      - All 5 non-cargo gates (~6s): reachability, claims, env-docs, close-audit, baseline-benches"
 	@echo "  make clean      - Clean build artifacts"
 	@echo "  make help       - Show this help"

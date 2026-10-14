@@ -202,9 +202,10 @@ make gates
 
 **The default test run does not see every module.** Most crates declare
 `default = []` and gate modules behind features, and `--workspace` only enables
-what some member happens to turn on. Measured on 2026-09-19:
-`cargo nextest run --workspace` runs 26,009 tests and
-`--workspace --all-features` runs 28,315 — about **2,300 tests the ordinary
+what some member happens to turn on. Measured on 2026-09-19 (re-checked
+2026-10-13: 26,293 default tests):
+`cargo nextest run --workspace` runs ~26,000–26,300 tests and
+`--workspace --all-features` runs ~28,300+ — about **2,300 tests the ordinary
 gate never builds**, including every test in `ftui-runtime`'s `stdio_capture`,
 `ivm`, `lens`, `flat_combine`, `slo`, `cost_model`, `countmin_sketch`,
 `eprocess_throttle` and nine more.
@@ -223,7 +224,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 Expect a handful of wall-clock budget failures under host load; see
 `.config/nextest.toml` for which ones and how to tell them from a regression.
 
-`make gates` is four checks, each runnable on its own:
+`make gates` is five checks, each runnable on its own:
 
 | Target | Fails when |
 |---|---|
@@ -231,6 +232,7 @@ Expect a handful of wall-clock budget failures under host load; see
 | `make claims` | the ledger is malformed; a proof cites a test or path that does not exist; a README section marked `Status: experimental` has no `Where it runs` line, or a quarantined module gains a production consumer |
 | `make env-docs` | `ftui-harness` or `ftui-demo-showcase` reads an environment variable the README does not attribute to it, the README attributes one neither reads, or an allowlist entry names a variable no longer read. **Scoped to those two binaries only** — see below |
 | `make close-audit` | a bead was closed after 2026-09-19T21:10Z without a reason of 80+ characters carrying a `kind:value` reference |
+| `make baseline-benches` | a `tests/baseline.json` row binds an SLO budget to a Criterion benchmark ID no `benches/*.rs` emits (unless listed in `docs/baseline-bench-exceptions.txt` against an open bead) |
 
 **`env-docs` sees two crates, not the workspace.** `check_env_docs.py` hardcodes
 `BINARIES = ("ftui-harness", "ftui-demo-showcase")` and walks only those two
@@ -352,17 +354,25 @@ cargo test -p ftui-harness
 | Crate | Focus Areas |
 |-------|-------------|
 | `doctor_frankentui` | Verification harness, intent inference, synthesis |
+| `ftui` | Public facade, prelude, `agent_shell`, README snippet & consumer tests |
 | `ftui-a11y` | Accessibility tree, roles, states, diff tracking |
+| `ftui-backend` | Backend traits (`BackendEventSource`, `BackendPresenter`, `BackendFeatures`) |
 | `ftui-core` | Terminal lifecycle, event parsing, capabilities |
+| `ftui-demo-showcase` | Snapshot tests for all 45 demo screens |
+| `ftui-extras` | Feature-gated add-ons, VFX rasterizer |
+| `ftui-harness` | Test utilities + snapshot framework |
+| `ftui-i18n` | String catalog, CLDR plural rules, number/date formatting |
+| `ftui-layout` | Constraint solving, flex/grid layout |
+| `ftui-pty` | PTY process spawning, virtual terminal model, E2E test utilities |
 | `ftui-render` | Buffer operations, diff computation, ANSI emission |
+| `ftui-runtime` | Event loop, command execution, subscriptions |
+| `ftui-showcase-wasm` | WASM showcase runner core + parity tests |
+| `ftui-simd` | Opt-in portable-SIMD ASCII width and row-comparison kernels |
 | `ftui-style` | Style + theme system |
 | `ftui-text` | Unicode width, text wrapping, grapheme handling |
-| `ftui-layout` | Constraint solving, flex/grid layout |
+| `ftui-tty` | Native Unix `termios`/`poll`/`SIGWINCH` backend |
+| `ftui-web` | Step-driven WASM backend (`StepProgram`, deterministic clock, web patch emission) |
 | `ftui-widgets` | Widget rendering, state management |
-| `ftui-runtime` | Event loop, command execution, subscriptions |
-| `ftui-extras` | Feature-gated add-ons, VFX rasterizer |
-| `ftui-demo-showcase` | Snapshot tests for all demo screens |
-| `ftui-harness` | Test utilities + snapshot framework |
 | `tests/` (repo root) | Fixtures, baselines and captured artifacts. No Rust tests; cargo compiles nothing here |
 
 ### Snapshot Testing
@@ -411,6 +421,7 @@ Prerequisites:
 - `python3`
 - `jq`
 - `rg` (ripgrep)
+- `vhs`, `ffmpeg`, and `ffprobe` (required by `doctor_frankentui_happy_e2e.sh` for real VHS/frame media capture)
 - `cargo-llvm-cov` (`cargo install cargo-llvm-cov`)
 - Python TOML parser support (`tomllib` in Python `3.11+`, or `python3 -m pip install tomli` for Python `<3.11`)
 
@@ -509,7 +520,7 @@ frankentui/
 │   ├── ftui-text/                     # Spans, segments, rope editor
 │   ├── ftui-tty/                      # TTY backend
 │   ├── ftui-web/                      # Web backend
-│   └── ftui-widgets/                  # Core widget library (80+ widgets)
+│   └── ftui-widgets/                  # Core widget library (55 widget types, 70 impls; 93 workspace-wide)
 ├── scripts/                           # E2E test scripts + benchmarks
 ├── tests/                             # Fixtures/baselines/artifacts (no .rs, not a cargo target)
 └── fuzz/                              # Fuzz testing (excluded from workspace)
@@ -927,7 +938,7 @@ rg -l -t rust 'unwrap\(' | xargs ast-grep run -l Rust -p '$X.unwrap()' --json
 
 ```
 mcp__morph-mcp__warp_grep(
-  repoPath: "/dp/frankentui",
+  repoPath: "/data/projects/frankentui",
   query: "How does the buffer diff algorithm work?"
 )
 ```
@@ -1031,7 +1042,7 @@ characters. A step you can satisfy by believing you did it is not a step.
    cargo fmt --check
    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
    cargo nextest run --workspace --no-fail-fast   # or the affected crates
-   make gates                                     # 4 stdlib checks, ~6s
+   make gates                                     # 5 stdlib checks, ~6s
    ```
 
    For E2E-affecting changes, the relevant `tests/e2e/scripts/*.sh` too. Builds
@@ -1063,7 +1074,7 @@ characters. A step you can satisfy by believing you did it is not a step.
    deliberately left undone.
 
 **Monthly drift check.** Run the `frankentui-truth-gates` tool in
-`.config/dsr-quality.yaml` on a DSR host (it runs all four `make gates` checks
+`.config/dsr-quality.yaml` on a DSR host (it runs all five `make gates` checks
 plus every script self-test, compiles nothing, and needs no network). File a
 bead per drift row it reports. This is the scheduled audit G37 asked for; it is
 a DSR job rather than a `reality_check.yml` workflow because GitHub Actions was
