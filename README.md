@@ -1639,13 +1639,17 @@ native OSC 52 commands do not grant browser clipboard permissions.
 
 ### Width Calculation
 
-Every width in the render path goes through `ftui_core::text_width`. ASCII is
-answered inline; every other grapheme cluster is looked up in a per-thread
-**S3-FIFO cache** in front of the Unicode width tables (`unicode-width`,
-VS16 stripping, zero-width scans):
+Every width in the render path goes through `ftui_core::text_width`. Printable
+ASCII strings and graphemes are answered inline (`ascii_width`, SIMD-accelerated
+when `simd` is enabled); in `grapheme_width` and `display_width`, every
+non-ASCII grapheme cluster (`<= 128` bytes) is looked up in a per-thread
+**S3-FIFO cache** in front of the Unicode width tables (`unicode-display-width`,
+`unicode-width`, VS16 stripping, zero-width scans), while `char_width` (single
+scalar) and `grapheme_width_with_cjk` (explicit caller-chosen CJK policy)
+compute directly without caching:
 
 ```
-grapheme_width(cluster)
+display_width(text) / grapheme_width(cluster)
   ASCII?            → byte length, no cache
   cache hit         → width (S3-FIFO, 4096 entries, keyed by a 64-bit hash)
   miss              → Unicode tables, then insert
