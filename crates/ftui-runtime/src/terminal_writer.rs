@@ -132,6 +132,7 @@ use ftui_core::inline_mode::{InlineStrategy, sanitize_overlay_log_line};
 use ftui_core::terminal_capabilities::ColorDepth;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_core::terminal_session::terminal_output_lock;
+use ftui_render::ansi;
 use ftui_render::buffer::{Buffer, DirtySpanConfig, DirtySpanStats};
 use ftui_render::counting_writer::CountingWriter;
 use ftui_render::diff::{BufferDiff, TileDiffConfig, TileDiffFallback, TileDiffStats};
@@ -159,6 +160,21 @@ const CURSOR_RESTORE: &[u8] = b"\x1b8";
 
 /// Reset SGR before returning control to the UI renderer.
 const SGR_RESET: &[u8] = b"\x1b[0m";
+
+/// Move to `row`, `col` (0-indexed): `CUP`, or with `bottom: Some(height)`
+/// the same row of a `height`-row terminal counted from its last row (see
+/// `TerminalWriter::move_to_row`).
+fn write_row_address(
+    w: &mut impl Write,
+    bottom: Option<u16>,
+    row: u16,
+    col: u16,
+) -> io::Result<()> {
+    match bottom {
+        Some(height) => ansi::cup_from_bottom(w, height.saturating_sub(1).saturating_sub(row), col),
+        None => ansi::cup(w, row, col),
+    }
+}
 
 /// Clamp the plain projection using the same policy as unstyled overlay logs,
 /// then retain the SGR sequences interspersed through that visible prefix.
@@ -629,6 +645,14 @@ pub struct TerminalWriter<W: Write> {
     /// Absolute position of the visible UI cursor after the last inline
     /// present (`None`: hidden), restored after a standalone log flush.
     last_ui_cursor: Option<(u16, u16)>,
+    /// The cursor's row within the displayed bottom-anchored overlay UI, and
+    /// that UI's height, after this writer's last output (`None`: unknown).
+    /// A multiplexer that shrinks a pane deletes the rows below the cursor
+    /// before it moves anything else (tmux 3.6), so the UI may have lost
+    /// that many bottom rows; see `reanchor_inline_cursor`. Unlike absolute
+    /// coordinates this survives a resize: the multiplexer keeps the cursor
+    /// on its content.
+    cursor_ui_row: Option<(u16, u16)>,
     /// First row below the last streamed log line (bottom-anchored overlay
     /// transport). Before a frame is displayed, a later stream and the first
     /// frame must not start above it: an inline-auto UI may have grown
@@ -812,6 +836,7 @@ impl<W: Write> TerminalWriter<W> {
             pending_log_bytes: 0,
             inline_rows_reserved: false,
             last_ui_cursor: None,
+            cursor_ui_row: None,
             log_floor: None,
             stale_frame: None,
             diff_strategy,
@@ -1038,7 +1063,9 @@ impl<W: Write> TerminalWriter<W> {
         self.log_floor = None;
         // Old-geometry coordinates are meaningless after a resize: drop the
         // displayed-region cache so neither log positioning nor
-        // clear_inline_region_diff acts on rows that no longer exist.
+        // clear_inline_region_diff acts on rows that no longer exist. The
+        // cursor's row within the UI stays: it is relative to the UI, which
+        // the multiplexer moved together with the cursor.
         self.last_inline_region = None;
         self.spare_buffer = None;
         self.clone_buf = None;
@@ -1226,6 +1253,58 @@ impl<W: Write> TerminalWriter<W> {
         }
     }
 
+    /// Whether rows are counted from the terminal's last row (see
+    /// [`Self::move_to_row`]): a bottom-anchored inline UI on the overlay
+    /// strategy. A DECSTBM region keeps absolute rows; cursor-up there is
+    /// bounded by the region's margins.
+    fn bottom_addressed(&self) -> bool {
+        matches!(self.inline_strategy, InlineStrategy::OverlayRedraw)
+            && matches!(self.ui_anchor, UiAnchor::Bottom)
+            && matches!(
+                self.screen_mode,
+                ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
+            )
+    }
+
+    /// Move to `row`, `col` (0-indexed).
+    ///
+    /// A bottom-anchored overlay UI always ends at the terminal's last row,
+    /// so its rows are addressed from that row ([`ansi::cup_from_bottom`]).
+    /// A multiplexer keeps a pane's bottom rows at the bottom when it is
+    /// resized (shrinking pushes top rows into history, growing pulls them
+    /// back), so bytes the terminal reads after a resize this writer has not
+    /// seen yet still reach the UI's rows. Absolute rows land on log lines
+    /// instead and erase them for good: in the G42 journey one resize under
+    /// tmux lost 105 of 100,000 lines and a 50-resize storm about 1,900.
+    fn move_to_row(&mut self, row: u16, col: u16) -> io::Result<()> {
+        let bottom = self.bottom_addressed().then_some(self.term_height);
+        write_row_address(self.writer(), bottom, row, col)
+    }
+
+    /// Bring the displayed bottom-anchored overlay UI back to the last row.
+    ///
+    /// From the cursor's known row in the UI, one `CR LF` per UI row below
+    /// it: where those rows exist this only moves down; where a shrinking
+    /// multiplexer deleted them (tmux removes the rows below the cursor
+    /// first, so a visible input cursor above a hint row loses that row),
+    /// the LFs scroll the screen to make them again. Either way the UI's
+    /// last row is the screen's last row afterwards, which `move_to_row`
+    /// relies on; without this the next erase took the newest log line.
+    fn reanchor_inline_cursor(&mut self) -> io::Result<()> {
+        if !self.bottom_addressed() {
+            return Ok(());
+        }
+        let Some((row, height)) = self.cursor_ui_row else {
+            return Ok(());
+        };
+        let last = height.saturating_sub(1);
+        for _ in row..last {
+            self.writer().write_all(b"\r\n")?;
+        }
+        self.cursor_ui_row = Some((last, height));
+        Ok(())
+    }
+
     /// Get the inline mode rendering strategy.
     pub fn inline_strategy(&self) -> InlineStrategy {
         self.inline_strategy
@@ -1369,7 +1448,7 @@ impl<W: Write> TerminalWriter<W> {
         // Without this, stale background fills can persist when inline regions shrink.
         self.writer().write_all(SGR_BG_DEFAULT)?;
         for row in start_row..end_row {
-            write!(self.writer(), "\x1b[{};1H", row.saturating_add(1))?;
+            self.move_to_row(row, 0)?;
             self.writer().write_all(ERASE_LINE)?;
         }
         Ok(())
@@ -2080,6 +2159,7 @@ impl<W: Write> TerminalWriter<W> {
         self.stale_frame = None;
         self.log_floor = None;
         self.last_inline_region = None;
+        self.cursor_ui_row = None;
         self.reset_diff_strategy();
     }
 
@@ -2140,10 +2220,13 @@ impl<W: Write> TerminalWriter<W> {
                 }
             }
 
-            // G48, before anything else moves the cursor: make room for the
-            // UI below the shell's last line (first inline output only),
-            // stream batched overlay logs into scrollback, and scroll for a
-            // grown UI so the rows it now needs are vacated, not drawn over.
+            // G48, before anything else moves the cursor: put the displayed
+            // UI back on the last row if a resize took rows below the cursor,
+            // make room for the UI below the shell's last line (first inline
+            // output only), stream batched overlay logs into scrollback, and
+            // scroll for a grown UI so the rows it now needs are vacated, not
+            // drawn over.
+            self.reanchor_inline_cursor()?;
             if visible_height > 0 {
                 self.reserve_inline_rows(visible_height)?;
             }
@@ -2229,9 +2312,13 @@ impl<W: Write> TerminalWriter<W> {
 
                     // Reset presenter state (cursor unknown) because we manually moved cursor/saved
                     // and apply viewport offset for inline positioning.
+                    let bottom_rows = self
+                        .bottom_addressed()
+                        .then(|| self.term_height.saturating_sub(ui_y_start));
                     let presenter = self.presenter.as_mut().expect("presenter consumed");
                     presenter.reset();
                     presenter.set_viewport_offset_y(ui_y_start);
+                    presenter.set_viewport_bottom(bottom_rows);
 
                     if decision.has_diff {
                         presenter.prepare_runs(&self.diff_scratch);
@@ -2269,6 +2356,7 @@ impl<W: Write> TerminalWriter<W> {
 
             let mut show_cursor = false;
             self.last_ui_cursor = None;
+            self.cursor_ui_row = None;
             if cursor_visible
                 && let Some((cx, cy)) = cursor
                 && cx < buffer.width()
@@ -2277,14 +2365,16 @@ impl<W: Write> TerminalWriter<W> {
             {
                 // Move to UI start + cursor y
                 let abs_y = ui_y_start.saturating_add(cy);
-                write!(
-                    self.writer(),
-                    "\x1b[{};{}H",
-                    abs_y.saturating_add(1),
-                    cx.saturating_add(1)
-                )?;
+                self.move_to_row(abs_y, cx)?;
                 show_cursor = true;
                 self.last_ui_cursor = Some((cx, abs_y));
+                self.cursor_ui_row = Some((cy, visible_height));
+            } else if self.bottom_addressed() && visible_height > 0 {
+                // Park the hidden cursor on the UI's last row: the restore
+                // above returns to wherever it was before the frame, and the
+                // next re-anchor needs its row in the UI.
+                self.move_to_row(self.term_height - 1, 0)?;
+                self.cursor_ui_row = Some((visible_height - 1, visible_height));
             }
             self.set_cursor_visibility(show_cursor)?;
 
@@ -2387,6 +2477,7 @@ impl<W: Write> TerminalWriter<W> {
                 presenter.reset();
                 // AltScreen always starts at (0,0) relative to terminal.
                 presenter.set_viewport_offset_y(0);
+                presenter.set_viewport_bottom(None);
 
                 let stats = if decision.has_diff {
                     presenter.prepare_runs(&self.diff_scratch);
@@ -2813,15 +2904,17 @@ impl<W: Write> TerminalWriter<W> {
         // Leftover presenter style must not colour the logs or the rows the
         // scroll brings in.
         self.writer().write_all(SGR_RESET)?;
+        self.reanchor_inline_cursor()?;
         if height > 0 {
             if start >= self.term_height {
                 // The newest line sits on the bottom row (a UI-less stream
                 // came first): open a fresh row below it.
-                let bottom = self.term_height;
-                write!(self.writer(), "\x1b[{bottom};1H\r\n")?;
+                self.move_to_row(self.term_height - 1, 0)?;
+                self.writer().write_all(b"\r\n")?;
                 start = self.term_height - 1;
             }
-            write!(self.writer(), "\x1b[{};1H\x1b[J", start.saturating_add(1))?;
+            self.move_to_row(start, 0)?;
+            self.writer().write_all(b"\x1b[J")?;
             for line in &lines {
                 self.write_log_payload(&line.text, line.mode)?;
                 self.writer().write_all(b"\r\n")?;
@@ -2834,28 +2927,29 @@ impl<W: Write> TerminalWriter<W> {
         } else {
             // No UI rows: the newest line lives on the bottom row, so each
             // line starts with the scroll instead of ending with it.
-            let bottom = self.term_height;
-            write!(self.writer(), "\x1b[{bottom};1H")?;
+            self.move_to_row(self.term_height - 1, 0)?;
             for line in &lines {
                 self.writer().write_all(b"\r\n")?;
                 self.write_log_payload(&line.text, line.mode)?;
             }
         }
         // The last line now ends just above the bottom `height` rows (or on
-        // the bottom row when there is no UI).
+        // the bottom row when there is no UI), and the cursor is on the last
+        // of those rows.
         self.log_floor = Some(self.term_height - height);
+        self.cursor_ui_row = height.checked_sub(1).map(|last| (last, height));
 
         if repaint {
             if displayed.is_some() && height > 0 {
                 self.repaint_prev_frame(start, height)?;
                 if let Some((x, y)) = self.last_ui_cursor {
-                    write!(
-                        self.writer(),
-                        "\x1b[{};{}H",
-                        y.saturating_add(1),
-                        x.saturating_add(1)
-                    )?;
+                    self.move_to_row(y, x)?;
                     self.set_cursor_visibility(true)?;
+                    self.cursor_ui_row =
+                        Some((y.saturating_sub(self.term_height - height), height));
+                } else if self.bottom_addressed() {
+                    self.move_to_row(self.term_height - 1, 0)?;
+                    self.cursor_ui_row = Some((height - 1, height));
                 }
             } else if was_visible {
                 self.set_cursor_visibility(true)?;
@@ -2877,9 +2971,13 @@ impl<W: Write> TerminalWriter<W> {
             return Ok(());
         };
         let full = BufferDiff::full(prev.width(), prev.height().min(height));
+        let bottom_rows = self
+            .bottom_addressed()
+            .then(|| self.term_height.saturating_sub(start));
         let presenter = self.presenter.as_mut().expect("presenter consumed");
         presenter.reset();
         presenter.set_viewport_offset_y(start);
+        presenter.set_viewport_bottom(bottom_rows);
         presenter.prepare_runs(&full);
         presenter.emit_diff_runs(prev, Some(&self.pool), Some(&self.links))?;
         presenter.finish_frame()
@@ -2909,8 +3007,7 @@ impl<W: Write> TerminalWriter<W> {
             self.deactivate_scroll_region()?;
         }
         self.writer().write_all(SGR_RESET)?;
-        let bottom = self.term_height;
-        write!(self.writer(), "\x1b[{bottom};1H")?;
+        self.move_to_row(self.term_height - 1, 0)?;
         for _ in 0..grow {
             self.writer().write_all(b"\r\n")?;
         }
@@ -2993,6 +3090,7 @@ impl<W: Write> TerminalWriter<W> {
         self.stale_frame = None;
         self.log_floor = None;
         self.last_inline_region = None;
+        self.cursor_ui_row = None;
         self.reset_diff_strategy();
         if let Some(err) = first_error {
             Err(err)
@@ -3271,6 +3369,7 @@ impl<W: Write> TerminalWriter<W> {
         } else {
             None
         };
+        let bottom = self.bottom_addressed().then_some(self.term_height);
         let Some(presenter) = &mut self.presenter else {
             return;
         };
@@ -3303,7 +3402,7 @@ impl<W: Write> TerminalWriter<W> {
         }
 
         if let Some((row, scroll_fresh_row)) = park {
-            let _ = write!(writer, "\x1b[{row};1H");
+            let _ = write_row_address(writer, bottom, row.saturating_sub(1), 0);
             if scroll_fresh_row {
                 let _ = writer.write_all(b"\r\n");
             }
@@ -3388,7 +3487,11 @@ mod tests {
         }
     }
 
-    fn max_cursor_row(output: &[u8]) -> u16 {
+    /// Highest 1-based row a `CUP` in `output` addresses on a `height`-row
+    /// terminal. A row of 9999 is the bottom-addressing sentinel: it means
+    /// the last row, less any `CUU` right after it. Any other row is taken as
+    /// written, so an accidental `CUP` past the bottom still shows up.
+    fn max_cursor_row(output: &[u8], height: u16) -> u16 {
         let mut max_row = 0u16;
         let mut i = 0;
         while i + 2 < output.len() {
@@ -3411,6 +3514,10 @@ mod tests {
                         j += 1;
                     }
                     if saw_col && j < output.len() && output[j] == b'H' {
+                        if row == 9999 {
+                            let up = cursor_up_at(output, j + 1);
+                            row = height.saturating_sub(up);
+                        }
                         max_row = max_row.max(row);
                     }
                 }
@@ -3418,6 +3525,24 @@ mod tests {
             i += 1;
         }
         max_row
+    }
+
+    /// The count of a `CSI n A` starting at `at` (`CSI A` is 1), else 0.
+    fn cursor_up_at(output: &[u8], at: usize) -> u16 {
+        let Some(rest) = output.get(at..).filter(|rest| rest.starts_with(b"\x1b[")) else {
+            return 0;
+        };
+        let digits = rest[2..].iter().take_while(|b| b.is_ascii_digit()).count();
+        if rest.get(2 + digits) != Some(&b'A') {
+            return 0;
+        }
+        if digits == 0 {
+            return 1;
+        }
+        std::str::from_utf8(&rest[2..2 + digits])
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0)
     }
 
     fn basic_caps() -> TerminalCapabilities {
@@ -4422,7 +4547,7 @@ mod tests {
             writer.present_ui(&buffer, None, true).unwrap();
         }
 
-        let max_row = max_cursor_row(&output);
+        let max_row = max_cursor_row(&output, 3);
         assert!(
             max_row <= 3,
             "cursor row {} exceeds terminal height",
@@ -4457,7 +4582,7 @@ mod tests {
             writer.present_ui(&buffer2, None, true).unwrap();
         }
 
-        let max_row = max_cursor_row(&output);
+        let max_row = max_cursor_row(&output, 10);
         assert!(
             max_row <= 10,
             "diff frame emitted cursor row {max_row} past the 10-row terminal"
@@ -5169,7 +5294,8 @@ mod tests {
         }
 
         assert!(
-            contains_bytes(&output, b"\x1b[20;1H\x1b[Jtest log\r\n"),
+            // Row 20 of 24, addressed from the last row (4 rows up).
+            contains_bytes(&output, b"\x1b[9999;1H\x1b[4A\x1b[Jtest log\r\n"),
             "log stream must start on the first UI row after erasing it"
         );
         let mut vt = vt_screen(&output, 80, 24);
@@ -5269,7 +5395,7 @@ mod tests {
             writer.flush().unwrap();
         }
 
-        let stream_start = b"\x1b[20;1H\x1b[J";
+        let stream_start = b"\x1b[9999;1H\x1b[4A\x1b[J";
         let count = output
             .windows(stream_start.len())
             .filter(|w| *w == stream_start)
@@ -5458,8 +5584,9 @@ mod tests {
 
         // UI starts at row 20 (24 - 5 + 1 = 20) (1-indexed)
         // Cursor requested at relative (2, 1) -> (x=3, y=2) (1-indexed)
-        // Absolute position: y = 20 + 1 = 21. x = 3.
-        let expected_pos = b"\x1b[21;3H";
+        // Absolute position: y = 20 + 1 = 21, x = 3: the overlay UI counts
+        // rows from the last one, so column 3 there and 3 rows up.
+        let expected_pos = b"\x1b[9999;3H\x1b[3A";
 
         // Find restore
         let restore_idx = find_nth(&output, CURSOR_RESTORE, 1).expect("expected cursor restore");
@@ -6257,13 +6384,14 @@ mod tests {
                     assert_eq!(output.contains('\n'), every_line);
                     assert_eq!(output.contains("second"), every_line);
                     // Region: its bottom margin (row 6). Bottom overlay: the
-                    // stream starts on the first UI row (7). Top: row 8.
+                    // stream starts on the first UI row (7 of 8: one row
+                    // above the last, addressed from the bottom). Top: row 8.
                     let log_row = match (anchor, scroll_region) {
-                        (UiAnchor::Top, _) => 8,
-                        (UiAnchor::Bottom, true) => 6,
-                        (UiAnchor::Bottom, false) => 7,
+                        (UiAnchor::Top, _) => "\x1b[8;1H",
+                        (UiAnchor::Bottom, true) => "\x1b[6;1H",
+                        (UiAnchor::Bottom, false) => "\x1b[9999;1H\x1b[A",
                     };
-                    assert!(output.contains(&format!("\x1b[{log_row};1H")));
+                    assert!(output.contains(log_row));
                     if mode == SanitizeMode::SgrOnly {
                         assert!(output.contains("colored\x1b[0m"));
                         match (anchor, scroll_region) {
@@ -6432,7 +6560,11 @@ mod tests {
             writer.flush().unwrap();
         }
 
-        assert!(contains_bytes(&output, b"\x1b[20;1H\x1b[Jfirst line\r\n"));
+        // The first UI row, 20 of 24: 4 rows above the last.
+        assert!(contains_bytes(
+            &output,
+            b"\x1b[9999;1H\x1b[4A\x1b[Jfirst line\r\n"
+        ));
         for (i, _) in output.iter().enumerate().filter(|(_, b)| **b == b'\n') {
             assert!(i > 0 && output[i - 1] == b'\r', "bare LF at byte {i}");
         }
@@ -6547,7 +6679,8 @@ mod tests {
         assert!(
             contains_bytes(
                 writer.writer().inner().get_ref(),
-                b"\x1b[17;1H\x1b[Jmid-flight\r\n"
+                // Row 17 of 24, addressed 7 rows above the last.
+                b"\x1b[9999;1H\x1b[7A\x1b[Jmid-flight\r\n"
             ),
             "the stream starts on the displayed region's first row"
         );

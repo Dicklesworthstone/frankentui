@@ -90,7 +90,12 @@ fn check_erases(
                 let row = numbers[0];
                 let col = numbers.get(1).copied().unwrap_or(1);
                 // Check the wire coordinates before the model clamps them.
-                if numbers.len() > 2 || row > height || col > width {
+                // Row 9999 is the overlay UI's bottom-addressing sentinel
+                // (`ansi::cup_from_bottom`): the last row on purpose, then a
+                // cursor-up the model applies. Any other row past the bottom
+                // is still an accidental clamp.
+                let row_in_bounds = row <= height || row == 9999;
+                if numbers.len() > 2 || !row_in_bounds || col > width {
                     return Err(format!(
                         "out-of-bounds CUP {row};{col} for {size:?} at byte {start}"
                     ));
@@ -184,6 +189,14 @@ fn erase_scope_observer_accepts_ui_erases_and_rejects_planted_violations() {
     // from any row above it.
     assert_eq!(check(b"\x1b[8;1H\x1b[J", 7..10, EraseOperation::Log), Ok(1));
     assert!(check(b"\x1b[7;1H\x1b[J", 7..10, EraseOperation::Log).is_err());
+    // The same rows addressed from the bottom: the sentinel row clamps to
+    // the last row (10) and the cursor-up decides which row is erased.
+    assert_eq!(
+        check(b"\x1b[9999;1H\x1b[2A\x1b[J", 7..10, EraseOperation::Log),
+        Ok(1)
+    );
+    assert!(check(b"\x1b[9999;1H\x1b[3A\x1b[J", 7..10, EraseOperation::Log).is_err());
+    assert!(check(b"\x1b[9998;1H\x1b[K", 7..10, EraseOperation::Present).is_err());
     assert!(check(b"\x1b[1;1H\x1b[K", 7..10, EraseOperation::Other).is_err());
     // Shrinking leaves the old UI on screen until the next present. Its
     // obsolete rows may be erased by present, but not used for logs yet.

@@ -427,6 +427,9 @@ pub struct Presenter<W: Write> {
     cursor_y: Option<u16>,
     /// Viewport Y offset (added to all row coordinates).
     viewport_offset_y: u16,
+    /// Rows from the viewport's top row to the terminal's last row, when rows
+    /// are addressed from the bottom instead (see `set_viewport_bottom`).
+    viewport_bottom: Option<u16>,
     /// Terminal capabilities for conditional output.
     capabilities: TerminalCapabilities,
     /// Cached hyperlink policy for the lifetime of this presenter.
@@ -453,6 +456,7 @@ impl<W: Write> Presenter<W> {
             cursor_x: None,
             cursor_y: None,
             viewport_offset_y: 0,
+            viewport_bottom: None,
             hyperlinks_enabled: capabilities.use_hyperlinks(),
             capabilities,
             plan_scratch: cost_model::RowPlanScratch::default(),
@@ -484,6 +488,33 @@ impl<W: Write> Presenter<W> {
     /// Useful for inline mode where the UI starts at a specific row.
     pub fn set_viewport_offset_y(&mut self, offset: u16) {
         self.viewport_offset_y = offset;
+    }
+
+    /// Address rows from the terminal's last row instead of its first.
+    ///
+    /// With `Some(rows)`, the viewport is the terminal's last `rows` rows and
+    /// row `y` is reached with [`ansi::cup_from_bottom`] (`rows - 1 - y` rows
+    /// above the last row), so a bottom-anchored region is drawn on the right
+    /// rows even if the terminal's height changed after the caller last
+    /// learned it. `None` restores [`Self::set_viewport_offset_y`] addressing.
+    pub fn set_viewport_bottom(&mut self, rows: Option<u16>) {
+        self.viewport_bottom = rows;
+    }
+
+    /// Absolute move to viewport row `y`, column `x` (0-indexed).
+    fn cup_row(&mut self, y: u16, x: u16) -> io::Result<()> {
+        match self.viewport_bottom {
+            Some(rows) => ansi::cup_from_bottom(
+                &mut self.writer,
+                rows.saturating_sub(1).saturating_sub(y),
+                x,
+            ),
+            None => ansi::cup(
+                &mut self.writer,
+                y.saturating_add(self.viewport_offset_y),
+                x,
+            ),
+        }
     }
 
     /// Get the terminal capabilities.
@@ -1289,11 +1320,7 @@ impl<W: Write> Presenter<W> {
         }
 
         // Use CUP (cursor position) for absolute positioning
-        ansi::cup(
-            &mut self.writer,
-            y.saturating_add(self.viewport_offset_y),
-            x,
-        )?;
+        self.cup_row(y, x)?;
         self.cursor_x = Some(x);
         self.cursor_y = Some(y);
         Ok(())
@@ -1327,7 +1354,7 @@ impl<W: Write> Presenter<W> {
                     } else if cha <= cup {
                         ansi::cha(&mut self.writer, x)?;
                     } else {
-                        ansi::cup(&mut self.writer, actual_y, x)?;
+                        self.cup_row(y, x)?;
                     }
                 } else if x < cx {
                     // Backward
@@ -1341,7 +1368,7 @@ impl<W: Write> Presenter<W> {
                     } else if cub <= cup {
                         ansi::cub(&mut self.writer, dx)?;
                     } else {
-                        ansi::cup(&mut self.writer, actual_y, x)?;
+                        self.cup_row(y, x)?;
                     }
                 } else {
                     // Same column (should have been caught by early check, but for safety)
@@ -1349,11 +1376,11 @@ impl<W: Write> Presenter<W> {
             } else {
                 // Unknown x, same row (unlikely but possible if we only tracked y?)
                 // Fallback to absolute
-                ansi::cup(&mut self.writer, actual_y, x)?;
+                self.cup_row(y, x)?;
             }
         } else {
             // Different row: CUP is the only option
-            ansi::cup(&mut self.writer, actual_y, x)?;
+            self.cup_row(y, x)?;
         }
 
         self.cursor_x = Some(x);

@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 2cc2508d4e5ceeca99ee9522e76b0b2ca02358020003d966840fdd9f7a60c06a # shrinks to profile = 0, top = false, auto = false, operations = [(2, 20, 5, 1, 0, [], [])]
 cc d5cdfdbfa104658b07ee8dd6798566f77da82beb6da577d1b945a329736614c6 # shrinks to profile = 0, top = false, auto = true, operations = [(0, 20, 5, 1, 0, [], [(0, 0, 32, true)]), (4, 20, 5, 2, 0, [], []), (2, 20, 5, 1, 0, [], [])]
+cc 724498a7ce5932f717e0e7fda6f02f6dd3f3952e805bc63db6c4bdb5ddfea391 # shrinks to profile = 2, top = false, auto = false, operations = [(0, 20, 5, 1, 0, [], [])]

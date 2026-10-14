@@ -222,6 +222,26 @@ iTerm2, Windows Terminal, nested tmux, tmux versions before 3.6.
 6. **Top-anchored UI** keeps the single-row overwrite: a whole-screen scroll
    would push UI rows into history, and a region not starting at row 1 never
    feeds it. Documented as a limitation.
+7. **Resizes (found by the G42 flagship journey, `.42.7`).** A terminal reads
+   the writer's bytes at whatever size it has when they arrive, which can be
+   after a resize the writer has not seen. With absolute `CUP` rows, one tmux
+   resize during streaming lost 105 of 100,000 lines and a 50-resize storm
+   about 1,900: on a grow the `ED 0` landed on rows tmux had pulled back from
+   history, on a shrink below the UI, which then scrolled into history.
+   Telling the writer the size sooner did not help (measured, reverted). So
+   the bottom-anchored overlay UI is addressed from the terminal's last row
+   (`CSI 9999;colH` then `CUU`), which a multiplexer keeps at the bottom.
+   tmux also deletes the rows *below the cursor* first when it shrinks a pane,
+   so a visible input cursor above the UI's last row costs the UI that row;
+   before each erase or frame the writer re-anchors from the cursor's known
+   row in the UI with one `CR LF` per row below it (these scroll the missing
+   rows back where tmux deleted them). That row survives `set_size`. Result,
+   tmux 3.6, 100,000 lines: one resize and both 50-resize storms deliver every
+   line once, in order. When the width shrinks, tmux reflows the UI's
+   full-width rows and part of a frame can overflow into history (35 fragment
+   rows in the width storm; none with height-only resizes): a known
+   limitation, `bd-g00-root-epic-ewths.42.8`. DECSTBM strategies keep
+   absolute rows (cursor-up there is bounded by the region's margins).
 
 ## References
 

@@ -1544,9 +1544,12 @@ fn inline_reflow_edge_ui_larger_than_terminal() {
         w.present_ui(&buf, None, false).unwrap();
     }
 
-    // Verify no cursor row exceeds terminal height
+    // Verify no cursor row exceeds terminal height. Row 9999 is the overlay
+    // UI's bottom-addressing sentinel: every terminal clamps it to the last
+    // row, and only a cursor-up follows it. Any other row is taken as written.
     let cups = parse_cup_sequences(&output);
     for &(row, _) in &cups {
+        let row = if row == 9999 { 5 } else { row };
         assert!(row <= 5, "Cursor row {} exceeds terminal height 5", row);
     }
     log_jsonl("pass", &[("test", "edge_ui_larger")]);

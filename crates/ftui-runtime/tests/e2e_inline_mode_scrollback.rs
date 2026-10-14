@@ -958,3 +958,154 @@ fn oracle_detects_single_row_overwrite() {
     }
     assert_lines_in_order(&plain.transcript(), "line ", &numbered("line ", 1..=50));
 }
+
+// ============================================================================
+// 16. Output written before a resize the writer has not seen yet
+// ============================================================================
+
+/// What a multiplexer shows once it has resized a pane to `rows`: the same
+/// content kept against the bottom (shrinking pushes top rows into history,
+/// growing pulls history rows back down), as tmux does. Built by replaying
+/// the transcript into a terminal of the new height.
+fn bottom_anchored_resize(emu: &mut Emulator, rows: u16) -> Emulator {
+    let mut resized = Emulator::new(emu.cols, rows);
+    resized.feed(emu.transcript().join("\r\n").as_bytes());
+    resized
+}
+
+/// G42 journey, reduced: a terminal reads the writer's bytes after its size
+/// changed, before the writer heard of it (bytes in flight, or a coalesced
+/// resize). Absolute rows then miss the UI: on a grow, the erase lands on
+/// log lines the multiplexer pulled back from history and deletes them; on
+/// a shrink, it clamps below the UI, which scrolls into history. Addressing
+/// the UI from the last row keeps both cases exact.
+#[test]
+fn overlay_stream_survives_a_resize_it_has_not_seen_yet() {
+    for (rows, case) in [(34, "grown to 34"), (18, "shrunk to 18")] {
+        let out = SharedOutput::default();
+        let mut writer = TerminalWriter::new(
+            out.clone(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        for i in 1..=40 {
+            writer.write_log(&format!("pre {i:03}\n")).unwrap();
+        }
+        writer
+            .present_ui(&ui_frame(80, 5, "A"), None, true)
+            .unwrap();
+        writer.flush().unwrap();
+        let mut before = Emulator::new(80, 24);
+        before.feed(&out.bytes());
+
+        let mut after = bottom_anchored_resize(&mut before, rows);
+        let mark = out.len();
+        for i in 1..=10 {
+            writer.write_log(&format!("post {i:03}\n")).unwrap();
+        }
+        writer.flush().unwrap();
+        after.feed(&out.bytes()[mark..]);
+
+        let transcript = after.transcript();
+        assert_lines_in_order(&transcript, "pre ", &numbered("pre ", 1..=40));
+        assert_lines_in_order(&transcript, "post ", &numbered("post ", 1..=10));
+        assert_no_ui_rows_in_history(&mut after);
+        let visible = after.visible();
+        let ui_top = usize::from(rows) - 5;
+        assert!(
+            (0..5).all(|y| visible[ui_top + y].starts_with(&format!("UI-A-row{y}"))),
+            "{case}: the frame is repainted on the last 5 rows: {visible:?}"
+        );
+        assert_eq!(
+            visible[ui_top - 1],
+            "post 010",
+            "{case}: the newest line sits right above the UI"
+        );
+    }
+}
+
+/// What tmux 3.6 shows after shrinking a pane to `rows`: it first deletes
+/// the rows below the cursor (whatever they hold), then pushes rows off the
+/// top into history; the cursor stays on its row's content.
+fn tmux_shrink(emu: &mut Emulator, rows: u16) -> Emulator {
+    let (cursor_row, _) = emu.cursor();
+    let below = emu.rows - 1 - cursor_row;
+    let deleted = (emu.rows - rows).min(below);
+    let mut all = emu.transcript();
+    let first_below = all.len() - usize::from(emu.rows) + usize::from(cursor_row) + 1;
+    all.drain(first_below..first_below + usize::from(deleted));
+    let mut resized = Emulator::new(emu.cols, rows);
+    resized.feed(all.join("\r\n").as_bytes());
+    let still_below = below - deleted;
+    if still_below > 0 {
+        resized.feed(format!("\x1b[{still_below}A").as_bytes());
+    }
+    resized
+}
+
+/// A visible input cursor above the UI's last row (agent_shell's input row
+/// over its hint row) loses the rows below it when tmux shrinks the pane, so
+/// the UI no longer ends on the last row. Before re-anchoring, the next
+/// bottom-addressed erase started one row too high and took the newest log
+/// line (the G42 height-only storm lost 16 of 100,000 this way).
+#[test]
+fn overlay_stream_survives_a_shrink_that_deletes_rows_below_the_cursor() {
+    // Either the bytes arrive before the writer hears of the resize, or the
+    // writer applies it first (its region cache is dropped, so the cursor's
+    // row in the UI must survive `set_size`) and draws a new frame.
+    for learns_size in [false, true] {
+        let out = SharedOutput::default();
+        let mut writer = TerminalWriter::new(
+            out.clone(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        for i in 1..=40 {
+            writer.write_log(&format!("pre {i:03}\n")).unwrap();
+        }
+        writer
+            .present_ui(&ui_frame(80, 5, "A"), Some((2, 3)), true)
+            .unwrap();
+        writer.flush().unwrap();
+        let mut before = Emulator::new(80, 24);
+        before.feed(&out.bytes());
+        assert_eq!(before.cursor(), (22, 2), "cursor on the UI's row 3 of 5");
+
+        let mut after = tmux_shrink(&mut before, 21);
+        assert_eq!(
+            after.visible().last().map(String::as_str),
+            Some("UI-A-row3"),
+            "tmux deleted the UI row below the cursor"
+        );
+        let mark = out.len();
+        if learns_size {
+            writer.set_size(80, 21);
+            writer
+                .present_ui(&ui_frame(80, 5, "A"), Some((2, 3)), true)
+                .unwrap();
+        }
+        for i in 1..=10 {
+            writer.write_log(&format!("post {i:03}\n")).unwrap();
+        }
+        writer.flush().unwrap();
+        after.feed(&out.bytes()[mark..]);
+
+        let transcript = after.transcript();
+        assert_lines_in_order(&transcript, "pre ", &numbered("pre ", 1..=40));
+        assert_lines_in_order(&transcript, "post ", &numbered("post ", 1..=10));
+        assert_no_ui_rows_in_history(&mut after);
+        let visible = after.visible();
+        assert!(
+            (0..5).all(|y| visible[16 + y].starts_with(&format!("UI-A-row{y}"))),
+            "learns_size={learns_size}: the frame is repainted on the last 5 rows: {visible:?}"
+        );
+        assert_eq!(
+            visible[15], "post 010",
+            "learns_size={learns_size}: the newest line sits right above the UI"
+        );
+    }
+}

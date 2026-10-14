@@ -522,6 +522,34 @@ pub fn cup<W: Write>(w: &mut W, row: u16, col: u16) -> io::Result<()> {
     w.write_all(&buf[..idx])
 }
 
+/// Row the terminal clamps any larger CUP row to: its last row.
+const BOTTOM_ROW_SENTINEL: u32 = 9999;
+
+/// CUP counted from the terminal's last row: `CSI 9999 ; col H` (every
+/// terminal clamps the row to its last one), then `rows_up` rows of CUU.
+///
+/// `col` is 0-indexed. This reaches the same row of a bottom-anchored
+/// region whatever the terminal's height is when the bytes are read, so it
+/// stays correct when they were written before a resize the writer had not
+/// yet seen (an inline UI under a resizing multiplexer).
+pub fn cup_from_bottom<W: Write>(w: &mut W, rows_up: u16, col: u16) -> io::Result<()> {
+    let mut buf = [0u8; 16];
+    let mut idx = 0usize;
+
+    buf[idx] = 0x1b;
+    buf[idx + 1] = b'[';
+    idx += 2;
+    idx += write_u32_dec(&mut buf[idx..], BOTTOM_ROW_SENTINEL);
+    buf[idx] = b';';
+    idx += 1;
+    idx += write_u32_dec(&mut buf[idx..], (col as u32) + 1);
+    buf[idx] = b'H';
+    idx += 1;
+
+    w.write_all(&buf[..idx])?;
+    cuu(w, rows_up)
+}
+
 /// CUP to column only: `CSI col G` (1-indexed)
 ///
 /// Moves cursor to column on current row.
@@ -1006,6 +1034,24 @@ mod tests {
     fn cup_1_indexed() {
         assert_eq!(to_bytes(|w| cup(w, 0, 0)), b"\x1b[1;1H");
         assert_eq!(to_bytes(|w| cup(w, 23, 79)), b"\x1b[24;80H");
+    }
+
+    #[test]
+    fn cup_from_bottom_clamps_to_the_last_row_then_moves_up() {
+        assert_eq!(to_bytes(|w| cup_from_bottom(w, 0, 0)), b"\x1b[9999;1H");
+        assert_eq!(
+            to_bytes(|w| cup_from_bottom(w, 1, 6)),
+            b"\x1b[9999;7H\x1b[A"
+        );
+        assert_eq!(
+            to_bytes(|w| cup_from_bottom(w, 4, 79)),
+            b"\x1b[9999;80H\x1b[4A"
+        );
+        // The largest column still fits the fixed buffer.
+        assert_eq!(
+            to_bytes(|w| cup_from_bottom(w, 2, u16::MAX)),
+            b"\x1b[9999;65536H\x1b[2A"
+        );
     }
 
     #[test]
