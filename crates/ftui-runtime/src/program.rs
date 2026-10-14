@@ -14260,6 +14260,10 @@ mod tests {
 
         assert!(program.should_tick());
         assert!(!program.should_tick());
+        // The rate persists: Cmd::tick sets a recurring tick, not a one-shot
+        // timer (README command table), so the next interval fires again.
+        program.last_tick = Instant::now() - Duration::from_millis(10);
+        assert!(program.should_tick());
 
         let timeout = program.effective_timeout();
         assert!(timeout <= Duration::from_millis(5));
