@@ -1200,6 +1200,8 @@ Not the Mondrian conformal frame-time gate described below, which is the
 conformal path that is on by default: it calibrates from residual quantiles
 and carries no e-process.
 
+**Where it runs:** `ftui-render::budget` (`EProcessState` fixed-$\lambda$ test on the default frame-budget path); `ftui-runtime::eprocess_throttle` and `ftui-runtime::conformal_alert` are experimental and not constructed by `Program` or `TerminalWriter`.
+
 ### Conformal Alerting
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
@@ -1314,10 +1316,10 @@ Key(Ctrl+x)     ─┘          ModifiedKey
 
 The `InputParser` in `ftui-core` handles the full complexity of terminal input encoding:
 
-- **ANSI escape sequences**: CSI, SS3, DCS, OSC, APC parsing with timeout-based disambiguation
+- **ANSI escape sequences**: CSI, SS3, DCS, and OSC parsing with timeout-based disambiguation (`APC`/`SOS`/`PM` introducers are preserved as `Alt+key` events)
 - **Kitty keyboard protocol**: repeat/release events, modifier encoding, functional key disambiguation
 - **Bracketed paste**: captures pasted text as a single `Paste` event, preventing paste injection attacks
-- **Mouse protocols**: X10, SGR, URXVT, SGR-Pixels with automatic protocol detection
+- **Mouse protocols**: SGR (`1006`) by default, plus opt-in X10 and legacy xterm/rxvt `1015` fallback (`with_x10_mouse` / `with_legacy_mouse`; SGR-Pixels `1016` is cleared on session teardown)
 - **UTF-8 streaming**: multi-byte character assembly across partial reads
 - **Ambiguous prefix handling**: `ESC` alone vs `ESC [` (Alt+key vs CSI) resolved by timing
 
@@ -1352,6 +1354,8 @@ We integrate with **semi‑implicit Euler** and clamp large `dt` by subdividing
 into small steps for stability. The result is deterministic, smooth motion
 without frame‑rate sensitivity.
 
+**Where it runs:** standalone library in `ftui_core::animation::Spring` (exercised by `crates/ftui-core/tests/animation_test.rs`; no widget or showcase screen drives `ftui_core::animation` in production today).
+
 ### Easing Curves + Stagger Distributions
 
 Base animations use analytic easing curves:
@@ -1374,6 +1378,8 @@ offset_i = D · ease(i / (n - 1))
 Optional deterministic jitter is added with a xorshift PRNG and clamped,
 so cascades feel organic but remain reproducible in tests.
 
+**Where it runs:** standalone library in `ftui_core::animation` (`EasingFn`, `StaggerMode`, `stagger_offsets`, `stagger_offsets_with_jitter`; exercised by `crates/ftui-core/tests/animation_test.rs`, with no production widget or showcase caller).
+
 ### Sine Pulse Sequences (Attention Cues)
 
 Attention pulses are a single **half‑cycle sine**:
@@ -1383,6 +1389,8 @@ p(t) = sin(πt),  t ∈ [0, 1]
 ```
 
 This produces a smooth 0→1→0 emphasis without sharp edges or flicker.
+
+**Where it runs:** standalone library in `ftui_core::animation::Pulse` (exercised by `crates/ftui-core/tests/animation_test.rs`, with no production widget or showcase caller).
 
 ### Perceived Luminance (Terminal Background Probe)
 
@@ -1642,8 +1650,8 @@ native OSC 52 commands do not grant browser clipboard permissions.
 ### BiDi & Shaping
 
 - **BiDi** (`bidi.rs`, 1,146 lines): Unicode Bidirectional Algorithm for mixed LTR/RTL text (feature `bidi`, used by `Paragraph` rendering and the opt-in `CursorNavigator::with_visual_bidi` caret mode)
-- **Shaping** (`shaping.rs`, 1,500+ lines): script/run segmentation for cluster-aware rendering
-- **Normalization** (`normalization.rs`): NFC/NFD Unicode normalization for consistent comparison
+- **Shaping** (`shaping.rs`, 1,500+ lines): standalone script/run segmentation and ligature/fallback helpers in `ftui-text` (not invoked by the default widget render path)
+- **Normalization** (`normalization.rs`): opt-in NFC/NFD/NFKC/NFKD Unicode normalization helpers (feature `normalization` in `ftui-text`)
 
 ### Width Calculation
 
@@ -1681,21 +1689,21 @@ in [docs/perf/text_width_cache_2026-09-02.md](docs/perf/text_width_cache_2026-09
 When frame rendering exceeds its time budget, FrankenTUI executes a **principled degradation cascade** that preserves correctness while shedding visual fidelity:
 
 ```
-Conformal Frame Guard
-  │ "frame will likely exceed budget"
+Mondrian Conformal Risk Gate (ConformalPredictor)
+  │ "frame upper bound ŷ_t^+ exceeds budget (after 20-sample bucket warmup)"
   ▼
-Budget Controller (PID + E-Process Gate)
+Budget Controller (PID + E-Process Gate in ftui_render::budget)
   │ computes control signal from normalized frame-time error (after 10-frame warmup)
   ▼
 Degradation Level Selection
   │ Full → SimpleBorders → NoStyling → EssentialOnly → Skeleton → SkipFrame
   │ (default controller/conformal floor: SimpleBorders; deeper levels via floor config or guardrails)
   ▼
-Widget Priority Filtering
-  │ high-priority widgets rendered first
+Per-Widget Degradation Shedding (frame.buffer.degradation)
+  │ 34 widget modules shed borders/styling/non-essential work according to the active level
   ▼
 Evidence Emission
-    structured JSONL documenting every decision
+    structured JSONL documenting every decision (budget_decision / guardrail_snapshot)
 ```
 
 **Key properties:**
@@ -1703,6 +1711,8 @@ Evidence Emission
 - **Observable**: every degradation event is logged with conformal prediction context
 - **Widget-aware**: critical widgets (input fields, status bars) degrade last; `BudgetControllerConfig::default()` sets `degradation_floor = DegradationLevel::SimpleBorders` (honored by both the PID/e-process controller and the conformal risk gate) so routine frame-time spikes simplify borders without stripping styling or widgets unless a deeper floor is configured or hard memory/queue `FrameGuardrails` intervene
 - **Deterministic over frame-time traces**: `BudgetController::update(frame_time)` is a pure state machine — feeding the same `Duration` sequence (via `record_frame_time` or `DeterministicClock`) always produces the exact same degradation path (live `Program` runs feed measured wall-clock `elapsed()` durations)
+
+**Where it runs:** on by default through `ftui_render::budget::BudgetController` + `ftui_runtime::conformal_predictor::ConformalPredictor` + `Program` (`frame.set_degradation(..)` and `frame.buffer.degradation`, checked by 34 widget modules). Do not confuse this production path with the standalone `ftui_runtime::degradation_cascade` (`DegradationCascade`) and `ftui_runtime::conformal_frame_guard` (`ConformalFrameGuard`) modules, which are quarantined under `--features experimental` with no production consumer.
 
 ---
 
@@ -1894,6 +1904,8 @@ $$
 
 Intuition: no brittle thresholds; the model smoothly adapts to drag vs pause behavior.
 
+**Where it runs:** opt-in via `CoalescerConfig::default().with_bocpd()` in `ftui_runtime::resize_coalescer` (`enable_bocpd = false` by default so the rate heuristic runs unless opted in; see [BOCPD: Online Change-Point Detection](#bocpd-online-change-point-detection)).
+
 ### Run‑Length Posterior + Hazard Function (BOCPD Core)
 
 BOCPD’s main state is the **run‑length posterior**, which tracks how long the current regime has lasted.
@@ -1903,6 +1915,8 @@ P(r_t=r\mid x_{1:t}) \propto P(r_{t-1}=r-1)\,(1-H(r-1))\,P(x_t\mid r)
 $$
 
 Intuition: long steady streaks increase confidence; a sudden timing change collapses the posterior and triggers coalescing.
+
+**Where it runs:** opt-in via `CoalescerConfig::default().with_bocpd()` in `ftui_runtime::bocpd::BocpdDetector` (`enable_bocpd = false` by default).
 
 ### Conformal Prediction (Risk Bounds)
 
@@ -1916,23 +1930,27 @@ Intuition: the system learns what “normal” looks like and updates the bar au
 
 ### E‑Processes + GRAPA (Anytime‑Valid Monitoring)
 
-We can check alerts continuously without “peeking penalties” using a test‑martingale (e‑process). GRAPA tunes the betting fraction.
+We can check alerts continuously without “peeking penalties” using a sub‑Gaussian test‑martingale (e‑process):
 
 $$
-W_t = W_{t-1}\bigl(1 + \lambda_t (X_t-\mu_0)\bigr)
+E_t = E_{t-1}\exp\bigl(\lambda r_t - \lambda^2/2\bigr)
 $$
 
 Intuition: we can look after every frame, and the false‑alarm guarantees still hold.
 
+**Where it runs:** fixed-$\lambda$ `EProcessState` runs on the render path inside `ftui_render::budget::BudgetController` (`warmup_frames = 10`, $\alpha = 0.05$, $\beta = 0.5$); adaptive GRAPA betting is implemented only in the quarantined `experimental` modules `ftui_runtime::conformal_alert` and `ftui_runtime::eprocess_throttle` (no production consumer).
+
 ### GRAPA (Adaptive Betting Fraction)
 
-GRAPA adjusts the betting fraction to keep the e‑process sensitive but stable.
+GRAPA adjusts the betting fraction to keep an e‑process sensitive but stable:
 
 $$
-\lambda_{t+1} = \lambda_t + \eta\,\nabla_{\lambda}\,\log W_t
+\lambda_{t+1} = \mathrm{clamp}\!\left(\lambda_t + \eta\,\frac{z_t}{1 + \lambda_t z_t}\right)
 $$
 
-Intuition: it auto‑tunes how aggressively we test, instead of locking a single sensitivity.
+Intuition: it auto‑tunes how aggressively a test martingale bets instead of locking a single sensitivity.
+
+**Where it runs: nowhere in production.** Implemented only in the quarantined `experimental` modules `ftui_runtime::conformal_alert` and `ftui_runtime::eprocess_throttle`; the production `ftui_render::budget::EProcessState` uses a fixed $\lambda$ from `BudgetControllerConfig`.
 
 ### CUSUM (Fast Drift Detection)
 
@@ -1987,7 +2005,7 @@ Intuition: MPC looks ahead but costs more; the evaluation suite shows single-loo
 
 ### Count‑Min Sketch (Approximate Counts)
 
-We track hot items with a probabilistic sketch, then tighten error bounds with PAC‑Bayes.
+A probabilistic frequency sketch estimates item counts in bounded memory:
 
 $$
 \hat f(x)=\min_j C_{j,h_j(x)},\quad
@@ -1995,15 +2013,19 @@ $$
 
 Intuition: a tiny data structure gives you “close enough” frequencies at huge scale.
 
+**Where it runs:** `ftui_text::width_cache::CountMinSketch` backs the benchmark-only `TinyLfuWidthCache` (production width caching uses `S3FifoWidthCache` in `ftui_core::text_width`), and `ftui_runtime::countmin_sketch` is a quarantined `experimental` module with no production consumer.
+
 ### PAC‑Bayes Calibration (Error Tightening)
 
-We tighten sketch error bounds using PAC‑Bayes.
+PAC‑Bayes tightens empirical sketch error bounds from observed residuals:
 
 $$
 \mathbb{E}[\text{err}] \le \bar e + \sqrt{\frac{\mathrm{KL}(q\|\|p)}{2n}}
 $$
 
 Intuition: the bound shrinks as we observe more data, without assuming a specific distribution.
+
+**Where it runs: nowhere in production.** Implemented only in the quarantined `experimental` module `ftui_runtime::countmin_sketch`.
 
 ### Scheduling Math (Smith’s Rule + Aging)
 
@@ -2014,6 +2036,8 @@ $$
 $$
 
 Intuition: short, important jobs finish quickly, but long‑waiting jobs still rise.
+
+**Where it runs:** opt-in via `EffectQueueConfig { scheduler_enabled: true, .. }` in `ftui_runtime::queueing_scheduler::QueueingScheduler` (`EffectQueueConfig::default()` sets `scheduler_enabled: false`, using FIFO order unless enabled).
 
 Every one of these is directly tied to throughput, latency, and determinism under real terminal workloads.
 
@@ -2042,34 +2066,34 @@ The visual effects screen is deterministic math, not “random shader noise.” 
 | **Evidence Ledger** | Explanations for probabilistic decisions | $\log\frac{P(R\mid E)}{P(\neg R\mid E)}=\log\frac{P(R)}{P(\neg R)}+\sum_i\log BF_i$ | Debuggable, auditable scoring |
 | **Log‑BF Capability Probe** | Terminal caps detection | $\log BF=\log \frac{P(data\mid H)}{P(data\mid \neg H)}$ | Robust detection from noisy probes |
 | **Log10‑BF Coalescer** | Resize scheduler evidence ledger | $LBF=\log_{10}\frac{P(E\mid apply)}{P(E\mid coalesce)}$ | Explainable, stable resize decisions |
-| **Bayesian Hint Ranking** | Keybinding hint ordering | $V_i=E[U_i]+w_{voi}\sqrt{Var(U_i)}-\lambda C_i$ | Stable, utility‑aware hints |
-| **Conformal Rank Confidence** | Command palette stability | $p_i=\frac{1}{n}\sum_j \mathbf{1}[g_j\le g_i]$ (gap‑based p‑value) | Deterministic tie‑breaks + stable top‑k |
+| **Bayesian Hint Ranking** | Keybinding hint ordering (`Help` + `HintRanker`) | $V_i=E[U_i]+w_{voi}\sqrt{Var(U_i)}-\lambda C_i$ | Stable, utility‑aware hints |
+| **Conformal Rank Confidence** | Command palette tie-break utility (`conformal_rank_confidence`, opt-in helper) | $p_i=\frac{1}{n}\sum_j \mathbf{1}[g_j\le g_i]$ (gap‑based p‑value) | Deterministic tie‑breaks + stable top‑k |
 | **Beta-Binomial** | Diff strategy selection | $p\sim\mathrm{Beta}(\alpha,\beta)$ with binomial updates | Avoids slow strategies as workload shifts |
 | **Interval Union** | Dirty-span diff scan | $S_y=\bigcup_k [x_{0k},x_{1k})$ | Scan proportional to changed segments |
 | **Summed-Area Table** | Tile-skip diff | $SAT(x,y)=A(x,y)+SAT(x-1,y)+SAT(x,y-1)-SAT(x-1,y-1)$ | Row-level clean-tile skip on large screens (200x60: 28→21 µs) |
 | **Fenwick Tree** | Virtualized lists | Prefix sums with $i\pm (i\&-i)$ | O(log n) scroll + height queries |
 | **Bayesian Height Predictor** | Virtualized list preallocation | $\mu_n=\frac{\kappa_0\mu_0+n\bar{x}}{\kappa_0+n}$ + conformal $q_{1-\alpha}$ | Fewer scroll jumps |
-| **BOCPD** | Resize coalescing | Run‑length posterior + hazard $H(r)$ | Fewer redundant renders during drags |
-| **Run‑Length Posterior** | BOCPD core | $P(r_t=r\mid x_{1:t})$ recursion | Fast regime switches without thresholds |
-| **E‑Process** | Budget alerts, throttle | $W_t=W_{t-1}(1+\lambda_t(X_t-\mu_0))$ | Safe early exits under continuous monitoring |
-| **GRAPA** | Adaptive e‑process | $\lambda_{t+1}=\lambda_t+\eta\nabla_{\lambda}\log W_t$ | Self‑tuning sensitivity |
+| **BOCPD** | Resize coalescing (opt-in via `with_bocpd()`) | Run‑length posterior + hazard $H(r)$ | Regime-aware delay selection when enabled |
+| **Run‑Length Posterior** | BOCPD core (opt-in via `with_bocpd()`) | $P(r_t=r\mid x_{1:t})$ recursion | Regime switches without static rate thresholds |
+| **E‑Process** | Budget controller gate (`ftui_render::budget`, fixed $\lambda$) | $E_t=E_{t-1}\exp(\lambda r_t-\lambda^2/2)$ | Safe early exits under continuous monitoring |
+| **GRAPA** | Adaptive e‑process (experimental `conformal_alert` / `eprocess_throttle`) | $\lambda_{t+1}=\mathrm{clamp}(\lambda_t+\eta z_t/(1+\lambda_t z_t))$ | Self‑tuning sensitivity in experimental monitors |
 | **Conformal Prediction** | Risk bounds | $q=\text{Quantile}_{\lceil(1-\alpha)(n+1)\rceil}(R)$ | Stable thresholds without tuning |
 | **Mondrian Conformal** | Frame‑time risk gating | $\hat y^+=\hat y+q_{1-\alpha}(|r|)$ per bucket | Safe budget gating with sparse data |
 | **CUSUM** | Budget change detection | $S_t=\max(0,S_{t-1}+X_t-\mu_0-k)$ | Fast drift detection |
 | **CUSUM Hover Stabilizer** | Mouse hover jitter | $S_t=\max(0,S_{t-1}+d_t-k)$ | Stable hover targets without lag |
-| **Damped Spring** | Animation transitions | $x''+c x' + k(x-x^*)=0$ | Natural motion without frame‑rate artifacts |
-| **Easing Curves** | Fade/slide timing | $t^2$, $1-(1-t)^2$, cubic variants | Predictable velocity shaping |
-| **Staggered Cascades** | List animations | $offset_i=D\cdot ease(i/(n-1))$ | Coordinated, non‑uniform entrances |
-| **Sine Pulse** | Attention pulses | $p(t)=\sin(\pi t)$ | Smooth 0→1→0 emphasis |
+| **Damped Spring** | Animation library (`ftui_core::animation`, standalone) | $x''+c x' + k(x-x^*)=0$ | Natural motion without frame‑rate artifacts |
+| **Easing Curves** | Animation library (`ftui_core::animation`, standalone) | $t^2$, $1-(1-t)^2$, cubic variants | Predictable velocity shaping |
+| **Staggered Cascades** | Animation library (`ftui_core::animation`, standalone) | $offset_i=D\cdot ease(i/(n-1))$ | Coordinated, non‑uniform entrances |
+| **Sine Pulse** | Animation library (`ftui_core::animation`, standalone) | $p(t)=\sin(\pi t)$ | Smooth 0→1→0 emphasis |
 | **Perceived Luminance** | Dark/light probe | $Y=0.299R+0.587G+0.114B$ | Reliable theme defaults |
 | **PID / PI** | Degradation control | $u_t=K_pe_t+K_i\sum e_t+K_d\Delta e_t$ (`Kp=0.5, Ki=0.05, Kd=0.2`) | Smooth frame‑time stabilization |
 | **MPC** | Control evaluation | $\min_{u_{t:t+H}}\sum\|y_{t+k}-y^*\|^2+\rho\|u_{t+k}\|^2$ | Confirms PID/PI is sufficient |
 | **VOI Sampling** | Expensive measurements | $\mathrm{VOI}=\mathrm{Var}-\mathbb{E}[\mathrm{Var}\mid\text{sample}]$ | Lower overhead in steady state |
 | **Jain’s Fairness** | Input guard | $F=(\sum x_i)^2/(n\sum x_i^2)$ | Prevents UI render from starving input |
-| **Count‑Min Sketch** | Width cache + timeline aggregation | $\hat f(x)=\min_j C_{j,h_j(x)}$ | Fast approximate counts |
-| **W‑TinyLFU Admission** | Width cache admission | admit if $\hat f(x)\ge \hat f(y)$ (Doorkeeper → CMS) | Higher cache hit‑rate, fewer width recomputes |
-| **PAC‑Bayes** | Sketch calibration | $\bar e+\sqrt{\mathrm{KL}(q\|\|p)/(2n)}$ | Tighter error bounds |
-| **Smith’s Rule + Aging** | Queueing scheduler | $priority=\frac{w}{r}+a\cdot\text{wait}$ | Fair throughput under load |
+| **Count‑Min Sketch** | Benchmark width cache (`TinyLfuWidthCache`) + experimental `countmin_sketch` | $\hat f(x)=\min_j C_{j,h_j(x)}$ | Fast approximate counts (production width cache uses S3-FIFO) |
+| **W‑TinyLFU Admission** | Width cache admission (benchmark-only `TinyLfuWidthCache`; production uses S3-FIFO) | admit if $\hat f(x)\ge \hat f(y)$ (Doorkeeper → CMS) | Benchmark comparison against S3-FIFO |
+| **PAC‑Bayes** | Sketch calibration (experimental `countmin_sketch`) | $\bar e+\sqrt{\mathrm{KL}(q\|\|p)/(2n)}$ | Tighter error bounds in experimental sketch |
+| **Smith’s Rule + Aging** | Queueing scheduler (opt-in via `EffectQueueConfig::scheduler_enabled`) | $priority=\frac{w}{r}+a\cdot\text{wait}$ | Fair throughput under load when enabled |
 | **Cost Modeling** | Presenter decisions | $cost=c_{scan}N_{scan}+c_{emit}N_{emit}$ | Minimizes cursor bytes |
 
 ### The Cell: A 16-Byte Cache-Optimized Unit
@@ -2183,18 +2207,20 @@ here is how they drifted apart before.
 
 ### E-Process: Anytime-Valid Statistical Testing
 
-Budget decisions and alert thresholds use **e-processes** (betting-based sequential tests):
+Budget decisions and alert thresholds use **e-processes** (sub-Gaussian sequential test martingales):
 
 ```
-Wealth Process:
-  W_t = W_{t-1} × (1 + λ_t(X_t - μ₀))
+Exponential E-Process (as implemented in ftui_render::budget::EProcessState):
+  E_t = E_{t-1} × exp(λ·r_t − λ²/2)
 
 Guarantee:
-  P(∃t: W_t ≥ 1/α) ≤ α under null hypothesis
+  P(∃t: E_t ≥ 1/α) ≤ α under null hypothesis
 
 Key Property:
   Valid at ANY stopping time (not just fixed sample sizes)
 ```
+
+**Where it runs:** `ftui_render::budget::EProcessState` runs on the render path with a fixed $\lambda$ from `BudgetControllerConfig`; adaptive $\lambda_t$ (GRAPA) is implemented only in the quarantined `experimental` modules `conformal_alert` and `eprocess_throttle`.
 
 **Practical benefit:** You can check the e-process after every frame without inflating false positive rates.
 
@@ -2541,8 +2567,8 @@ Event Stream:    R1 ─ R2 ─ R3 ─ R4 ─ R5 ─ [gap] ─ R6
                       (only R5 rendered)
 
 Regimes:
-  Steady (200ms delay)  ← Responsive to deliberate resizes
-  Burst  (20ms delay)   ← Aggressive coalescing during drag
+  Steady (16ms delay)   ← Responsive to deliberate resizes (μ_steady = 200ms observation prior)
+  Burst  (40ms delay)   ← Aggressive coalescing during drag (100ms hard deadline, μ_burst = 20ms prior)
 ```
 
 ### Budget-Based Degradation
@@ -2786,7 +2812,9 @@ The `i18n_demo` screen switches live between English, Spanish, French, German, R
 
 ## Queueing-Theoretic Scheduler (Deep Dive)
 
-The effect queue scheduler (2,800+ lines in `queueing_scheduler.rs`) implements multiple scheduling disciplines from queueing theory:
+The effect queue scheduler (2,800+ lines in `queueing_scheduler.rs`) implements multiple scheduling disciplines from queueing theory.
+
+**Where it runs:** opt-in via `EffectQueueConfig { scheduler_enabled: true, .. }` (`EffectQueueConfig::default()` sets `scheduler_enabled: false`, executing tasks in FIFO arrival order unless the queueing scheduler is enabled).
 
 ### SRPT (Shortest Remaining Processing Time)
 
@@ -3078,6 +3106,8 @@ let config = ProgramConfig::default().with_persistence(
 
 Widgets opt in by implementing the `Stateful` trait. On program start, the registry loads saved state; on exit (or periodic checkpoints), it flushes back to the backend.
 
+**Where it runs:** opt-in via `ProgramConfig::with_persistence(..)` (`Program` loads/flushes the configured `StateRegistry` on startup, shutdown, periodic checkpoints, and `Cmd::SaveState` / `Cmd::RestoreState`; `Stateful` is implemented by `ListState`, `TableState`, `TreeState`, `TextAreaState`, and `VirtualizedListState`, and callers synchronize their widget states with the registry explicitly).
+
 ---
 
 ## SLO Schema & Breach Detection
@@ -3206,6 +3236,8 @@ arena.reset(); // O(1), no individual deallocations
 ```
 
 Why bump allocation? The render path produces many small, short-lived allocations (styled text spans, layout rectangles, change runs). A bump allocator satisfies these in O(1) with zero fragmentation, and `reset()` reclaims everything in a single pointer write.
+
+**Where it runs:** `Program` and `StepProgram` reset and attach a shared `FrameArena` to each `Frame` (`frame.arena()`), consumed by `ftui_widgets::input::TextInput` and the showcase's `dashboard` screen (most other widgets write directly into `Frame::buffer` without transient string allocations).
 
 ---
 

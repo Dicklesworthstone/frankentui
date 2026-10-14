@@ -125,8 +125,18 @@ def validate(text):
         verified = row['last_verified']
         if verified != '-' and not iso_date(verified):
             problems.append('invalid verification date')
-        if row['status'] == 'proven' and verified == '-':
-            problems.append('proven row requires verification date')
+        if row['status'] == 'proven':
+            if verified == '-':
+                problems.append('proven row requires verification date')
+            proof_kinds = {
+                p.partition(':')[0]
+                for p in row['proof'].split('; ')
+                if ':' in p
+            }
+            if proof_kinds and proof_kinds.issubset({'path', 'ident'}):
+                problems.append(
+                    'proven row cannot rely solely on path:/ident: proofs (proof-class inflation)'
+                )
         if problems:
             errors.append(f'line {number} ({ident}): ' + '; '.join(problems))
         rows.append(row)
@@ -139,6 +149,39 @@ def validate(text):
 
 EXPERIMENTAL_MARKER = '**Status: experimental**'
 WHERE_IT_RUNS = '**Where it runs'
+
+REQUIRED_WHERE_IT_RUNS_SECTIONS = {
+    'Damped Spring Dynamics (Animation System)',
+    'Easing Curves + Stagger Distributions',
+    'Sine Pulse Sequences (Attention Cues)',
+    'Degradation Cascade',
+    'BOCPD for Resize Regimes',
+    'Run\u2011Length Posterior + Hazard Function (BOCPD Core)',
+    'E\u2011Processes + GRAPA (Anytime\u2011Valid Monitoring)',
+    'GRAPA (Adaptive Betting Fraction)',
+    'Count\u2011Min Sketch (Approximate Counts)',
+    'PAC\u2011Bayes Calibration (Error Tightening)',
+    'Scheduling Math (Smith\u2019s Rule + Aging)',
+    'E-Process: Anytime-Valid Statistical Testing',
+    'Queueing-Theoretic Scheduler (Deep Dive)',
+    'State Persistence',
+    'Frame Arena Allocator',
+}
+
+QUALIFIED_MATH_ROWS = {
+    '**Conformal Rank Confidence**': ('opt-in', 'helper', 'utility'),
+    '**BOCPD**': ('opt-in',),
+    '**Run\u2011Length Posterior**': ('opt-in',),
+    '**GRAPA**': ('experimental',),
+    '**Damped Spring**': ('standalone',),
+    '**Easing Curves**': ('standalone',),
+    '**Staggered Cascades**': ('standalone',),
+    '**Sine Pulse**': ('standalone',),
+    '**Count\u2011Min Sketch**': ('benchmark', 'experimental'),
+    '**W\u2011TinyLFU Admission**': ('benchmark',),
+    '**PAC\u2011Bayes**': ('experimental',),
+    '**Smith\u2019s Rule + Aging**': ('opt-in',),
+}
 
 
 def strip_test_regions(text):
@@ -174,6 +217,17 @@ def _load_reachability_gate():
 _reachability_gate = _load_reachability_gate()
 
 
+def all_readme_sections(readme_text):
+    """Yield (heading, body) for every `## ` or `### ` block in README."""
+    lines = readme_text.splitlines()
+    starts = [i for i, line in enumerate(lines)
+              if line.startswith('## ') or line.startswith('### ')]
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(lines)
+        body = '\n'.join(lines[start:end])
+        yield lines[start].lstrip('#').strip(), body
+
+
 def experimental_sections(readme_text):
     """Yield (heading, body) for each README block marked experimental.
 
@@ -182,14 +236,9 @@ def experimental_sections(readme_text):
     subsection; splitting only on `##` would let a single "Where it runs" line
     cover both and leave one of them unqualified.
     """
-    lines = readme_text.splitlines()
-    starts = [i for i, line in enumerate(lines)
-              if line.startswith('## ') or line.startswith('### ')]
-    for index, start in enumerate(starts):
-        end = starts[index + 1] if index + 1 < len(starts) else len(lines)
-        body = '\n'.join(lines[start:end])
+    for heading, body in all_readme_sections(readme_text):
         if EXPERIMENTAL_MARKER in body:
-            yield lines[start].lstrip('#').strip(), body
+            yield heading, body
 
 
 def read_sources(modules, crates_dir):
@@ -374,25 +423,83 @@ def check_proof_refs(rows, crates_dir, root):
     return errors
 
 
-def check_experimental(readme_path, crates_dir):
-    """Every experimental section must say where its module runs, truthfully.
-
-    On 2026-09-19 all eleven such sections described modules that no crate
-    imports, in working present tense ("the runtime can enter safe mode"),
-    while the Experimental modules table two thousand lines away correctly
-    said "no production consumer". Readers believe the section they are
-    reading. This keeps the two from drifting apart again.
-
-    Scoped to experimental sections on purpose. The same detector was run over
-    every other README section that names a module and produced 47 findings,
-    all false: showcase screens are registered through an enum in `app.rs`, and
-    `telemetry` reaches production as the re-exported `TelemetryConfig` rather
-    than as `telemetry::`. Experimental modules are the case where path-based
-    detection is sound, because being feature-gated and un-re-exported is
-    exactly what forces a consumer to name the module path.
-    """
+def check_math_at_a_glance(readme_text):
+    """Verify `### Math At a Glance` qualifies non-default/experimental/benchmark rows."""
     errors = []
-    sections = list(experimental_sections(readme_path.read_text(encoding='utf-8')))
+    in_table = False
+    for line in readme_text.splitlines():
+        if line.startswith('## ') or line.startswith('### '):
+            in_table = line.strip() == '### Math At a Glance'
+            continue
+        if in_table and line.startswith('|'):
+            try:
+                parts = cells(line)
+            except ValueError:
+                continue
+            if len(parts) < 2:
+                continue
+            tech, where_used = parts[0], parts[1].lower()
+            required_terms = QUALIFIED_MATH_ROWS.get(tech)
+            if required_terms and not any(t in where_used for t in required_terms):
+                errors.append(
+                    f'README "Math At a Glance" row {tech} must qualify '
+                    f'"Where It’s Used" with one of {required_terms} '
+                    f'(currently: "{parts[1]}").'
+                )
+    return errors
+
+
+def check_constants_consistency(readme_text, rows=None):
+    """Verify repeated numeric/formula constants across README sections and ledger backing."""
+    errors = []
+    # 1. Resize coalescer delays: Steady = 16ms, Burst = 40ms (never 200ms/20ms as delays)
+    if re.search(r'Steady\s*\(\s*200\s*ms\s+delay', readme_text) or re.search(
+        r'Burst\s*\(\s*20\s*ms\s+delay', readme_text
+    ):
+        errors.append(
+            'README confuses BOCPD observation means (200ms/20ms) with resize '
+            'coalescing delays (Steady = 16ms, Burst = 40ms).'
+        )
+    # 2. E-Process formula: must not regress to retracted multiplicative wealth W_t = W_{t-1}(1 + \lambda_t(X_t - \mu_0))
+    for heading, body in all_readme_sections(readme_text):
+        if heading in (
+            'E\u2011Processes + GRAPA (Anytime\u2011Valid Monitoring)',
+            'E-Process: Anytime-Valid Statistical Testing',
+        ):
+            if 'W_{t-1}' in body and '(X_t' in body:
+                errors.append(
+                    f'README section "{heading}" uses retracted multiplicative '
+                    f'wealth formula W_t instead of exponential E_t.'
+                )
+    # 3. Verify ledger backing for repeated constant groups when rows are provided
+    if rows is not None:
+        by_id = {r['id']: r for r in rows}
+        required_constant_rows = (
+            ('V36', 'Resize coalescing regimes (16ms/40ms/100ms, 200ms/20ms)'),
+            ('V13', 'Mondrian conformal defaults (alpha=0.05, min_samples=20, window=256)'),
+            ('V37', 'Budget PID gains (Kp=0.5, Ki=0.05, Kd=0.2, warmup_frames=10)'),
+            ('C35', 'VOI inline-auto defaults (1.0, 9.0, 1000ms, 100ms, 0.08)'),
+        )
+        for cid, desc in required_constant_rows:
+            row = by_id.get(cid)
+            if not row or row['status'] != 'proven':
+                errors.append(
+                    f'Repeated constant group "{desc}" requires {cid} to be proven.'
+                )
+            elif not any(
+                p.startswith(('test:', 'count:')) for p in row['proof'].split('; ')
+            ):
+                errors.append(
+                    f'Repeated constant group "{desc}" ({cid}) requires a test: or count: proof.'
+                )
+    return errors
+
+
+def check_experimental(readme_path, crates_dir, rows=None):
+    """Every experimental, opt-in, or standalone section must say where its module runs."""
+    errors = []
+    readme_text = readme_path.read_text(encoding='utf-8')
+    sections = list(experimental_sections(readme_text))
     if not sections:
         errors.append('no README section carries the experimental marker; '
                       'the marker text may have changed')
@@ -403,7 +510,37 @@ def check_experimental(readme_path, crates_dir):
                 f'"Where it runs" line. Say whether anything imports the module '
                 f'it describes; an unqualified description reads as a working '
                 f'feature.')
-    modules = experimental_modules(readme_path.read_text(encoding='utf-8'))
+    modules = experimental_modules(readme_text)
+    exempt_headings = {'Experimental modules', 'Math At a Glance'}
+    mod_mention_re = (
+        re.compile(
+            r'(?:`|::)(' + '|'.join(re.escape(m) for m in sorted(modules)) + r')\b'
+        )
+        if modules
+        else None
+    )
+    for heading, body in all_readme_sections(readme_text):
+        if heading in exempt_headings:
+            continue
+        if heading in REQUIRED_WHERE_IT_RUNS_SECTIONS and WHERE_IT_RUNS not in body:
+            errors.append(
+                f'README section "{heading}" describes an experimental, opt-in, '
+                f'or standalone subsystem but has no "{WHERE_IT_RUNS}" line.'
+            )
+        elif (
+            mod_mention_re is not None
+            and EXPERIMENTAL_MARKER not in body
+            and WHERE_IT_RUNS not in body
+        ):
+            hit = mod_mention_re.search(body)
+            if hit:
+                errors.append(
+                    f'README section "{heading}" references experimental module '
+                    f'`{hit.group(1)}` without "{EXPERIMENTAL_MARKER}" or '
+                    f'"{WHERE_IT_RUNS}".'
+                )
+    errors.extend(check_math_at_a_glance(readme_text))
+    errors.extend(check_constants_consistency(readme_text, rows))
     for hit in find_consumers(modules, read_sources(modules, crates_dir)):
         errors.append(
             f'experimental module now has a production consumer ({hit}); the '
@@ -432,6 +569,14 @@ def self_test():
     row = '| C01 | A \\| B | README.md :: A | api | CODE | bd-example | bead:bd-example | pending-code | - |\n'
     valid, errors = validate(header + row)
     assert not errors and valid[0]['claim'] == 'A | B'
+    path_only_proven = (
+        '| S25 | E-Graph | README.md :: E-Graph | status | DOC | bd-example '
+        '| path:docs/perf/egraph_vs_flex_2026-09-18.md | proven | 2026-09-18 |\n'
+    )
+    ident_only_proven = (
+        '| S25 | E-Graph | README.md :: E-Graph | status | DOC | bd-example '
+        '| ident:solve_layout | proven | 2026-09-18 |\n'
+    )
     fixtures = [('', 'missing header'), (header, 'empty table'),
                 (header + row + row, 'duplicate'),
                 (header + row.replace('pending-code', 'working'), 'invalid enum'),
@@ -441,6 +586,8 @@ def self_test():
                 (header + row.replace('bead:bd-example', 'test:crate:name'), 'test delimiter'),
                 (header + row.replace(' | - |', ' | 2026-02-30 |'), 'invalid date'),
                 (header + row.replace('pending-code', 'proven'), 'undated proof'),
+                (header + path_only_proven, 'path-only proven inflation'),
+                (header + ident_only_proven, 'ident-only proven inflation'),
                 (header + row.replace(' | api', ' | extra | api'), 'extra column'),
                 (header + row + '\n' + row, 'stray row')]
     for text, label in fixtures:
@@ -458,6 +605,19 @@ def self_test():
     missing = [h for h, body in experimental_sections(readme)
                if WHERE_IT_RUNS not in body]
     assert missing == ['Feature', 'Sub B'], missing
+
+    # check_math_at_a_glance and check_constants_consistency
+    bad_math = (
+        '### Math At a Glance\n'
+        '| Technique | Where It’s Used | Core Formula | Impact |\n'
+        '|---|---|---|---|\n'
+        '| **GRAPA** | Adaptive e-process | formula | fast |\n'
+    )
+    assert check_math_at_a_glance(bad_math), 'unqualified GRAPA row must fail'
+    good_math = bad_math.replace('Adaptive e-process', 'Adaptive e-process (experimental)')
+    assert not check_math_at_a_glance(good_math), check_math_at_a_glance(good_math)
+    assert check_constants_consistency('Steady (200ms delay)\nBurst (20ms delay)')
+    assert not check_constants_consistency('Steady (16ms delay)\nBurst (40ms delay)')
 
     # experimental_modules: second column of the Experimental modules table
     # only, and not tables that happen to follow other headings.
@@ -535,7 +695,7 @@ def self_test():
     finally:
         globals()['collect_test_fn_names'] = original
 
-    print(json.dumps({'scope': 'schema-self-test', 'passed': len(fixtures) + 18}))
+    print(json.dumps({'scope': 'schema-self-test', 'passed': len(fixtures) + 22}))
 
 
 def main():
@@ -573,7 +733,8 @@ def main():
         return int(bool(errors))
     if args.experimental_check:
         try:
-            sections, errors = check_experimental(args.readme, args.crates)
+            rows, _ = validate(args.ledger.read_text(encoding='utf-8'))
+            sections, errors = check_experimental(args.readme, args.crates, rows)
         except (OSError, UnicodeError) as error:
             print(f'[claims] {error}', file=sys.stderr)
             return 1
