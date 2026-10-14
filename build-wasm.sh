@@ -121,6 +121,9 @@ unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUST
 export CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never
 export CARGO_BUILD_FINGERPRINT=content
 export CARGO_HTTP_USER_AGENT='OpenAI File Downloader, XaiImageApiFetch/1.0'
+# `cargo` on a DSR host's PATH can be an RCH shim; RCH is not to be used until
+# bd-g00-root-epic-ewths.6.24 (its transfers prune with rm -rf / rsync --delete).
+export RCH_CARGO_WRAPPER_BYPASS=1
 
 renderer_revision=88b402b8be9c70a4405895d4172e449940cab2fe
 renderer_archive_sha256=46e23154a20e22672465e406f5f79f5b9e800198c8f655e073d0e79ad0d05306
