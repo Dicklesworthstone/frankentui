@@ -11,8 +11,9 @@
 //! raw mode. Now the report waits for the teardown and prints, once, after the
 //! terminal is back in cooked mode.
 //!
-//! The probe also runs with `FTUI_DEBUG_TRACE=1`, which used to write a line
-//! to stderr for every frame; with stderr on the UI's terminal it now writes
+//! The probe also runs with `FTUI_DEBUG_TRACE=1` and records into a
+//! `DiagnosticLog::with_stderr()` on every update; both used to write a line
+//! to stderr per frame, and with stderr on the UI's terminal they now write
 //! none.
 //!
 //! The PTY's child is this test binary, re-run with only
@@ -23,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use ftui::prelude::*;
+use ftui::widgets::diagnostics::{DiagnosticLog, DiagnosticRecord};
 use ftui::widgets::paragraph::Paragraph;
 use ftui_pty::virtual_terminal::VirtualTerminal;
 use ftui_pty::{PtyConfig, spawn_command};
@@ -36,6 +38,22 @@ const PANIC_TEXT: &str = "one-writer probe: this task panics on purpose";
 const FRAMES_AFTER_PANIC: u32 = 3;
 /// The child prints this after the app returns; nothing follows it.
 const CHILD_DONE: &str = "test result:";
+/// Every diagnostic line the probe records carries this.
+const DIAGNOSTIC_MARKER: &str = "one-writer-probe-diagnostic";
+
+#[derive(Debug, Clone)]
+struct ProbeDiagnostic {
+    update: u32,
+}
+
+impl DiagnosticRecord for ProbeDiagnostic {
+    fn to_jsonl(&self) -> String {
+        format!(
+            r#"{{"event":"{DIAGNOSTIC_MARKER}","update":{}}}"#,
+            self.update
+        )
+    }
+}
 
 /// Set while the panicking task unwinds, which is after the panic hook has
 /// returned: a report the hook wrote at once is already in the output when
@@ -44,6 +62,8 @@ static TASK_UNWOUND: AtomicBool = AtomicBool::new(false);
 
 struct PanickingTask {
     frames_after_panic: u32,
+    updates: u32,
+    diagnostics: DiagnosticLog<ProbeDiagnostic>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +97,10 @@ impl Model for PanickingTask {
     }
 
     fn update(&mut self, _tick: Msg) -> Cmd<Msg> {
+        self.updates += 1;
+        self.diagnostics.record(ProbeDiagnostic {
+            update: self.updates,
+        });
         if TASK_UNWOUND.load(Ordering::SeqCst) {
             self.frames_after_panic += 1;
             if self.frames_after_panic > FRAMES_AFTER_PANIC {
@@ -103,6 +127,8 @@ fn panicking_task_child_entry() {
     std::env::var(CHILD_MARKER).expect("run only by the one-writer PTY test");
     App::new(PanickingTask {
         frames_after_panic: 0,
+        updates: 0,
+        diagnostics: DiagnosticLog::new().with_stderr(),
     })
     .screen_mode(ScreenMode::Inline { ui_height: 2 })
     .run()
@@ -200,6 +226,12 @@ fn a_recovered_task_panic_is_reported_after_the_teardown_not_over_the_ui() {
         count(&output, b"[FTUI "),
         0,
         "FTUI_DEBUG_TRACE wrote to stderr, the UI's terminal; output:\n{}",
+        output.escape_ascii()
+    );
+    assert_eq!(
+        count(&output, DIAGNOSTIC_MARKER.as_bytes()),
+        0,
+        "DiagnosticLog::with_stderr wrote to the UI's terminal; output:\n{}",
         output.escape_ascii()
     );
     assert_eq!(
