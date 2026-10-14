@@ -14,6 +14,13 @@ agent_shell with the multiplexer identity removed, once taking the DECSTBM
 scroll-region path and once with overlay forced (`FTUI_SCROLL_REGION=0`), so
 both inline transports are measured in one real emulator.
 
+Each multiplexer also runs a 1000-line mixed workload (wide graphemes, SGR
+color, and a clear-screen/cursor-home/OSC-title injection) in the default
+sanitized mode and with `--log-mode=sgr-only`: every line must reach history
+once, in order, as exactly its visible text on one row; under tmux an
+escape-keeping capture shows the color kept in sgr-only mode and gone when
+sanitized.
+
 Every multiplexer also runs the child under `agent_shell --pty`, gated on
 `[ -t 0 ] && [ -t 1 ] && [ -t 2 ]`: its lines exist only if the child saw a
 terminal on all three. Under tmux, two cases quit agent_shell through its
@@ -26,9 +33,16 @@ A multiplexer that is not installed FAILS its cases as
 (comma separated; logged). Nothing outside the output directory is written,
 no session the script did not create is touched, and outputs are retained.
 
+With `--showcase`, each multiplexer also starts `ftui-demo-showcase` in inline
+mode under 500 existing history lines: they must all remain, once and in
+order, and the showcase's chrome must appear once (its final frame). Without
+the binary that case fails as missing_prerequisite unless `showcase` is listed
+in FTUI_E2E_MUX_OUT_OF_SCOPE.
+
 Usage:
   tests/e2e/scripts/test_inline_scrollback_mux.py \
-      --agent-shell target/debug/examples/agent_shell [--lines 10000] [--out DIR]
+      --agent-shell target/debug/examples/agent_shell \
+      --showcase target/debug/ftui-demo-showcase [--lines 10000] [--out DIR]
 
 Exit status: 0 when every in-scope case passes, 1 otherwise, 2 on usage error.
 JSONL: one row per case plus a summary row, in
@@ -103,6 +117,104 @@ def analyse(transcript: str, expected: int, is_agent: bool) -> dict:
         "final_status_current": final_status,
         "ok": ok,
     }
+
+
+# Mixed workload: line i carries the payload for i % 4. The raw child output
+# holds wide graphemes, SGR color, and an injection (clear screen, cursor
+# home, OSC title) between "inject" and "end"; what history must show is the
+# visible text below on one row. If the injection executed, "end" would be
+# drawn at the home position instead.
+MIXED_VISIBLE = {0: "plain", 1: "wide 漢字🦀", 2: "sgr", 3: "inject end"}
+MIXED_LINE = re.compile(r"^\s*(\d+) (.*?)\s*$")
+SGR_RED = "\x1b[31m"
+WIDE_PRINTF = "printf '%d wide \\346\\274\\242\\345\\255\\227\\360\\237\\246\\200\\n'"
+
+
+def mixed_child(lines: int) -> str:
+    """POSIX sh printing the mixed workload (octal escapes: UTF-8 and ESC)."""
+    return (f"i=1; while [ $i -le {lines} ]; do case $((i % 4)) in "
+            "0) printf '%d plain\\n' $i;; "
+            f"1) {WIDE_PRINTF} $i;; "
+            "2) printf '%d \\033[31msgr\\033[0m\\n' $i;; "
+            "3) printf '%d inject \\033[2J\\033[H\\033]0;pwn\\007end\\n' $i;; "
+            "esac; i=$((i+1)); done")
+
+
+def control_wide_text(transcript: str) -> str | None:
+    """How this multiplexer's history renders the wide line from a plain shell.
+
+    GNU screen 4.09's `hardcopy -h` keeps only the low byte of each cell
+    (漢 U+6F22 becomes `"`), whatever its encoding settings, so the wide line
+    is checked against this control rather than against its UTF-8 text.
+    """
+    return next((m.group(2) for r in transcript.splitlines()
+                 if (m := MIXED_LINE.match(r)) and m.group(1) == "1"), None)
+
+
+def analyse_mixed(transcript: str, expected: int, escaped: str | None, sgr: bool,
+                  wide: str | None) -> dict:
+    """Every mixed line once, in order, with exactly its visible payload.
+
+    `wide` is the control's rendering of the wide line. `escaped` is a capture
+    that keeps SGR (tmux only); when present, the SGR lines must keep their
+    color in sgr-only mode and lose it when sanitized.
+    """
+    visible = dict(MIXED_VISIBLE)
+    if wide is not None:
+        visible[1] = wide
+    rows = transcript.splitlines()
+    seen = [(int(m.group(1)), m.group(2)) for r in rows if (m := MIXED_LINE.match(r))
+            and 1 <= int(m.group(1)) <= expected]
+    good = [n for n, text in seen if text == visible[n % 4]]
+    wrong = sorted({n for n, text in seen if text != visible[n % 4]})
+    found = len(set(good))
+    in_order = all(a < b for a, b in zip(good, good[1:]))
+    base = analyse(transcript, 0, True)
+    status_counts = [int(m.group(1)) for r in rows
+                     if STATUS_HINT.search(r) and (m := STATUS_COUNTS.search(r))]
+    final_status = None if not status_counts else status_counts[-1] == expected
+    colored = None
+    if escaped is not None:
+        colored = sum(1 for r in escaped.splitlines()
+                      if (m := MIXED_LINE.match(re.sub(r"\x1b\[[0-9;]*m", "", r)))
+                      and int(m.group(1)) % 4 == 2 and SGR_RED in r)
+    want_colored = expected // 4 + (1 if expected % 4 >= 2 else 0)
+    color_ok = colored is None or colored == (want_colored if sgr else 0)
+    ok = (wide is not None and found == expected and len(good) == expected and in_order
+          and not wrong and base["ui_rows"] == 1 and base["done_marker_on_own_row"]
+          and final_status is not False and color_ok)
+    return {
+        "wide_visible": visible[1],
+        "expected": expected,
+        "found": found,
+        "duplicates": len(good) - found,
+        "in_order": in_order,
+        "wrong_payload": wrong[:5],
+        "ui_rows": base["ui_rows"],
+        "done_marker_on_own_row": base["done_marker_on_own_row"],
+        "final_status_current": final_status,
+        "sgr_rows_colored": colored,
+        "ok": ok,
+    }
+
+
+# The showcase's first screen; its chrome row appears in each painted frame.
+SHOWCASE_CHROME = "FRANKENTUI DASHBOARD"
+PRESERVED_LINES = 500
+
+
+def analyse_preserve(transcript: str) -> dict:
+    """Inline mode keeps the history it started under and leaks no frames.
+
+    The shell prints 1..PRESERVED_LINES before the showcase starts; all of
+    them must remain, once and in order, and the showcase's chrome must
+    appear exactly once: its final frame, not earlier frames in history.
+    """
+    base = analyse(transcript, PRESERVED_LINES, False)
+    chrome_rows = sum(1 for r in transcript.splitlines() if SHOWCASE_CHROME in r)
+    base["chrome_rows"] = chrome_rows
+    base["ok"] = base["ok"] and chrome_rows == 1
+    return base
 
 
 ORPHAN = re.compile(r"^ORPHAN=(gone|alive)\s*$")
@@ -184,6 +296,9 @@ class Tmux:
             raise TimeoutError(f"tmux case {case} did not finish in {timeout_s}s")
         text = settled(lambda: run(
             self.base + ["capture-pane", "-p", "-J", "-t", case, "-S", "-", "-E", "-"]))
+        # The same history with SGR kept, for checks on what color survived.
+        self.escaped = run(
+            self.base + ["capture-pane", "-p", "-e", "-J", "-t", case, "-S", "-", "-E", "-"])
         run(self.base + ["kill-session", "-t", case], check=False)
         return text
 
@@ -287,6 +402,9 @@ class Zellij:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--agent-shell", required=True, type=Path)
+    ap.add_argument("--showcase", type=Path, default=None,
+                    help="ftui-demo-showcase binary; its cases fail as missing_prerequisite "
+                         "without it unless 'showcase' is in FTUI_E2E_MUX_OUT_OF_SCOPE")
     ap.add_argument("--lines", type=int, default=10_000)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--timeout", type=float, default=600.0, help="seconds per case")
@@ -305,6 +423,11 @@ def main() -> int:
     agent_cmd = f"{shlex.quote(str(agent))} --exit-when-child-exits -- {child}"
     tty_child = shlex.quote(f"[ -t 0 ] && [ -t 1 ] && [ -t 2 ] && {child}")
     pty_cmd = f"{shlex.quote(str(agent))} --pty --exit-when-child-exits -- sh -c {tty_child}"
+    mixed_lines = 1000
+    mixed = shlex.quote(mixed_child(mixed_lines))
+    mixed_cmd = f"{shlex.quote(str(agent))} --exit-when-child-exits -- sh -c {mixed}"
+    mixed_sgr_cmd = (f"{shlex.quote(str(agent))} --log-mode=sgr-only --exit-when-child-exits "
+                     f"-- sh -c {mixed}")
     # The trailing sleep lets the multiplexer drain the pty before the
     # pane's process exits (tmux drops unread output of a dead pane).
     done = f"echo {DONE_MARKER} rc=$?; sleep 1"
@@ -322,13 +445,29 @@ def main() -> int:
                 f"if kill -0 \"$pid\" 2>/dev/null; then echo ORPHAN=alive; kill -9 \"$pid\"; "
                 f"else echo ORPHAN=gone; fi; {done}")
 
-    # kind: "control" and "agent" are scrollback cases; ("quit", orphan
-    # expected) probes process-tree cleanup when agent_shell quits.
+    # kind: "control" and "agent" are scrollback cases; ("mixed", sgr-only)
+    # checks the mixed workload's visible text; ("quit", orphan expected)
+    # probes process-tree cleanup when agent_shell quits.
+    mixed_cases = [
+        ("control_wide", f"{WIDE_PRINTF} 1; {done}", "control_wide"),
+        ("agent_shell_mixed_sanitized", f"{mixed_cmd}; {done}", ("mixed", False)),
+        ("agent_shell_mixed_sgr_only", f"{mixed_sgr_cmd}; {done}", ("mixed", True)),
+    ]
+    # The showcase in inline mode, started under existing history; it quits
+    # on its own timer. Missing binary: a failed case, unless declared.
+    if args.showcase is not None:
+        showcase_cmd = (f"seq 1 {PRESERVED_LINES}; FTUI_DEMO_EXIT_AFTER_MS=3000 "
+                        f"{shlex.quote(str(args.showcase.resolve()))} --screen-mode=inline "
+                        f"--ui-height=12; {done}")
+        mixed_cases.append(("showcase_inline_preserves_history", showcase_cmd, "preserve"))
+    elif "showcase" not in out_of_scope:
+        mixed_cases.append(("showcase_inline_preserves_history", None, "preserve"))
     cases = {
         "tmux": [
             ("control_seq", f"{child}; {done}", "control"),
             ("agent_shell", f"{agent_cmd}; {done}", "agent"),
             ("agent_shell_pty", f"{pty_cmd}; {done}", "agent"),
+            *mixed_cases,
             # TERM=tmux* alone also counts as tmux identity (mux wins), so
             # both markers go to reach the DECSTBM path inside tmux;
             # FTUI_SCROLL_REGION=1 skips the 150 ms CPR self-test, which a
@@ -347,11 +486,13 @@ def main() -> int:
             ("control_seq", f"{child}; {done}", "control"),
             ("agent_shell", f"{agent_cmd}; {done}", "agent"),
             ("agent_shell_pty", f"{pty_cmd}; {done}", "agent"),
+            *mixed_cases,
         ],
         "zellij": [
             ("control_seq", f"{child}; {done}", "control"),
             ("agent_shell", f"{agent_cmd}; {done}", "agent"),
             ("agent_shell_pty", f"{pty_cmd}; {done}", "agent"),
+            *mixed_cases,
         ],
     }
     drivers = {"tmux": Tmux, "screen": Screen, "zellij": Zellij}
@@ -373,15 +514,31 @@ def main() -> int:
                 continue
             driver = drivers[mux](out)
             version = driver.version()
+            wide = None
             try:
                 driver.start()
                 for case, cmd, kind in cases[mux]:
                     started = time.monotonic()
                     try:
+                        if cmd is None:
+                            raise RuntimeError("missing_prerequisite: no --showcase binary")
                         text = driver.capture(case, cmd, args.timeout)
                         (out / f"{mux}.{case}.{RUN_ID}.txt").write_text(text)
-                        checks = (analyse_quit(text, kind[1]) if isinstance(kind, tuple)
-                                  else analyse(text, n, kind == "agent"))
+                        shape = kind[0] if isinstance(kind, tuple) else kind
+                        if shape == "quit":
+                            checks = analyse_quit(text, kind[1])
+                        elif shape == "control_wide":
+                            wide = control_wide_text(text)
+                            checks = {"wide_visible": wide,
+                                      "utf8_intact": wide == MIXED_VISIBLE[1],
+                                      "ok": wide is not None}
+                        elif shape == "mixed":
+                            checks = analyse_mixed(text, mixed_lines,
+                                                   getattr(driver, "escaped", None), kind[1], wide)
+                        elif shape == "preserve":
+                            checks = analyse_preserve(text)
+                        else:
+                            checks = analyse(text, n, kind == "agent")
                         row = {"mux": mux, "version": version, "case": case, **checks}
                         row["status"] = "pass" if row.pop("ok") else "fail"
                     except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as err:

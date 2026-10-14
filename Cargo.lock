@@ -1393,11 +1393,13 @@ dependencies = [
  "ftui-extras",
  "ftui-harness",
  "ftui-layout",
+ "ftui-pty",
  "ftui-render",
  "ftui-runtime",
  "ftui-style",
  "ftui-text",
  "ftui-widgets",
+ "portable-pty",
 ]
 
 [[package]]

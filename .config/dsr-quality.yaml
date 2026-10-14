@@ -104,8 +104,11 @@ tools:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness build --locked -p ftui --example agent_shell
-      - python3 -B tests/e2e/scripts/test_inline_scrollback_mux.py --agent-shell "${CARGO_TARGET_DIR:-target}/debug/examples/agent_shell" --lines 10000 --out "${DSR_INLINE_SCROLLBACK_OUTPUT:?Set DSR_INLINE_SCROLLBACK_OUTPUT to a new absolute directory outside the checkout}"
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness build --locked -p ftui --example agent_shell -p ftui-demo-showcase --bin ftui-demo-showcase
+      - python3 -B tests/e2e/scripts/test_inline_scrollback_mux.py --agent-shell "${CARGO_TARGET_DIR:-target}/debug/examples/agent_shell" --showcase "${CARGO_TARGET_DIR:-target}/debug/ftui-demo-showcase" --lines 10000 --out "${DSR_INLINE_SCROLLBACK_OUTPUT:?Set DSR_INLINE_SCROLLBACK_OUTPUT to a new absolute directory outside the checkout}"
+      # The same agent shell in a plain PTY (no multiplexer), with and without
+      # CPR replies, against ftui-pty's terminal model (.47.4 item 2).
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --locked -p ftui --test agent_shell_plain_pty --no-fail-fast
   frankentui-browser:
     repo: Dicklesworthstone/frankentui
     language: rust
