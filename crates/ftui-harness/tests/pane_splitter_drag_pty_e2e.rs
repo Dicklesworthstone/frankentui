@@ -105,7 +105,9 @@ fn run_drag(mode: &str, sgr: &[u8]) -> Vec<u8> {
     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_pane_splitter_pty_harness"));
     cmd.env("PANE_HARNESS_SCREEN_MODE", mode);
     cmd.env("PANE_HARNESS_UI_HEIGHT", "12");
-    cmd.env("PANE_HARNESS_EXIT_AFTER_MS", "3000");
+    // A safety net only (a committed drag quits at once); it starts with the
+    // process, so it must outlast a slow start under host load.
+    cmd.env("PANE_HARNESS_EXIT_AFTER_MS", "10000");
 
     let config = PtyConfig::default()
         .with_size(PTY_COLS, PTY_ROWS)
@@ -114,10 +116,18 @@ fn run_drag(mode: &str, sgr: &[u8]) -> Vec<u8> {
 
     let mut session = spawn_command(config, cmd).expect("spawn pane splitter PTY harness");
 
-    // Let the runtime enter raw mode and render its first frame (so the pane area
-    // is captured) before the scripted gesture arrives. PTY input is buffered, so
-    // this is belt-and-suspenders rather than strictly required.
-    std::thread::sleep(Duration::from_millis(350));
+    // The gesture must arrive after the first frame: the harness records the
+    // pane area in `view`, and a mouse-down before that finds no splitter
+    // (a fixed 350 ms sleep lost this race under host load). A pane title
+    // from that frame is the readiness signal, as in pane_input_pty_e2e.rs.
+    session
+        .read_until(b"left", Duration::from_secs(10))
+        .unwrap_or_else(|err| {
+            panic!(
+                "[{mode}] first frame never rendered: {err}; output={:?}",
+                String::from_utf8_lossy(session.output())
+            )
+        });
     session.send_input(sgr).expect("send SGR drag sequence");
 
     let status = session

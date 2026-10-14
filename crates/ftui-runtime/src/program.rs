@@ -10374,9 +10374,25 @@ mod tests {
             motions
         };
 
+        // `speed` divides by the wall-clock time since the press, so the two
+        // runs agree on it only when they happen to take equally long (they
+        // did not under DSR load: 666 vs 4000). The bookkeeping both arms
+        // share is clock-independent: compare that, and require a speed.
+        let bookkeeping = |motions: &[PaneMotionVector]| {
+            motions
+                .iter()
+                .map(|motion| (motion.delta_x, motion.delta_y, motion.direction_changes))
+                .collect::<Vec<_>>()
+        };
         let via_drag = run(false);
         let via_moved = run(true);
-        assert_eq!(via_drag, via_moved);
+        assert_eq!(bookkeeping(&via_drag), bookkeeping(&via_moved));
+        assert!(
+            via_drag
+                .iter()
+                .chain(&via_moved)
+                .all(|motion| motion.speed > 0.0)
+        );
         // Sanity: the reverse step (14->12) registered a direction change in both.
         assert_eq!(via_drag[1].direction_changes, 1);
     }
@@ -10487,8 +10503,10 @@ mod tests {
     }
 
     #[test]
-    fn cmd_batch_executes_all_regardless_of_order() {
-        // Verify that Cmd::Batch executes all commands
+    fn cmd_batch_executes_all_in_order_today() {
+        // Cmd::Batch runs every command, and today in order like Sequence, as
+        // the README's command table states. Concurrent batches would change
+        // both this test and that row.
         use crate::simulator::ProgramSimulator;
 
         struct BatchModel {
@@ -10531,11 +10549,7 @@ mod tests {
         sim.init();
         sim.send(BatchMsg::TriggerBatch);
 
-        // All values should be present
-        assert_eq!(sim.model().values.len(), 3);
-        assert!(sim.model().values.contains(&10));
-        assert!(sim.model().values.contains(&20));
-        assert!(sim.model().values.contains(&30));
+        assert_eq!(sim.model().values, [10, 20, 30]);
     }
 
     #[test]
