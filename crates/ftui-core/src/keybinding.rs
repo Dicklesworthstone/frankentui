@@ -1880,6 +1880,12 @@ impl<A: Clone> KeyDispatcher<A> {
             KeyEventKind::Press => {}
         }
 
+        if let Some(since) = self.pending_since
+            && now.saturating_duration_since(since) >= self.map.config.chord_timeout
+        {
+            self.flush_pending(&mut out, true);
+        }
+
         let combo = KeyCombo::from_event(key);
         if self.try_extend(combo, now, &mut out) {
             return out;
