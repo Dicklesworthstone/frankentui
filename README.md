@@ -907,6 +907,8 @@ Hysteresis:
 
 **Result:** the UI surfaces the most valuable shortcuts without flicker, while still exploring uncertain hints.
 
+**Where it runs:** [`ftui_widgets::hint_ranker::HintRanker`](crates/ftui-widgets/src/hint_ranker.rs) and [`ftui_widgets::help::Help`](crates/ftui-widgets/src/help.rs) (`Help::register_with_ranker`, `Help::apply_ranking`, `Help::record_used`, and `Help::record_shown`), exercised live in the showcase's [`CommandPaletteEvidenceLab`](crates/ftui-demo-showcase/src/screens/command_palette_lab.rs) screen.
+
 ### Bayesian Diff Strategy Selection
 
 The renderer adaptively chooses between diff strategies using a **Beta posterior over change rates**:

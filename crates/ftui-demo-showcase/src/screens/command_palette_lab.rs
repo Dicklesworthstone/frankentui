@@ -25,6 +25,7 @@ use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::command_palette::{ActionItem, CommandPalette, MatchFilter};
+use ftui_widgets::help::Help;
 use ftui_widgets::hint_ranker::{HintContext, HintRanker, RankerConfig, RankingEvidence};
 use ftui_widgets::paragraph::Paragraph;
 
@@ -121,6 +122,7 @@ pub struct CommandPaletteEvidenceLab {
     palette: CommandPalette,
     filter_mode: FilterMode,
     bench: BenchState,
+    help: Help,
     hint_ranker: HintRanker,
     hint_ledger: Vec<RankingEvidence>,
     tick_count: u64,
@@ -142,13 +144,13 @@ impl CommandPaletteEvidenceLab {
         palette.open();
         palette.set_query("log");
 
-        let mut hint_ranker = build_hint_ranker();
-        let (_, hint_ledger) = hint_ranker.rank(None);
+        let (help, hint_ranker, hint_ledger) = build_ranked_help();
 
         let mut lab = Self {
             palette,
             filter_mode: FilterMode::All,
             bench: BenchState::new(),
+            help,
             hint_ranker,
             hint_ledger,
             tick_count: 0,
@@ -157,6 +159,19 @@ impl CommandPaletteEvidenceLab {
 
         lab.apply_filter();
         lab
+    }
+
+    /// Return the ranked [`Help`] widget bound to this screen's [`HintRanker`].
+    #[must_use]
+    pub fn help(&self) -> &Help {
+        &self.help
+    }
+
+    fn record_shortcut_used(&mut self, key: &str) {
+        if self.help.record_used(&mut self.hint_ranker, key) {
+            self.help.record_shown(&mut self.hint_ranker, Some(key));
+            self.hint_ledger = self.help.apply_ranking(&mut self.hint_ranker, None);
+        }
     }
 
     /// Handle mouse interactions on the palette area.
@@ -498,42 +513,56 @@ impl Screen for CommandPaletteEvidenceLab {
             match code {
                 KeyCode::Char('b') => {
                     self.toggle_bench();
+                    self.record_shortcut_used("b");
                     return Cmd::None;
                 }
                 KeyCode::Char('m') => {
                     self.filter_mode = self.filter_mode.next();
                     self.apply_filter();
+                    self.record_shortcut_used("0-5");
                     return Cmd::None;
                 }
                 KeyCode::Char('0') => {
                     self.filter_mode = FilterMode::All;
                     self.apply_filter();
+                    self.record_shortcut_used("0-5");
                     return Cmd::None;
                 }
                 KeyCode::Char('1') => {
                     self.filter_mode = FilterMode::Exact;
                     self.apply_filter();
+                    self.record_shortcut_used("0-5");
                     return Cmd::None;
                 }
                 KeyCode::Char('2') => {
                     self.filter_mode = FilterMode::Prefix;
                     self.apply_filter();
+                    self.record_shortcut_used("0-5");
                     return Cmd::None;
                 }
                 KeyCode::Char('3') => {
                     self.filter_mode = FilterMode::WordStart;
                     self.apply_filter();
+                    self.record_shortcut_used("0-5");
                     return Cmd::None;
                 }
                 KeyCode::Char('4') => {
                     self.filter_mode = FilterMode::Substring;
                     self.apply_filter();
+                    self.record_shortcut_used("0-5");
                     return Cmd::None;
                 }
                 KeyCode::Char('5') => {
                     self.filter_mode = FilterMode::Fuzzy;
                     self.apply_filter();
+                    self.record_shortcut_used("0-5");
                     return Cmd::None;
+                }
+                KeyCode::Enter => {
+                    self.record_shortcut_used("Enter");
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    self.record_shortcut_used("↑/↓");
                 }
                 KeyCode::Escape => {
                     self.palette.set_query("");
@@ -659,8 +688,7 @@ impl Screen for CommandPaletteEvidenceLab {
             }
         }
 
-        let (_, ledger) = self.hint_ranker.rank(None);
-        self.hint_ledger = ledger;
+        self.hint_ledger = self.help.apply_ranking(&mut self.hint_ranker, None);
     }
 }
 
@@ -717,29 +745,37 @@ fn sample_actions() -> Vec<ActionItem> {
     ]
 }
 
-fn build_hint_ranker() -> HintRanker {
-    let mut ranker = HintRanker::new(RankerConfig::default());
-    let open_id = ranker.register("Ctrl+P Open Palette", 14.0, HintContext::Global, 1);
-    let exec_id = ranker.register("Enter Execute", 10.0, HintContext::Global, 2);
-    let nav_id = ranker.register("↑/↓ Navigate", 10.0, HintContext::Global, 3);
-    let bench_id = ranker.register("b Toggle Bench", 12.0, HintContext::Global, 4);
-    let mode_id = ranker.register("0-5 Match Filter", 14.0, HintContext::Global, 5);
+fn build_ranked_help() -> (Help, HintRanker, Vec<RankingEvidence>) {
+    let mut help = Help::new()
+        .entry("Ctrl+P", "Open Palette")
+        .entry("Enter", "Execute")
+        .entry("↑/↓", "Navigate")
+        .entry("b", "Toggle Bench")
+        .entry("0-5", "Match Filter");
+    let mut ranker = HintRanker::new(RankerConfig {
+        lambda: 0.0075,
+        ..RankerConfig::default()
+    });
+    help.register_with_ranker(&mut ranker, HintContext::Global);
 
     for _ in 0..6 {
-        ranker.record_usage(open_id);
+        help.record_used(&mut ranker, "Ctrl+P");
     }
     for _ in 0..4 {
-        ranker.record_usage(exec_id);
+        help.record_used(&mut ranker, "Enter");
     }
     for _ in 0..3 {
-        ranker.record_usage(nav_id);
+        help.record_used(&mut ranker, "↑/↓");
     }
     for _ in 0..2 {
-        ranker.record_usage(mode_id);
+        help.record_used(&mut ranker, "0-5");
     }
-    ranker.record_shown_not_used(bench_id);
+    if let Some(bench_id) = help.hint_id(3) {
+        ranker.record_shown_not_used(bench_id);
+    }
 
-    ranker
+    let ledger = help.apply_ranking(&mut ranker, None);
+    (help, ranker, ledger)
 }
 
 #[cfg(test)]
@@ -1016,5 +1052,22 @@ mod tests {
             10,
         )));
         assert_eq!(lab.palette.selected_index(), initial);
+    }
+
+    #[test]
+    fn help_ranker_integration_reorders_help_entries_on_shortcut_use() {
+        use super::Screen;
+        let mut lab = CommandPaletteEvidenceLab::new();
+        assert_eq!(lab.help().entries()[0].key, "Enter");
+        assert_eq!(lab.help().entries()[1].key, "Ctrl+P");
+        for _ in 0..12 {
+            lab.update(&Event::Key(KeyEvent {
+                code: KeyCode::Char('b'),
+                modifiers: Modifiers::NONE,
+                kind: KeyEventKind::Press,
+            }));
+        }
+        assert_eq!(lab.help().entries()[0].key, "b");
+        assert_eq!(lab.hint_ledger[0].label, "b Toggle Bench");
     }
 }
