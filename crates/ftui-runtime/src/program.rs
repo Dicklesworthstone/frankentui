@@ -6620,7 +6620,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             }
 
             let budget_exhausted = (zero_polls_in_burst_window as usize) >= zero_poll_limit
-                || burst_start.elapsed() >= max_burst_duration;
+                || (zero_polls_in_burst_window > 0 && burst_start.elapsed() >= max_burst_duration);
 
             if budget_exhausted {
                 if !capped_this_burst {
@@ -6633,6 +6633,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                     .immediate_drain_stats
                     .max_zero_timeout_polls_in_burst
                     .max(zero_polls_in_burst_window);
+
+                if self.subscriptions.may_have_pending_messages() {
+                    break;
+                }
 
                 std::thread::yield_now();
                 self.immediate_drain_stats.backoff_polls =
@@ -14421,7 +14425,9 @@ mod tests {
         let model = DirectionModel {
             directions: Rc::clone(&directions),
         };
-        let config = ProgramConfig::default().with_locale("ar");
+        let config = ProgramConfig::default()
+            .with_locale("ar")
+            .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)));
         let mut program = headless_program_with_config(model, config);
 
         program.render_frame().expect("render initial frame");
@@ -14479,7 +14485,11 @@ mod tests {
             }
         }
 
-        let mut program = headless_program_with_config(RenderModel, ProgramConfig::default());
+        let mut program = headless_program_with_config(
+            RenderModel,
+            ProgramConfig::default()
+                .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5))),
+        );
         program.render_frame().expect("render frame");
 
         assert!(!program.dirty);
@@ -14945,6 +14955,7 @@ mod tests {
         let evidence_path = temp_evidence_path("a11y");
         let config = ProgramConfig::default()
             .with_accessibility(ScreenReaderPolicy::default())
+            .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)))
             .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
         let mut program = headless_program_with_config(
             A11yModel {

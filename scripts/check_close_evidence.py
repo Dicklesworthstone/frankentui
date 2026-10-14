@@ -20,6 +20,7 @@ Run `--self-test` for the retained fixtures. No temporary files, no cleanup.
 """
 
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -55,6 +56,14 @@ KINDS = ("commit", "pr", "reviewer", "investigation", "agent-mail",
 REFERENCE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(re.escape(k) for k in KINDS) + r"):\S")
 
+# Explicit repository file path mentioned in a bead title.
+TITLE_REPO_PATH = re.compile(
+    r"(?<![A-Za-z0-9_./-])"
+    r"((?:crates|docs|scripts|tests|\.config|\.github)/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)"
+)
+
+DEFAULT_STALE_DAYS = 14
+
 
 def violations(reason):
     """Return the policy gates an individual close reason fails."""
@@ -69,18 +78,145 @@ def violations(reason):
     return failed
 
 
-def closed_issues(jsonl):
-    """Yield (id, closed_at, reason) for every closed bead, in file order."""
+def load_issues(jsonl):
+    """Return all bead objects from a JSONL file, in file order."""
+    issues = []
     for line in jsonl.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
         try:
-            issue = json.loads(line)
+            issues.append(json.loads(line))
         except json.JSONDecodeError as error:
             raise ValueError(f"malformed JSONL line: {error}") from error
+    return issues
+
+
+def closed_issues(jsonl):
+    """Yield (id, closed_at, reason) for every closed bead, in file order."""
+    for issue in load_issues(jsonl):
         if issue.get("status") != "closed":
             continue
         yield issue.get("id"), (issue.get("closed_at") or ""), issue.get("close_reason")
+
+
+def parse_iso_utc(raw):
+    """Parse an ISO-8601 timestamp (or bare YYYY-MM-DD date) into UTC datetime."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        text = text + "T00:00:00+00:00"
+    elif text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def extract_title_repo_paths(title):
+    """Extract concrete repository file paths named in a bead title."""
+    paths = []
+    for match in TITLE_REPO_PATH.finditer(title or ""):
+        candidate = match.group(1).rstrip(".,:;)]`'\"")
+        if any(ch in candidate for ch in ("*", "{", "}", "<", ">", "...")):
+            continue
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def audit_alerts_from_issues(issues, root, stale_days=DEFAULT_STALE_DAYS, as_of=None):
+    """Compute tracker staleness and structural alerts from loaded issues (report-only)."""
+    by_id = {issue.get("id"): issue for issue in issues if issue.get("id")}
+
+    reference_dt = parse_iso_utc(as_of) if as_of else None
+    if reference_dt is None:
+        timestamps = []
+        for issue in issues:
+            for field in ("updated_at", "closed_at", "created_at"):
+                dt = parse_iso_utc(issue.get(field))
+                if dt is not None:
+                    timestamps.append(dt)
+        reference_dt = max(timestamps) if timestamps else datetime.now(timezone.utc)
+
+    stale_in_progress = []
+    for issue in issues:
+        if issue.get("status") != "in_progress":
+            continue
+        ts_raw = issue.get("updated_at") or issue.get("created_at") or ""
+        dt = parse_iso_utc(ts_raw)
+        if dt is None:
+            continue
+        idle_days = (reference_dt - dt).total_seconds() / 86400.0
+        if idle_days >= stale_days:
+            stale_in_progress.append(dict(
+                id=issue.get("id"),
+                title=issue.get("title", ""),
+                updated_at=ts_raw,
+                idle_days=round(idle_days, 1),
+            ))
+
+    children_by_parent = {issue_id: set() for issue_id in by_id}
+    for issue in issues:
+        issue_id = issue.get("id") or ""
+        for dep in issue.get("dependencies") or []:
+            if dep.get("type") == "parent-child":
+                parent_id = dep.get("depends_on_id")
+                if parent_id in children_by_parent and issue_id in by_id:
+                    children_by_parent[parent_id].add(issue_id)
+        if "." in issue_id:
+            parent_id = issue_id.rsplit(".", 1)[0]
+            if parent_id in children_by_parent:
+                children_by_parent[parent_id].add(issue_id)
+
+    all_children_closed_epics = []
+    for issue in issues:
+        issue_id = issue.get("id")
+        if not issue_id or issue.get("status") == "closed":
+            continue
+        children = sorted(children_by_parent.get(issue_id) or ())
+        if not children:
+            continue
+        if all(by_id[child_id].get("status") == "closed" for child_id in children):
+            all_children_closed_epics.append(dict(
+                id=issue_id,
+                title=issue.get("title", ""),
+                status=issue.get("status"),
+                closed_children=len(children),
+            ))
+
+    missing_deliverable_closes = []
+    for issue in issues:
+        if issue.get("status") != "closed":
+            continue
+        title = issue.get("title") or ""
+        candidates = extract_title_repo_paths(title)
+        if not candidates:
+            continue
+        missing = [rel for rel in candidates if not (root / rel).exists()]
+        if missing:
+            missing_deliverable_closes.append(dict(
+                id=issue.get("id"),
+                title=title,
+                missing_paths=missing,
+            ))
+
+    return dict(
+        kind="alerts",
+        as_of=reference_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        stale_days=stale_days,
+        stale_in_progress_count=len(stale_in_progress),
+        stale_in_progress=stale_in_progress,
+        all_children_closed_epics_count=len(all_children_closed_epics),
+        all_children_closed_epics=all_children_closed_epics,
+        missing_deliverable_closes_count=len(missing_deliverable_closes),
+        missing_deliverable_closes=missing_deliverable_closes,
+        status="reported",
+    )
 
 
 def audit(jsonl, epoch):
@@ -177,6 +313,76 @@ def self_test_audit(root):
     return len(flagged)
 
 
+def self_test_alerts(root):
+    """Verify `--alerts` detection of stale claims, closed-children epics, and missing deliverables."""
+    fixture_issues = [
+        {
+            "id": "fx-stale-claim",
+            "title": "Abandoned in-progress task",
+            "status": "in_progress",
+            "updated_at": "2026-09-06T12:00:00Z",
+        },
+        {
+            "id": "fx-fresh-claim",
+            "title": "Active in-progress task",
+            "status": "in_progress",
+            "updated_at": "2026-10-12T12:00:00Z",
+        },
+        {
+            "id": "fx-epic-done",
+            "title": "epic(G19): All children closed",
+            "status": "open",
+            "issue_type": "epic",
+            "updated_at": "2026-10-13T00:00:00Z",
+        },
+        {
+            "id": "fx-epic-done.1",
+            "title": "Child 1",
+            "status": "closed",
+            "updated_at": "2026-10-10T00:00:00Z",
+        },
+        {
+            "id": "fx-epic-done.2",
+            "title": "Child 2",
+            "status": "closed",
+            "updated_at": "2026-10-11T00:00:00Z",
+        },
+        {
+            "id": "fx-epic-open",
+            "title": "epic: Has open child",
+            "status": "open",
+            "issue_type": "epic",
+            "updated_at": "2026-10-13T00:00:00Z",
+        },
+        {
+            "id": "fx-epic-open.1",
+            "title": "Open child",
+            "status": "open",
+            "updated_at": "2026-10-13T00:00:00Z",
+        },
+        {
+            "id": "fx-missing-path",
+            "title": "Add docs/nonexistent_deliverable_fixture_49_4.md",
+            "status": "closed",
+            "updated_at": "2026-10-13T00:00:00Z",
+        },
+        {
+            "id": "fx-existing-path",
+            "title": "Update scripts/check_close_evidence.py",
+            "status": "closed",
+            "updated_at": "2026-10-13T00:00:00Z",
+        },
+    ]
+    report = audit_alerts_from_issues(fixture_issues, root, stale_days=14)
+    assert [r["id"] for r in report["stale_in_progress"]] == ["fx-stale-claim"], report
+    assert [r["id"] for r in report["all_children_closed_epics"]] == ["fx-epic-done"], report
+    assert [r["id"] for r in report["missing_deliverable_closes"]] == ["fx-missing-path"], report
+    assert report["missing_deliverable_closes"][0]["missing_paths"] == [
+        "docs/nonexistent_deliverable_fixture_49_4.md"
+    ]
+    return 3
+
+
 def self_test():
     """Fixtures for the reason checker and the reference matcher."""
     assert violations(None) == ["no_reason", "no_typed_reference"]
@@ -209,6 +415,15 @@ def main():
                         help="audit this JSONL instead of <root>/.beads/issues.jsonl")
     parser.add_argument("--quiet", action="store_true",
                         help="print the summary only, not each failing close")
+    parser.add_argument("--alerts", action="store_true",
+                        help="report stale in-progress claims, all-children-closed epics, "
+                             "and closed beads naming missing repo paths (report-only, exit 0)")
+    parser.add_argument("--stale-days", type=float, default=DEFAULT_STALE_DAYS,
+                        help=f"idle threshold in days for --alerts stale in-progress claims "
+                             f"(default {DEFAULT_STALE_DAYS})")
+    parser.add_argument("--as-of",
+                        help="reference ISO-8601 UTC timestamp for --alerts staleness "
+                             "(default: latest timestamp in the JSONL)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
@@ -216,10 +431,19 @@ def main():
         if args.self_test:
             reasons = self_test()
             flagged = self_test_audit(args.root)
+            alerts_checked = self_test_alerts(args.root)
             print(json.dumps(dict(kind="self-test", status="passed",
-                                  reason_checks=reasons, fixture_flagged=flagged)))
+                                  reason_checks=reasons, fixture_flagged=flagged,
+                                  alert_checks=alerts_checked)))
             return 0
         jsonl = args.jsonl or (args.root / ".beads" / "issues.jsonl")
+        if args.alerts:
+            issues = load_issues(jsonl)
+            report = audit_alerts_from_issues(
+                issues, args.root, stale_days=args.stale_days, as_of=args.as_of
+            )
+            print(json.dumps(report))
+            return 0
         records, legacy, checked = audit(jsonl, args.epoch)
         if not args.quiet:
             for record in records:

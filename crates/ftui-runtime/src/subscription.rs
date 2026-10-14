@@ -1139,6 +1139,23 @@ mod tests {
         assert_ne!(sub1.id(), sub2.id());
     }
 
+    fn wait_for_messages<M: Send + 'static>(
+        mgr: &mut SubscriptionManager<M>,
+        min_count: usize,
+        timeout: Duration,
+    ) -> Vec<M> {
+        let deadline = Instant::now() + timeout;
+        let mut collected = Vec::new();
+        while collected.len() < min_count && Instant::now() < deadline {
+            collected.extend(mgr.drain_messages());
+            if collected.len() >= min_count {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        collected
+    }
+
     #[test]
     fn subscription_manager_starts_subscriptions() {
         let mut mgr = SubscriptionManager::<TestMsg>::new();
@@ -1148,10 +1165,7 @@ mod tests {
         mgr.reconcile(subs);
         event_tx.send(TestMsg::Value(42)).unwrap();
 
-        // Give the thread a moment to send
-        thread::sleep(Duration::from_millis(20));
-
-        let msgs = mgr.drain_messages();
+        let msgs = wait_for_messages(&mut mgr, 1, Duration::from_secs(2));
         assert_eq!(msgs, vec![TestMsg::Value(42)]);
     }
 
@@ -1170,8 +1184,7 @@ mod tests {
             "Duplicate subscription should be dropped"
         );
 
-        thread::sleep(Duration::from_millis(20));
-        let msgs = mgr.drain_messages();
+        let msgs = wait_for_messages(&mut mgr, 1, Duration::from_secs(2));
         assert_eq!(msgs, vec![TestMsg::Value(1)]);
     }
 
@@ -1186,8 +1199,7 @@ mod tests {
             || TestMsg::Tick,
         ))]);
 
-        thread::sleep(Duration::from_millis(20));
-        let msgs_before = mgr.drain_messages();
+        let msgs_before = wait_for_messages(&mut mgr, 1, Duration::from_secs(2));
         assert!(!msgs_before.is_empty());
 
         // Remove it
@@ -1217,8 +1229,7 @@ mod tests {
             || TestMsg::Tick,
         ))]);
 
-        thread::sleep(Duration::from_millis(30));
-        let _ = mgr.drain_messages();
+        let _ = wait_for_messages(&mut mgr, 1, Duration::from_secs(2));
 
         // Reconcile with same ID - should keep running
         mgr.reconcile(vec![Box::new(Every::with_id(
@@ -1227,8 +1238,7 @@ mod tests {
             || TestMsg::Tick,
         ))]);
 
-        thread::sleep(Duration::from_millis(30));
-        let msgs = mgr.drain_messages();
+        let msgs = wait_for_messages(&mut mgr, 1, Duration::from_secs(2));
         assert!(!msgs.is_empty(), "Subscription should still be running");
     }
 
@@ -1437,9 +1447,8 @@ mod tests {
         mgr.reconcile(subs);
         event_tx.send(TestMsg::Value(1)).unwrap();
         event_tx.send(TestMsg::Value(2)).unwrap();
-        thread::sleep(Duration::from_millis(20));
 
-        let msgs = mgr.drain_messages();
+        let msgs = wait_for_messages(&mut mgr, 2, Duration::from_secs(2));
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0], TestMsg::Value(1));
         assert_eq!(msgs[1], TestMsg::Value(2));
@@ -1457,16 +1466,14 @@ mod tests {
         // Start with ID 1
         mgr.reconcile(vec![Box::new(sub1)]);
         tx1.send(TestMsg::Value(1)).unwrap();
-        thread::sleep(Duration::from_millis(20));
-        let msgs1 = mgr.drain_messages();
+        let msgs1 = wait_for_messages(&mut mgr, 1, Duration::from_secs(2));
         assert_eq!(msgs1, vec![TestMsg::Value(1)]);
 
         // Replace with ID 2
         let (sub2, tx2) = channel_subscription(2);
         mgr.reconcile(vec![Box::new(sub2)]);
         tx2.send(TestMsg::Value(2)).unwrap();
-        thread::sleep(Duration::from_millis(20));
-        let msgs2 = mgr.drain_messages();
+        let msgs2 = wait_for_messages(&mut mgr, 1, Duration::from_secs(2));
         assert_eq!(msgs2, vec![TestMsg::Value(2)]);
     }
 
@@ -1483,9 +1490,8 @@ mod tests {
         tx1.send(TestMsg::Value(10)).unwrap();
         tx2.send(TestMsg::Value(20)).unwrap();
         tx3.send(TestMsg::Value(30)).unwrap();
-        thread::sleep(Duration::from_millis(30));
 
-        let mut msgs = mgr.drain_messages();
+        let mut msgs = wait_for_messages(&mut mgr, 3, Duration::from_secs(2));
         msgs.sort_by_key(|m| match m {
             TestMsg::Value(v) => *v,
             _ => 0,
@@ -1514,8 +1520,7 @@ mod tests {
             })),
         ]);
 
-        thread::sleep(Duration::from_millis(30));
-        let _ = mgr.drain_messages();
+        let _ = wait_for_messages(&mut mgr, 3, Duration::from_secs(2));
 
         // Remove subscription 2, keep 1 and 3
         mgr.reconcile(vec![
@@ -1529,11 +1534,21 @@ mod tests {
 
         // Drain any in-flight messages that were sent before the stop signal was processed.
         // This clears the race window between stop signal and message send.
+        thread::sleep(Duration::from_millis(15));
         let _ = mgr.drain_messages();
 
-        // Now wait for new messages from the remaining subscriptions
-        thread::sleep(Duration::from_millis(30));
-        let msgs = mgr.drain_messages();
+        // Now wait until we have received new messages from both remaining subscriptions (1 and 3).
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut msgs = Vec::new();
+        while Instant::now() < deadline {
+            msgs.extend(mgr.drain_messages());
+            let has_1 = msgs.contains(&TestMsg::Value(1));
+            let has_3 = msgs.contains(&TestMsg::Value(3));
+            if has_1 && has_3 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
 
         // Should only have values 1 and 3, not 2
         let values: Vec<i32> = msgs

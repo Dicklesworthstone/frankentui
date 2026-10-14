@@ -2541,8 +2541,11 @@ impl MermaidMegaShowcaseScreen {
 
         // Debounce: when the previous layout was expensive (exceeded the budget)
         // and was computed very recently, defer this pass to coalesce rapid
-        // input and prevent CPU spikes on complex diagrams.
-        if (analysis_needed || layout_needed)
+        // layout-only adjustments and prevent CPU spikes on complex diagrams.
+        // Never debounce when `analysis_needed` is true (e.g. sample changed),
+        // since the cached IR/layout belong to the previous diagram.
+        if !analysis_needed
+            && layout_needed
             && cache.layout.is_some()
             && cache.layout_budget_exceeded
             && cache
@@ -5775,6 +5778,7 @@ mod tests {
         let area1 = Rect::new(0, 0, 80, 24);
         let area2 = Rect::new(0, 0, 120, 40);
         screen.ensure_render_cache(area1);
+        screen.cache.borrow_mut().layout_budget_exceeded = false;
         screen.ensure_render_cache(area2);
         let cache = screen.cache.borrow();
         // Two different viewports → two misses
@@ -5832,6 +5836,7 @@ mod tests {
         let mut screen = MermaidMegaShowcaseScreen::new();
         let area = Rect::new(0, 0, 80, 24);
         screen.ensure_render_cache(area);
+        screen.cache.borrow_mut().layout_budget_exceeded = false;
         screen.state.apply(MegaAction::CycleLayoutMode);
         screen.ensure_render_cache(area);
         let cache = screen.cache.borrow();
@@ -6132,6 +6137,9 @@ mod tests {
 
         // First call populates the cache.
         screen.ensure_render_cache(area);
+        // Pin the non-exceeded precondition so OS thread preemption (>16ms)
+        // during the initial warm-up does not turn this into a debounce test.
+        screen.cache.borrow_mut().layout_budget_exceeded = false;
 
         // Budget is NOT exceeded, so debounce should not apply.
         assert!(!screen.cache.borrow().layout_budget_exceeded);

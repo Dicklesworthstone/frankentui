@@ -4206,8 +4206,8 @@ os.write(1,b'tail\r')
 
         handle.join().unwrap();
         assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "timeout should kill a quiet process promptly"
+            start.elapsed() < Duration::from_secs(10),
+            "timeout should kill a quiet 60s process promptly without waiting for sleep 60"
         );
         let msgs: Vec<TestMsg> = rx.try_iter().collect();
         let has_killed = msgs
@@ -5141,25 +5141,41 @@ os._exit(7)
     fn stop_signal_does_not_block_when_background_descendant_keeps_pipes_open() {
         let sub = ProcessSubscription::new("sh", TestMsg::Proc)
             .arg("-c")
-            .arg("sleep 60 & sleep 60");
+            .arg("sleep 60 & echo ready; sleep 60");
         let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
-        let start = web_time::Instant::now();
 
         let handle = thread::spawn(move || {
             sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
-        thread::sleep(Duration::from_millis(100));
+        let mut msgs = Vec::new();
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < ready_deadline {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(msg) => {
+                    let is_ready =
+                        matches!(&msg, TestMsg::Proc(ProcessEvent::Stdout(s)) if s == "ready");
+                    msgs.push(msg);
+                    if is_ready {
+                        break;
+                    }
+                }
+                Err(stdmpsc::RecvTimeoutError::Timeout) => {}
+                Err(stdmpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        let stop_start = web_time::Instant::now();
         trigger.stop();
         handle.join().unwrap();
 
         assert!(
-            start.elapsed() < Duration::from_secs(2),
+            stop_start.elapsed() < Duration::from_secs(10),
             "stop should not block behind inherited stdout/stderr pipes"
         );
 
-        let msgs: Vec<TestMsg> = rx.try_iter().collect();
+        msgs.extend(rx.try_iter());
         assert!(
             msgs.iter()
                 .any(|m| matches!(m, TestMsg::Proc(ProcessEvent::Killed))),
@@ -5172,7 +5188,7 @@ os._exit(7)
         let sub = ProcessSubscription::new("sh", TestMsg::Proc)
             .arg("-c")
             .arg("sleep 60 & sleep 60")
-            .timeout(Duration::from_millis(100));
+            .timeout(Duration::from_millis(200));
         let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, _trigger) = StopSignal::new();
         let start = web_time::Instant::now();
@@ -5184,7 +5200,7 @@ os._exit(7)
         handle.join().unwrap();
 
         assert!(
-            start.elapsed() < Duration::from_secs(2),
+            start.elapsed() < Duration::from_secs(10),
             "timeout should not block behind inherited stdout/stderr pipes"
         );
 

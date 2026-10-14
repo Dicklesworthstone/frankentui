@@ -40,6 +40,8 @@ tools:
       - python3 -B scripts/check_env_docs.py
       - python3 -B scripts/check_close_evidence.py --self-test
       - python3 -B scripts/check_close_evidence.py
+      - python3 -B scripts/check_close_evidence.py --alerts
+      - mkdir -p "${DSR_TRUTH_GATES_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_truth_gates/dsr}" && bv --robot-alerts > "${DSR_TRUTH_GATES_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_truth_gates/dsr}/bv_alerts.json"
       - python3 -B scripts/check_baseline_benches.py --self-test
       - python3 -B scripts/check_baseline_benches.py
       # The perf gate's own decisions, on synthetic fixtures. Nothing is
