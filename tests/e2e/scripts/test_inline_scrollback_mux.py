@@ -33,6 +33,18 @@ A multiplexer that is not installed FAILS its cases as
 (comma separated; logged). Nothing outside the output directory is written,
 no session the script did not create is touched, and outputs are retained.
 
+Under tmux, two flagship journeys (bd-g00-root-epic-ewths.42.7) drive the
+agent shell like a user: a `--pty` child streams 100,000 hostile mixed lines
+around a stdin prompt; the driver types a line, resizes the window 50 times
+20 ms apart, sends Ctrl-C, restarts with F5 and quits. Every line must reach
+history once, in order, as its visible text; the typed line, interrupt,
+restart and exits must be logged once; injections stay inert; the pane's
+modes are restored; the child's background process is gone; bytes per log
+line stay bounded. The first storm changes only the height and also requires
+no UI row in history. The second changes the width too, where tmux reflows
+full-width UI rows and part of a frame can overflow into history: those
+fragment rows are counted and reported, not failed.
+
 With `--showcase`, each multiplexer also starts `ftui-demo-showcase` in inline
 mode under 500 existing history lines: they must all remain, once and in
 order, and the showcase's chrome must appear once (its final frame). Without
@@ -218,6 +230,196 @@ def analyse_preserve(transcript: str) -> dict:
 
 
 ORPHAN = re.compile(r"^ORPHAN=(gone|alive)\s*$")
+
+# Flagship journey (bd-g00-root-epic-ewths.42.7): line i carries kind i % 6.
+# Kinds 1 and 2 are checked against a plain-shell control of the same bytes,
+# as for the mixed workload; the injection holds clear-screen, cursor home, an
+# OSC 0 title, an OSC 52 clipboard write and DECSTBM between "inject" and "end".
+JOURNEY_VISIBLE = {0: "plain", 1: "wide 漢字🦀", 2: "zwj 👩‍💻", 3: "sgr", 4: "inject end", 5: "osc8"}
+JOURNEY_PRINTF = {
+    0: "printf '%d plain\\n'",
+    1: WIDE_PRINTF,
+    2: "printf '%d zwj \\360\\237\\221\\251\\342\\200\\215\\360\\237\\222\\273\\n'",
+    3: "printf '%d \\033[31msgr\\033[0m\\n'",
+    4: "printf '%d inject \\033[2J\\033[H\\033]0;pwn\\007\\033]52;c;cHdu\\007\\033[5;10rend\\n'",
+    5: "printf '%d \\033]8;;http://example.invalid/\\033\\\\osc8\\033]8;;\\033\\\\\\n'",
+}
+JOURNEY_LINES = 100_000
+JOURNEY_SIZE = (100, 30)
+JOURNEY_STORM = [(120, 40), (80, 24), (100, 30), (90, 35), (110, 26)]
+# O(1) bytes per log line, not a repaint of the screen per line: a 100x30
+# repaint is ~3000 bytes, so a few hundred is the bound that separates them.
+JOURNEY_MAX_BYTES_PER_LINE = 400
+
+
+def journey_child(marker: Path, pid_file: Path) -> str:
+    """The journey's child: 100k mixed lines around a prompt read from stdin,
+    then it waits for SIGINT. A restart (marker present) prints one line."""
+    cases = " ".join(f"{k}) {JOURNEY_PRINTF[k]} $1;;" for k in sorted(JOURNEY_PRINTF))
+    half = JOURNEY_LINES // 2
+    m, p = shlex.quote(str(marker)), shlex.quote(str(pid_file))
+    return (f"if [ -e {m} ]; then echo second-run; exit 0; fi; : > {m}; "
+            f"sleep 60 & echo $! > {p}; "
+            f"line() {{ case $(($1 % 6)) in {cases} esac; }}; "
+            f"i=1; while [ $i -le {half} ]; do line $i; i=$((i+1)); done; "
+            "printf 'type now: '; IFS= read -r l; echo \"got:$l\"; "
+            f"while [ $i -le {JOURNEY_LINES} ]; do line $i; i=$((i+1)); done; "
+            "trap 'echo interrupted; exit 130' INT; echo waiting; "
+            "while :; do sleep 0.1; done")
+
+
+# Height-only storm: what every check, including no UI row in history, holds.
+JOURNEY_HEIGHT_STORM = [(100, 40), (100, 24), (100, 30), (100, 35), (100, 26)]
+# With width changes tmux reflows rows wider than the narrower pane, the UI's
+# full-width rows among them, so part of a frame can overflow into history.
+# Every log line still arrives once and in order; the fragments are reported.
+REFLOW_LIMITATION = ("tmux reflows full-width UI rows when the pane narrows; the overflow "
+                     "rows of a frame can reach history (bd-g00-root-epic-ewths.42.8)")
+
+
+def run_tmux_journey(out: Path, agent: Path, timeout_s: float, storm_steps: int = 50,
+                     storm_interval_s: float = 0.02,
+                     storm_sizes: list[tuple[int, int]] | None = None,
+                     reflow_expected: bool = False, case: str = "flagship_journey") -> dict:
+    """Drive the agent shell like a user inside real tmux and check history.
+
+    Start inline (5 rows) with a --pty child streaming 100k hostile mixed
+    lines; type a line at its prompt; resize the window 50 times while it
+    streams; Ctrl-C; F5 to restart; quit. Then check every line once, in
+    order, as exactly its visible text; the typed line, interrupt, restart
+    and exits logged once; one UI frame in history; no injection took effect
+    (pane title, clipboard buffers, the injected rows themselves); the pane's
+    terminal modes restored; the child's background process gone; bytes per
+    log line bounded.
+    """
+    tmux = Tmux(out)
+    tmux.start()
+    base = tmux.base
+    marker = out / f"{case}.{RUN_ID}.restarted"
+    pid_file = out / f"{case}.{RUN_ID}.pid"
+    raw = out / f"{case}.{RUN_ID}.raw"
+    try:
+        run(base + ["set-option", "-g", "set-clipboard", "on"])
+        # How this tmux renders the two Unicode kinds from a plain shell.
+        controls = tmux.capture(f"{case}_control", " ; ".join(
+            f"{JOURNEY_PRINTF[k]} {k}" for k in (1, 2)) + f"; echo {DONE_MARKER}; sleep 1", 60)
+        visible = dict(JOURNEY_VISIBLE)
+        for row in controls.splitlines():
+            if (m := MIXED_LINE.match(row)) and m.group(1) in ("1", "2"):
+                visible[int(m.group(1))] = m.group(2)
+        probe = (f"pid=$(cat {shlex.quote(str(pid_file))}); for i in 1 2 3 4 5 6 7 8 9 10; do "
+                 "kill -0 \"$pid\" 2>/dev/null || break; sleep 0.2; done; "
+                 "if kill -0 \"$pid\" 2>/dev/null; then echo ORPHAN=alive; kill -9 \"$pid\"; "
+                 "else echo ORPHAN=gone; fi")
+        child = shlex.quote(journey_child(marker, pid_file))
+        cmd = (f"{shlex.quote(str(agent))} --pty --ui-height=5 -- sh -c {child}; rc=$?; "
+               f"{probe}; echo {DONE_MARKER} rc=$rc; sleep 1")
+        cols, rows = JOURNEY_SIZE
+        run(base + ["new-session", "-d", "-s", case, "-x", str(cols), "-y", str(rows),
+                    "bash", "-c", cmd])
+        run(base + ["pipe-pane", "-t", case, "-o", f"cat >> {shlex.quote(str(raw))}"])
+
+        def screen() -> str:
+            return run(base + ["capture-pane", "-p", "-t", case], check=False)
+
+        def await_screen(text: str, limit: float) -> None:
+            if not wait_for(lambda: text in screen(), limit):
+                raise TimeoutError(f"journey: {text!r} never appeared on screen")
+
+        await_screen("type now", timeout_s)
+        run(base + ["send-keys", "-t", case, "hello", "Enter"])
+        sizes = storm_sizes or JOURNEY_STORM
+        for step in range(storm_steps):
+            width, height = sizes[step % len(sizes)]
+            run(base + ["resize-window", "-t", case, "-x", str(width), "-y", str(height)])
+            time.sleep(storm_interval_s)
+        run(base + ["resize-window", "-t", case, "-x", str(cols), "-y", str(rows)])
+        await_screen("waiting", timeout_s)
+        run(base + ["send-keys", "-t", case, "C-c"])
+        await_screen("EXIT 130", 60)
+        # F5 is refused until the child's reaping is confirmed (polled every
+        # 250 ms), so press it until the restarted run answers.
+        restarted = False
+        deadline = time.monotonic() + 30
+        while not restarted and time.monotonic() < deadline:
+            run(base + ["send-keys", "-t", case, "F5"])
+            restarted = wait_for(lambda: "second-run" in screen(), 2)
+        if not restarted:
+            raise TimeoutError("journey: F5 never restarted the child")
+        await_screen("EXIT 0", 60)
+        run(base + ["send-keys", "-t", case, "q"])
+        # Read the modes while the pane's shell is alive: tmux reports any
+        # dead pane's cursor as hidden.
+        await_screen(DONE_MARKER, 60)
+        flags = run(base + ["display-message", "-p", "-t", case,
+                            "#{alternate_on} #{cursor_flag} #{mouse_any_flag} #{origin_flag} "
+                            "#{insert_flag} #{scroll_region_upper} #{scroll_region_lower}"]).split()
+        title = run(base + ["display-message", "-p", "-t", case, "#{pane_title}"]).strip()
+        dead = lambda: run(base + ["display-message", "-p", "-t", case, "#{pane_dead}"],
+                           check=False).strip() == "1"
+        if not wait_for(dead, 60):
+            raise TimeoutError("journey: the pane did not finish after quit")
+        buffers = run(base + ["list-buffers"], check=False).strip()
+        text = settled(lambda: run(
+            base + ["capture-pane", "-p", "-J", "-t", case, "-S", "-", "-E", "-"]))
+        (out / f"tmux.{case}.{RUN_ID}.txt").write_text(text)
+    finally:
+        tmux.stop()
+
+    rows_all = text.splitlines()
+    # The agent's final frame (its 5 UI rows, which include a viewer showing
+    # the latest lines) sits right above the pane shell's probe output; the
+    # rest is history, where every logged line must appear exactly once.
+    probe_row = next((i for i, r in enumerate(rows_all) if ORPHAN.match(r)), len(rows_all))
+    frame = rows_all[max(0, probe_row - 5):probe_row]
+    history = rows_all[:max(0, probe_row - 5)] + rows_all[probe_row:]
+    # Log lines arrive as a stream and carry no padding; UI rows are drawn
+    # across the full width. A padded numbered row is a viewer row of a UI
+    # frame that reached history (tmux reflow can split a full-width row when
+    # a pane narrows, so part of a frame may overflow), not a log line.
+    log_rows = [r for r in history if r == r.rstrip()]
+    fragments = [r for r in history if STATUS_HINT.search(r)
+                 or (r != r.rstrip() and MIXED_LINE.match(r))]
+    seen = [(int(m.group(1)), m.group(2)) for r in log_rows if (m := MIXED_LINE.match(r))
+            and 1 <= int(m.group(1)) <= JOURNEY_LINES]
+    good = [n for n, payload in seen if payload == visible[n % 6]]
+    wrong = sorted({n for n, payload in seen if payload != visible[n % 6]})
+    once = lambda needle: sum(1 for r in history if needle in r)
+    expected_flags = ["0", "1", "0", "0", "0", "0", str(rows - 1)]
+    bytes_per_line = round(raw.stat().st_size / JOURNEY_LINES, 1) if raw.exists() else None
+    checks = {
+        "lines_in_order_once": good == list(range(1, JOURNEY_LINES + 1)),
+        "typed_line_reached_child": once("type now: got:hello") == 1,
+        "typed_line_echoed": once("[stdin queued] hello") == 1,
+        "interrupt_delivered": once("interrupted") == 1 and once("[process] EXIT 130") == 1,
+        "restart_logged": once("[process] RESTART run=") == 1 and once("second-run") == 1
+        and once("[process] EXIT 0") == 1,
+        "one_ui_frame_in_history": (reflow_expected or not fragments)
+        and sum(1 for r in frame if STATUS_HINT.search(r)) == 1,
+        "injection_inert": title != "pwn" and not buffers and not wrong,
+        "terminal_restored": flags == expected_flags,
+        "child_tree_reaped": once("ORPHAN=gone") == 1,
+        "shell_marker_own_row": any(r.strip().startswith(DONE_MARKER) for r in history),
+        "bytes_per_line_bounded": bytes_per_line is not None
+        and bytes_per_line <= JOURNEY_MAX_BYTES_PER_LINE,
+    }
+    return {
+        "storm": f"{storm_steps} resizes every {round(storm_interval_s * 1000)} ms",
+        "lines": JOURNEY_LINES,
+        "found": len(set(good)),
+        "duplicates": len(good) - len(set(good)),
+        "missing": [n for n in range(1, JOURNEY_LINES + 1) if n not in set(good)][:10],
+        "ui_fragment_rows": len(fragments),
+        "known_limitation": REFLOW_LIMITATION if reflow_expected else None,
+        "wrong_payload": wrong[:5],
+        "visible_controls": {k: visible[k] for k in (1, 2)},
+        "pane_flags": " ".join(flags),
+        "pane_title": title,
+        "bytes_per_line": bytes_per_line,
+        "keystroke_latency": "not measured here (dispatch budget is an in-process benchmark)",
+        **checks,
+        "ok": all(checks.values()),
+    }
 
 
 def analyse_quit(transcript: str, expect_orphan: bool) -> dict:
@@ -550,6 +752,27 @@ def main() -> int:
                     log.write(json.dumps(row) + "\n")
             finally:
                 driver.stop()
+        # The flagship journeys run on their own tmux servers after the cases:
+        # a height-only resize storm (every check) and one that also changes
+        # the width (every check but the reflow fragments, which are reported).
+        muxes = [m.strip() for m in args.mux.split(",") if m.strip()]
+        if "tmux" in muxes and "tmux" not in out_of_scope and shutil.which("tmux"):
+            for case, sizes, reflow in [
+                ("flagship_journey", JOURNEY_HEIGHT_STORM, False),
+                ("flagship_journey_width_resizes", JOURNEY_STORM, True),
+            ]:
+                started = time.monotonic()
+                row = {"mux": "tmux", "version": Tmux(out).version(), "case": case}
+                try:
+                    row.update(run_tmux_journey(out, agent, args.timeout, storm_sizes=sizes,
+                                                reflow_expected=reflow, case=case))
+                    row["status"] = "pass" if row.pop("ok") else "fail"
+                except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as err:
+                    row.update(status="fail", reason=str(err))
+                row["seconds"] = round(time.monotonic() - started, 1)
+                results.append(row)
+                print(json.dumps(row, ensure_ascii=False), flush=True)
+                log.write(json.dumps(row) + "\n")
         failed = [r for r in results if r["status"] != "pass"]
         summary = {"summary": True, "cases": len(results), "failed": len(failed),
                    "lines": n, "out": str(out)}
