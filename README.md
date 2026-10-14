@@ -2619,10 +2619,9 @@ The table widget has a dedicated theme engine (`ftui-style/src/table_theme.rs`) 
 | **Selection highlight** | Selected-row style merged over the row's style (blend modes apply to theme effect rules, not to selection) |
 | **Hover state** | Hovered-row style from mouse hit-testing (`TableState::hovered`), applied as-is |
 | **Border** | One border style for the table's block |
-| **Truncation** | Ellipsis, clip, or wrap per column |
-| **Alignment** | Left/center/right per column with Unicode-aware width |
-
-`TableTheme` also carries `padding` and `column_gap` fields; the `Table` widget does not apply them yet.
+| **Column gap & cell padding** | `TableTheme::column_gap` sets the default inter-column spacing unless `.column_spacing(..)` overrides it; `TableTheme::padding` sets horizontal cell inset in `MarkdownRenderer` by default and in `Table` when `.use_theme_padding(true)` (or `.cell_padding(..)`) is set |
+| **Truncation** | Ellipsis, clip, or wrap per column (`with_column_truncation(col, Truncate::Ellipsis)`) |
+| **Alignment** | Left/center/right per column with Unicode-aware width (`with_column_alignment(col, Alignment::Right)`) |
 
 Themes are composable; a base theme can be overlaid with per-instance overrides:
 
