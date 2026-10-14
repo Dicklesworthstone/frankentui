@@ -143,7 +143,7 @@ use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::link_registry::LinkRegistry;
 use ftui_render::presenter::Presenter;
 use ftui_render::render_certificate::{
-    RenderCertificate, RenderCertificateInputs, RenderCertificateLevel, evaluate_render_certificate,
+    RenderCertificate, RenderCertificateLevel, evaluate_render_certificate_for_buffers,
 };
 use ftui_render::sanitize::{SanitizeMode, Text, sanitize, sanitize_with};
 use tracing::{debug_span, info, info_span, trace, warn};
@@ -1774,15 +1774,10 @@ impl<W: Write> TerminalWriter<W> {
         if prev_dims.is_none() || prev_dims != Some((buffer.width(), buffer.height())) {
             self.full_redraw_probe = 0;
             self.last_diff_strategy = Some(DiffStrategy::FullRedraw);
-            self.last_certificate = Some(evaluate_render_certificate(
-                &RenderCertificateInputs {
-                    prev_available: prev_dims.is_some(),
-                    dims_changed: prev_dims.is_some(),
-                    full_redraw_due: false,
-                    dirty_row_count: buffer.dirty_row_count(),
-                    total_rows: buffer.height(),
-                },
-                Vec::new(),
+            self.last_certificate = Some(evaluate_render_certificate_for_buffers(
+                self.prev_buffer.as_ref(),
+                buffer,
+                false,
             ));
             return DiffDecision {
                 strategy: DiffStrategy::FullRedraw,
@@ -1793,15 +1788,10 @@ impl<W: Write> TerminalWriter<W> {
         if self.full_redraw_interval_due() {
             self.full_redraw_probe = 0;
             self.last_diff_strategy = Some(DiffStrategy::FullRedraw);
-            self.last_certificate = Some(evaluate_render_certificate(
-                &RenderCertificateInputs {
-                    prev_available: true,
-                    dims_changed: false,
-                    full_redraw_due: true,
-                    dirty_row_count: buffer.dirty_row_count(),
-                    total_rows: buffer.height(),
-                },
-                Vec::new(),
+            self.last_certificate = Some(evaluate_render_certificate_for_buffers(
+                self.prev_buffer.as_ref(),
+                buffer,
+                true,
             ));
             return DiffDecision {
                 strategy: DiffStrategy::FullRedraw,
@@ -1891,16 +1881,8 @@ impl<W: Write> TerminalWriter<W> {
             DiffStrategy::DirtyRows => {
                 let prev = self.prev_buffer.as_ref().expect("prev buffer must exist");
                 if self.diff_config.certified_skips {
-                    let certificate = evaluate_render_certificate(
-                        &RenderCertificateInputs {
-                            prev_available: true,
-                            dims_changed: false,
-                            full_redraw_due: false,
-                            dirty_row_count: dirty_rows,
-                            total_rows: buffer.height(),
-                        },
-                        buffer.dirty_row_indices(),
-                    );
+                    let certificate =
+                        evaluate_render_certificate_for_buffers(Some(prev), buffer, false);
                     self.diff_scratch
                         .compute_certified_into(prev, buffer, certificate.to_hint());
                     self.last_certificate = Some(certificate);
@@ -1924,14 +1906,25 @@ impl<W: Write> TerminalWriter<W> {
         // Update posterior if Bayesian mode is enabled
         if self.diff_config.bayesian_enabled && has_diff {
             let span_stats = span_stats_snapshot.unwrap_or_else(|| buffer.dirty_span_stats());
-            let (scan_cost, reason) = estimate_diff_scan_cost(
-                strategy,
-                dirty_rows,
-                width,
-                height,
-                &span_stats,
-                tile_stats,
-            );
+            let (scan_cost, reason) = if self
+                .last_certificate
+                .as_ref()
+                .is_some_and(|cert| cert.fell_back)
+            {
+                (
+                    self.diff_scratch.last_scanned_cells(),
+                    "certificate_fallback",
+                )
+            } else {
+                estimate_diff_scan_cost(
+                    strategy,
+                    dirty_rows,
+                    width,
+                    height,
+                    &span_stats,
+                    tile_stats,
+                )
+            };
             let scanned_cells = scan_cost.max(self.diff_scratch.len());
             self.diff_strategy
                 .observe(scanned_cells, self.diff_scratch.len());

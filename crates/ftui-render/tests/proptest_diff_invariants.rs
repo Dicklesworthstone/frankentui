@@ -595,3 +595,232 @@ proptest! {
         );
     }
 }
+
+// ═════════════════════════════════════════════════════════════════════════
+// 17. Default Certified Diff Path & Negative Witness Controls (G49 / .48.3)
+// ═════════════════════════════════════════════════════════════════════════
+
+use ftui_render::render_certificate::{
+    RenderCertificateInputs, RenderCertificateLevel, evaluate_render_certificate,
+    evaluate_render_certificate_for_buffers,
+};
+
+proptest! {
+    /// The production default path (`evaluate_render_certificate_for_buffers` +
+    /// `compute_certified_into`) must emit the exact same change list and
+    /// coalesced runs as `BufferDiff::compute` for any valid frame transition,
+    /// including over-marked writes of unchanged cells, and its actual scanned
+    /// cell count must stay bounded by the dirty-span coverage estimate fed to
+    /// the strategy selector.
+    #[test]
+    fn certified_diff_matches_full_diff_and_respects_span_bound(
+        (w, h) in dims(),
+        initial_changes in change_set(80, 40),
+        frame_changes in change_set(80, 40),
+        overmark_changes in proptest::collection::vec((0u16..80, 0u16..40), 0..40),
+    ) {
+        let mut old = Buffer::new(w, h);
+        apply_changes(&mut old, &initial_changes);
+        old.clear_dirty();
+
+        let mut new = old.clone();
+        new.clear_dirty();
+        // Over-mark unchanged cells (widgets redrawing static chrome).
+        for (rx, ry) in overmark_changes {
+            let x = rx % w;
+            let y = ry % h;
+            let existing = *old.get(x, y).unwrap();
+            new.set_raw(x, y, existing);
+        }
+        // Apply actual frame mutations.
+        apply_changes(&mut new, &frame_changes);
+
+        let full = BufferDiff::compute(&old, &new);
+        let cert = evaluate_render_certificate_for_buffers(Some(&old), &new, false);
+        prop_assert!(!cert.fell_back, "valid frame lineage must not fall back: {:?}", cert);
+
+        let mut certified = BufferDiff::new();
+        certified.compute_certified_into(&old, &new, cert.into_hint());
+
+        prop_assert_eq!(
+            certified.changes(),
+            full.changes(),
+            "compute_certified_into changes diverged from full compute at {}x{}",
+            w,
+            h
+        );
+        prop_assert_eq!(
+            certified.runs(),
+            full.runs(),
+            "compute_certified_into runs diverged from full compute at {}x{}",
+            w,
+            h
+        );
+
+        let span_coverage = new.dirty_span_stats().span_coverage_cells;
+        let dirty_rows = new.dirty_row_count();
+        if dirty_rows == 0 {
+            prop_assert_eq!(certified.last_scanned_cells(), 0);
+        } else if dirty_rows < usize::from(h) {
+            prop_assert!(
+                certified.last_scanned_cells() <= span_coverage,
+                "certified scanned {} cells > span coverage {}",
+                certified.last_scanned_cells(),
+                span_coverage
+            );
+        }
+    }
+
+    /// Presenting a frame via the default certified diff path reproduces the
+    /// exact target buffer in `HeadlessTerm`.
+    #[test]
+    fn presented_certified_diff_reproduces_the_target_buffer(
+        (w, h) in (1u16..=30, 1u16..=12),
+        first in proptest::collection::vec(glyph(), 1..40),
+        second in proptest::collection::vec(glyph(), 1..40),
+        colours in proptest::collection::vec(any::<u8>(), 1..16),
+    ) {
+        let mut prev = painted_buffer(w, h, &first, &colours);
+        prev.clear_dirty();
+        let next = painted_buffer(w, h, &second, &colours);
+
+        let mut out = Vec::new();
+        {
+            let blank = Buffer::new(w, h);
+            let initial = BufferDiff::compute(&blank, &prev);
+            let cert = evaluate_render_certificate_for_buffers(Some(&prev), &next, false);
+            let mut update = BufferDiff::new();
+            update.compute_certified_into(&prev, &next, cert.into_hint());
+
+            let mut presenter = Presenter::new(&mut out, TerminalCapabilities::default());
+            presenter.present(&prev, &initial).expect("present initial frame");
+            presenter.present(&next, &update).expect("present certified update frame");
+        }
+
+        let mut term = HeadlessTerm::new(w, h);
+        term.process(&out);
+
+        let want = visible_rows(&next);
+        let got: Vec<String> = term
+            .screen_text()
+            .iter()
+            .map(|row| row.trim_end().to_string())
+            .collect();
+        prop_assert_eq!(
+            got,
+            want,
+            "certified presented bytes did not reproduce target buffer at {}x{}",
+            w,
+            h
+        );
+    }
+
+    /// Negative control 1 (stale dirty bits): when `new` is mutated and its
+    /// dirty state is cleared *without* advancing `old`, the dirty witness is
+    /// stale. `evaluate_render_certificate_for_buffers` must refuse to skip or
+    /// narrow, and `compute_certified_into` must fall back to a full scan that
+    /// still recovers every changed cell.
+    #[test]
+    fn negative_control_stale_dirty_bits_refuses_skip_and_recovers_exact_diff(
+        (w, h) in dims(),
+        untracked_changes in change_set(80, 40),
+        tracked_changes in change_set(80, 40),
+    ) {
+        let mut old = Buffer::new(w, h);
+        old.clear_dirty();
+
+        let mut new = old.clone();
+        new.clear_dirty();
+        apply_changes(&mut new, &untracked_changes);
+
+        let expected_untracked = BufferDiff::compute(&old, &new);
+        prop_assume!(!expected_untracked.is_empty());
+
+        // Deliberately invalidate the dirty witness by clearing dirty flags
+        // after mutating `new`, then optionally applying a second set of edits.
+        new.clear_dirty();
+        apply_changes(&mut new, &tracked_changes);
+
+        let cert = evaluate_render_certificate_for_buffers(Some(&old), &new, false);
+        prop_assert_eq!(cert.level, RenderCertificateLevel::FullRequired);
+        prop_assert!(cert.fell_back, "stale dirty witness must record fell_back");
+        prop_assert!(
+            cert.causes.contains(&"dirty-row-witness-inconsistent"),
+            "expected dirty-row-witness-inconsistent cause, got {:?}",
+            cert.causes
+        );
+
+        let mut certified = BufferDiff::new();
+        certified.compute_certified_into(&old, &new, cert.into_hint());
+        let full = BufferDiff::compute(&old, &new);
+
+        prop_assert_eq!(
+            certified.changes(),
+            full.changes(),
+            "fallback from stale dirty witness must recover exact full diff"
+        );
+    }
+
+    /// Negative control 2 (corrupted/desynced witness): if `dirty_rows` is
+    /// truncated, unsorted, duplicated, or disagrees with `span_dirty_rows`,
+    /// `evaluate_render_certificate` refuses to narrow and `compute_certified_into`
+    /// recovers the exact full diff.
+    #[test]
+    fn negative_control_corrupted_witness_refuses_narrow_and_recovers_exact_diff(
+        (w, h) in (2u16..=60, 2u16..=30),
+        frame_changes in change_set(60, 30),
+    ) {
+        let mut old = Buffer::new(w, h);
+        old.clear_dirty();
+        let mut new = old.clone();
+        new.clear_dirty();
+        apply_changes(&mut new, &frame_changes);
+
+        let full = BufferDiff::compute(&old, &new);
+        prop_assume!(!full.is_empty());
+
+        // Corrupt the witness by dropping a dirty row (count mismatch) and
+        // desynchronizing span_dirty_rows.
+        let mut bad_rows = new.dirty_row_indices();
+        bad_rows.pop();
+        let bad_inputs = RenderCertificateInputs {
+            prev_available: true,
+            dims_changed: false,
+            full_redraw_due: false,
+            dirty_row_count: new.dirty_row_count(),
+            span_dirty_rows: new.dirty_span_row_count().saturating_add(1),
+            total_rows: h,
+            baseline_valid: true,
+        };
+        let cert = evaluate_render_certificate(&bad_inputs, bad_rows);
+        prop_assert_eq!(cert.level, RenderCertificateLevel::FullRequired);
+        prop_assert!(cert.fell_back);
+
+        let mut certified = BufferDiff::new();
+        certified.compute_certified_into(&old, &new, cert.into_hint());
+        prop_assert_eq!(
+            certified.changes(),
+            full.changes(),
+            "fallback from corrupted witness must recover exact full diff"
+        );
+    }
+}
+
+#[test]
+fn negative_control_missing_prev_and_resized_dimensions_refuse_skip() {
+    let old = Buffer::new(20, 10);
+    let mut new_same = Buffer::new(20, 10);
+    new_same.clear_dirty();
+
+    // Missing previous buffer even when `new` has 0 dirty rows.
+    let cert_no_prev = evaluate_render_certificate_for_buffers(None, &new_same, false);
+    assert_eq!(cert_no_prev.level, RenderCertificateLevel::FullRequired);
+    assert!(cert_no_prev.causes.contains(&"no-previous-frame"));
+
+    // Resized dimensions even when `new` has 0 dirty rows.
+    let mut new_resized = Buffer::new(24, 10);
+    new_resized.clear_dirty();
+    let cert_resized = evaluate_render_certificate_for_buffers(Some(&old), &new_resized, false);
+    assert_eq!(cert_resized.level, RenderCertificateLevel::FullRequired);
+    assert!(cert_resized.causes.contains(&"viewport-changed"));
+}

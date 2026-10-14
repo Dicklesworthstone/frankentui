@@ -924,14 +924,16 @@ where decay = 0.95 (exponential forgetting for non-stationary workloads)
 ```
 Cost = c_scan × cells_scanned + c_emit × cells_emitted
 
-Full Diff:     Cost = c_row × H + c_scan × D × W + c_emit × p × N
-Dirty-Row:     Cost = c_scan × D × W + c_emit × p × N
+Full Diff:     Cost = c_row × H + c_scan × D × W + c_emit × p × min(D × W, N)
+Dirty-Row:     Cost = c_scan × scan_cells + c_emit × p × scan_cells
 Full Redraw:   Cost = c_emit × N
 
 Decision: argmin { E[Cost_full], E[Cost_dirty], E[Cost_redraw] }
 ```
 
-**Conservative mode:** Uses 95th percentile of p (not mean) when posterior variance is high, because the system knows when it's uncertain.
+Here `scan_cells` is `Buffer::dirty_span_stats().span_coverage_cells` — the exact cell count that the default certified dirty-span scan (`BufferDiff::compute_certified_into`) compares. Because `observe()` trains `p` as changes per *scanned* cell, the expected-emission term multiplies `p` by each path's own scanned region (`min(D × W, N)` for `Full`, `scan_cells` for `DirtyRows`) rather than total screen cells `N`.
+
+**Uncertainty guard & conservative mode:** `conservative` defaults to `false`; when `conservative == true` or posterior variance exceeds `uncertainty_guard_variance = 0.002`, `p` uses the `conservative_quantile = 0.95` upper quantile via a normal approximation (`ChangeRateEstimator::upper_quantile`).
 
 ### Bayesian Capability Detection (Terminal Caps Probe)
 
@@ -976,7 +978,7 @@ Scan cost:
     sum_y |S_y|
 ```
 
-**Result:** scan work scales with the *actual changed area*, not full row width.
+**Where it runs (default path):** `TerminalWriter` defaults to `certified_skips: true`. Under `DiffStrategy::DirtyRows`, `evaluate_render_certificate_for_buffers` verifies in a single pass that `new`'s dirty state was cleared against `old`'s mutation generation and that `dirty_rows` and `dirty_spans` agree, then `BufferDiff::compute_certified_into` walks each dirty row's `DirtySpanRow` directly (`scan_row_changes_spans`). Measured in [`docs/perf/certified_vs_dirty_scan_2026-10-14.md`](docs/perf/certified_vs_dirty_scan_2026-10-14.md): `spinner_tick` p50 `68 ns` (80×24), `126 ns` (200×60), `193 ns` (300×100); `overmarked_chrome` (widgets redrawing border/header/status chrome while 4 cells change) `166 ns` (80×24) and `536 ns` (300×100) — **4.7× to 16.2× faster** than whole-row slice scanning.
 
 ### Summed-Area Table (Tile-Skip Diff)
 
@@ -987,7 +989,7 @@ SAT(x,y) = A(x,y)
          + SAT(x-1,y) + SAT(x,y-1) - SAT(x-1,y-1)
 ```
 
-The SAT is queried per tile row (one subtraction) to skip whole rows of clean tiles before per-tile checks; tiles engage at $\ge 12,000$ cells (200×60 by default); measured: `diff/sparse_5pct_rows/200x60` p50 28 µs → 21 µs (~25% speedup retiring 5 of 8 tile rows, [`docs/perf/sat_tile_skip_2026-09.md`](docs/perf/sat_tile_skip_2026-09.md)).
+**Where it runs:** `BufferDiff::compute_dirty_into` (used when `certified_skips: false`, or when calling `BufferDiff::compute_dirty` directly). The SAT is queried per tile row (one subtraction) to skip whole rows of clean tiles before per-tile checks; tiles engage at $\ge 12,000$ cells (200×60 by default; `diff/sparse_5pct_rows/200x60` p50 28 µs → 21 µs in [`docs/perf/sat_tile_skip_2026-09.md`](docs/perf/sat_tile_skip_2026-09.md)). On the default `certified_skips: true` path (`compute_certified_into`), the renderer skips clean rows via `dirty_rows` and scans dirty spans directly without building the whole-screen SAT, which is 1.8×–10.8× faster at 200×60 and 300×100 ([`docs/perf/certified_vs_dirty_scan_2026-10-14.md`](docs/perf/certified_vs_dirty_scan_2026-10-14.md)).
 
 ### Fenwick Tree (Prefix Sums for Virtualized Lists)
 
@@ -2102,23 +2104,27 @@ printable-ASCII width fast path, where the same kernels win by 5–44×. Numbers
 
 ### Block-Based Diff Algorithm
 
-The diff engine processes cells in **4-cell blocks** (64 bytes) for autovectorization:
+The diff engine provides two scan strategies selected per frame by `DiffStrategySelector`:
 
 ```
-for each row:
-  if rows_equal(old[y], new[y]):       ← Fast path: skip unchanged rows
-    continue
+Default narrow scan (compute_certified_into under DiffStrategy::DirtyRows):
+  for each certified dirty row y:
+    for each dirty span [x0, x1) in new.dirty_span_row(y):
+      compare 128-bit cells in [x0, x1) via bits_eq()
+      coalesce adjacent changes into ChangeRun
 
-  for each 4-cell block:
-    compare 4 × 128-bit cells          ← SIMD-friendly
-    if any changed:
-      coalesce into ChangeRun          ← Minimize cursor positioning
+Full scan (compute_into under DiffStrategy::Full):
+  for each row y:
+    for each 32-cell block:
+      if block_all_unchanged (4-cell chunks via bits_eq()):
+        continue                         ← Skip unchanged 32-cell block
+      scan cells in block and coalesce into ChangeRun
 ```
 
 **Key optimizations:**
-- **Row-skip fast path:** Unchanged rows detected with single comparison, no cell iteration
-- **Dirty row tracking:** Mathematical invariant ensures only mutated rows are checked
-- **Change coalescing:** Adjacent changed cells become single `ChangeRun` (one cursor move vs many)
+- **Certified dirty-row & span skipping (`DirtyRows` default):** Clean rows are skipped in O(1) via `dirty_rows[y] == false`, and within dirty rows only the mutated column spans (`dirty_spans[y]`) are compared (`scan_row_changes_spans`).
+- **32-cell block skip (`Full` scan):** `compute_into` does not pre-check whole rows; instead it tests 32-cell blocks (`BLOCK_SIZE = 32`) in 4-cell chunks (`bits_eq`) and scans individual cells only inside blocks that differ.
+- **Change coalescing:** Adjacent changed cells become a single `ChangeRun` (one cursor move vs many).
 
 ### Presenter Cost Model
 
@@ -2430,15 +2436,15 @@ This is a convention, not a compiler guarantee: no `clippy::arithmetic_side_effe
 
 ### Flicker-Free Proof Sketch
 
-The codebase includes formal proof sketches in `no_flicker_proof.rs`:
+`crates/ftui-render/tests/no_flicker_proof.rs` tests diff equivalence and DEC 2026 sync-bracket framing in `ftui-render` (`certified_and_dirty_diff_match_full_diff_and_wrap_sync_brackets`), while the full 6-theorem proof sketch and adversarial counterexample suite live in `crates/ftui-harness/tests/render_no_flicker_proof.rs`:
 
-**Theorem 1 (Sync Bracket Completeness):** Every byte emitted by Presenter is wrapped in DEC 2026 sync brackets.
+**Theorem 1 (Sync Bracket Completeness):** When `capabilities.sync_output == true` (and no I/O error aborts the write), every byte emitted by `Presenter::present` is enclosed within one DEC 2026 sync bracket pair (`\x1b[?2026h` … `\x1b[?2026l`).
 
-**Theorem 2 (Diff Completeness):** `BufferDiff::compute(old, new)` produces exactly `{(x,y) | old[x,y] ≠ new[x,y]}`.
+**Theorem 2 (Diff Completeness):** For equal-dimension buffers, `BufferDiff::compute(old, new)` produces exactly `{(x,y) | old[x,y] ≠ new[x,y]}`.
 
-**Theorem 3 (Dirty Tracking Soundness):** If any cell in row y was mutated, `is_row_dirty(y) == true`.
+**Theorem 3 (Dirty Tracking Soundness):** If any cell in row `y` was mutated since `clear_dirty()`, `is_row_dirty(y) == true`, `dirty_spans[y]` covers the mutated column range, and `mutation_gen` advances.
 
-**Theorem 4 (Diff-Dirty Equivalence):** `compute()` and `compute_dirty()` produce identical output when dirty invariants hold.
+**Theorem 4 (Diff-Dirty Equivalence):** When `new` was cleared (`clear_dirty()`) at `old`'s mutation generation (`new.dirty_baseline_gen() == Some(old.mutation_gen())`) or starts full-dirty (`reset_for_frame()`), `compute_certified_into()`, `compute_dirty()`, and `compute()` produce identical output; if the baseline generation or row/span witnesses disagree, `evaluate_render_certificate_for_buffers` falls back to `FullDiff` (`compute_into`).
 
 ---
 
@@ -2460,7 +2466,7 @@ proptest! {
 }
 ```
 
-Alongside them: `identical_buffers_produce_empty_diff`, `diff_is_deterministic`, `compute_and_compute_into_equivalent`, `runs_cover_all_changes` and `changes_sorted_row_major`.
+Alongside them: `identical_buffers_produce_empty_diff`, `diff_is_deterministic`, `compute_and_compute_into_equivalent`, `runs_cover_all_changes`, `changes_sorted_row_major`, `certified_diff_matches_full_diff_and_respects_span_bound`, `presented_certified_diff_reproduces_the_target_buffer`, and the certificate negative controls (`negative_control_stale_dirty_bits_refuses_skip_and_recovers_exact_diff`, `negative_control_corrupted_witness_refuses_narrow_and_recovers_exact_diff`).
 
 ### Snapshot Testing
 
@@ -2502,12 +2508,16 @@ Note it clears the initial dirty state first: a fresh `Buffer` starts with every
 ### Benchmark Suite
 
 ```bash
-cargo bench -p ftui-render
+cargo bench -p ftui-render --bench diff_bench
+cargo bench -p ftui-render --bench diff_paths_paired
 
-# Output:
-# diff/identical_100x50    time: [1.2 µs]   throughput: [4.2 Mcells/s]
-# diff/sparse_5pct_100x50  time: [8.3 µs]   throughput: [602 Kcells/s]
-# diff/dense_100x50        time: [45 µs]    throughput: [111 Kcells/s]
+# Measured at 120×40 (4,800 cells, opt-level="z", docs/perf/certified_vs_dirty_scan_2026-10-14.md):
+# diff_paths_paired (certified, spinner_tick 120x40)      p50: [90.7 ns]   throughput: [52.9 Gcells/s]
+# diff_paths_paired (certified, overmarked_chrome 120x40) p50: [251.4 ns]  throughput: [19.1 Gcells/s]
+# diff_paths_paired (certified, scattered_5pct 120x40)    p50: [1.98 µs]   throughput: [2.43 Gcells/s]
+# diff/sparse_5pct/compute/120x40  (full scan)            p50: [7.51 µs]   throughput: [639 Mcells/s]
+# diff/heavy_50pct/compute/120x40  (full scan)            p50: [8.22 µs]   throughput: [584 Mcells/s]
+# diff/full_100pct/compute/120x40  (full scan)            p50: [12.1 µs]   throughput: [396 Mcells/s]
 ```
 
 ---

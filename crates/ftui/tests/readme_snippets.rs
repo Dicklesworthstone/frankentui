@@ -820,3 +820,51 @@ fn readme_versions_match_the_workspace() {
         );
     }
 }
+
+#[test]
+fn readme_benchmark_suite_matches_paired_jsonl() {
+    const PAIRED_JSONL: &str =
+        include_str!("../../../docs/perf/certified_vs_dirty_scan_2026-10-14.jsonl");
+
+    // The old fictitious benchmark IDs and 1000x-off throughputs must not return.
+    assert!(!README.contains("diff/identical_100x50"));
+    assert!(!README.contains("diff/sparse_5pct_100x50"));
+    assert!(!README.contains("diff/dense_100x50"));
+
+    // Every 120x40 row quoted in README's Benchmark Suite must match the retained JSONL.
+    assert!(
+        PAIRED_JSONL.contains(r#""size":"120x40","pattern":"spinner_tick""#)
+            && PAIRED_JSONL.contains(r#""certified_ns":{"p50":90.7"#)
+    );
+    assert!(
+        PAIRED_JSONL.contains(r#""size":"120x40","pattern":"overmarked_chrome""#)
+            && PAIRED_JSONL.contains(r#""certified_ns":{"p50":251.4"#)
+    );
+    assert!(
+        PAIRED_JSONL.contains(r#""size":"120x40","pattern":"scattered_5pct""#)
+            && PAIRED_JSONL.contains(r#""certified_ns":{"p50":1978.5"#)
+            && PAIRED_JSONL.contains(r#""full_ns":{"p50":7507.8"#)
+    );
+    assert!(
+        PAIRED_JSONL.contains(r#""size":"120x40","pattern":"dense_50pct""#)
+            && PAIRED_JSONL.contains(r#""full_ns":{"p50":8219.1"#)
+    );
+    assert!(
+        PAIRED_JSONL.contains(r#""size":"120x40","pattern":"full_100pct""#)
+            && PAIRED_JSONL.contains(r#""full_ns":{"p50":12134.5"#)
+    );
+
+    for expected in [
+        "diff_paths_paired (certified, spinner_tick 120x40)      p50: [90.7 ns]   throughput: [52.9 Gcells/s]",
+        "diff_paths_paired (certified, overmarked_chrome 120x40) p50: [251.4 ns]  throughput: [19.1 Gcells/s]",
+        "diff_paths_paired (certified, scattered_5pct 120x40)    p50: [1.98 µs]   throughput: [2.43 Gcells/s]",
+        "diff/sparse_5pct/compute/120x40  (full scan)            p50: [7.51 µs]   throughput: [639 Mcells/s]",
+        "diff/heavy_50pct/compute/120x40  (full scan)            p50: [8.22 µs]   throughput: [584 Mcells/s]",
+        "diff/full_100pct/compute/120x40  (full scan)            p50: [12.1 µs]   throughput: [396 Mcells/s]",
+    ] {
+        assert!(
+            README.contains(expected),
+            "README Benchmark Suite missing expected line: {expected}"
+        );
+    }
+}

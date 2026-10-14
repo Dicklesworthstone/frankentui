@@ -1,19 +1,25 @@
-//! G49 (bd-g00-root-epic-ewths.48.1): the diff scans on identical buffer
-//! pairs, interleaved in one invocation.
+//! G49 (bd-g00-root-epic-ewths.48.1 / .48.2): the diff scans on identical
+//! buffer pairs, interleaved in one invocation.
 //!
 //! - `certified`: what `TerminalWriter` runs by default (`certified_skips:
-//!   true` under `DiffStrategy::DirtyRows`): `evaluate_render_certificate`
-//!   over `dirty_row_indices()`, then `compute_certified_into(.., to_hint())`,
-//!   which scans whole dirty rows.
+//!   true` under `DiffStrategy::DirtyRows`): `evaluate_render_certificate_for_buffers`
+//!   cross-checking `dirty_rows`, `dirty_spans`, `dirty_cells`, and baseline
+//!   generation, then `compute_certified_into(.., into_hint())` which narrows
+//!   each dirty row to `new.dirty_span_row(row)` without a redundant full-row
+//!   equality pre-scan.
+//! - `incumbent_row_slice`: the pre-`.48.2` `compute_certified_into`
+//!   implementation (whole-row equality pre-check + full-row scan, ignoring
+//!   `dirty_spans`) retained live in the same invocation so the `.48.2`
+//!   before/after delta is measured directly under identical load.
 //! - `dirty`: `compute_dirty_into` (dirty spans + SAT tile skip), the
 //!   `certified_skips: false` path.
 //! - `full`: `compute_into`, the `DiffStrategy::Full` path.
 //! - `certified_present`: `certified` plus presenting the diff into a `Vec`
 //!   (diff + emit), timed per frame for the founding plan's v1 budgets.
 //!
-//! `new` carries dirty marks for exactly the cells written, the best case for
-//! the first two paths (a real frame marks every cell a widget wrote). Every
-//! path's change list is checked against `full` before timing.
+//! `new` carries dirty marks for the cells written (including realistic
+//! widget over-marking in `overmarked_chrome`). Every path's change list is
+//! checked against `full` before timing.
 //!
 //! Each row also records what the strategy selector predicts for the frame,
 //! fed as `TerminalWriter` feeds it (span coverage as the DirtyRows scan
@@ -35,14 +41,22 @@ use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::diff::BufferDiff;
 use ftui_render::diff_strategy::{DiffStrategyConfig, DiffStrategySelector};
 use ftui_render::presenter::Presenter;
-use ftui_render::render_certificate::{RenderCertificateInputs, evaluate_render_certificate};
+use ftui_render::render_certificate::{
+    RenderCertificateInputs, evaluate_render_certificate, evaluate_render_certificate_for_buffers,
+};
 
 const SIZES: [(u16, u16); 4] = [(80, 24), (120, 40), (200, 60), (300, 100)];
 const ROUNDS: usize = 41;
 /// Wall time one timed batch aims for.
 const BATCH_TARGET_NS: f64 = 300_000.0;
 const BOOTSTRAP_RESAMPLES: usize = 2_000;
-const PATHS: [&str; 4] = ["certified", "dirty", "full", "certified_present"];
+const PATHS: [&str; 5] = [
+    "certified",
+    "incumbent_row_slice",
+    "dirty",
+    "full",
+    "certified_present",
+];
 
 #[derive(Clone, Copy)]
 enum Pattern {
@@ -52,19 +66,21 @@ enum Pattern {
     OneRow,
     Spinner,
     StatusLine,
+    OvermarkedChrome,
     LogScroll,
     Dense50,
     Full100,
 }
 
 impl Pattern {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::SingleCell,
         Self::Scattered5,
         Self::Rows5,
         Self::OneRow,
         Self::Spinner,
         Self::StatusLine,
+        Self::OvermarkedChrome,
         Self::LogScroll,
         Self::Dense50,
         Self::Full100,
@@ -78,6 +94,7 @@ impl Pattern {
             Self::OneRow => "one_full_row",
             Self::Spinner => "spinner_tick",
             Self::StatusLine => "status_line",
+            Self::OvermarkedChrome => "overmarked_chrome",
             Self::LogScroll => "log_scroll",
             Self::Dense50 => "dense_50pct",
             Self::Full100 => "full_100pct",
@@ -145,6 +162,22 @@ fn make_pair(pattern: Pattern, width: u16, height: u16) -> (Buffer, Buffer) {
                 new.set_raw(x, height - 1, changed_cell(x, height - 1));
             }
         }
+        Pattern::OvermarkedChrome => {
+            // Realistic widget redraw: widgets re-emit unchanged left/right
+            // border chrome on 25% of rows and unchanged header cells on row 0,
+            // while only 4 status counter cells on the last row actually change.
+            for x in 0..width.min(24) {
+                new.set_raw(x, 0, text_cell(x, 0));
+            }
+            for y in (1..height.saturating_sub(1)).step_by(4) {
+                new.set_raw(0, y, text_cell(0, y));
+                new.set_raw(width - 1, y, text_cell(width - 1, y));
+            }
+            let status_y = height - 1;
+            for x in 2..6u16.min(width) {
+                new.set_raw(x, status_y, changed_cell(x, status_y));
+            }
+        }
         Pattern::LogScroll => {
             for y in 0..height {
                 for x in 0..width {
@@ -179,17 +212,27 @@ fn make_pair(pattern: Pattern, width: u16, height: u16) -> (Buffer, Buffer) {
 
 fn certified(diff: &mut BufferDiff, old: &Buffer, new: &Buffer) {
     // The production sequence (terminal_writer.rs, DiffStrategy::DirtyRows).
+    let certificate = evaluate_render_certificate_for_buffers(Some(old), new, false);
+    diff.compute_certified_into(old, new, certificate.into_hint());
+}
+
+/// The pre-`.48.2` incumbent `compute_certified_into` implementation kept live
+/// in the same invocation for direct A/B comparison.
+fn incumbent_row_slice(diff: &mut BufferDiff, old: &Buffer, new: &Buffer) {
+    let dirty_row_count = new.dirty_row_count();
     let certificate = evaluate_render_certificate(
         &RenderCertificateInputs {
             prev_available: true,
             dims_changed: false,
             full_redraw_due: false,
-            dirty_row_count: new.dirty_row_count(),
+            dirty_row_count,
+            span_dirty_rows: dirty_row_count,
             total_rows: new.height(),
+            baseline_valid: true,
         },
         new.dirty_row_indices(),
     );
-    diff.compute_certified_into(old, new, certificate.to_hint());
+    diff.compute_certified_row_slice_into(old, new, certificate.to_hint());
 }
 
 struct Workload {
@@ -204,8 +247,9 @@ impl Workload {
     fn run(&mut self, path: usize) {
         match path {
             0 => certified(&mut self.diff, &self.old, &self.new),
-            1 => self.diff.compute_dirty_into(&self.old, &self.new),
-            2 => self.diff.compute_into(&self.old, &self.new),
+            1 => incumbent_row_slice(&mut self.diff, &self.old, &self.new),
+            2 => self.diff.compute_dirty_into(&self.old, &self.new),
+            3 => self.diff.compute_into(&self.old, &self.new),
             _ => {
                 certified(&mut self.diff, &self.old, &self.new);
                 self.sink.clear();
@@ -275,7 +319,7 @@ fn main() {
         .color_depth(ColorDepth::TrueColor)
         .build();
     println!(
-        r#"{{"bench":"diff_paths_paired","rounds":{ROUNDS},"batch_target_ns":{BATCH_TARGET_NS},"bootstrap_resamples":{BOOTSTRAP_RESAMPLES},"paths":["certified","dirty","full","certified_present"]}}"#
+        r#"{{"bench":"diff_paths_paired","rounds":{ROUNDS},"batch_target_ns":{BATCH_TARGET_NS},"bootstrap_resamples":{BOOTSTRAP_RESAMPLES},"paths":["certified","incumbent_row_slice","dirty","full","certified_present"]}}"#
     );
     for (width, height) in SIZES {
         for pattern in Pattern::ALL {
@@ -289,34 +333,47 @@ fn main() {
             };
 
             // Correctness preflight: every path finds the same changes.
-            workload.run(2);
+            workload.run(3);
             let expected = workload.diff.changes().to_vec();
-            for path in [0, 1] {
-                workload.run(path);
-                assert_eq!(
-                    workload.diff.changes(),
-                    expected.as_slice(),
-                    "{} {}x{}: {} disagrees with full",
-                    pattern.name(),
-                    width,
-                    height,
-                    PATHS[path]
-                );
-            }
+            let full_scanned_cells = workload.diff.last_scanned_cells();
+
+            workload.run(0);
+            assert_eq!(
+                workload.diff.changes(),
+                expected.as_slice(),
+                "{} {}x{}: certified disagrees with full",
+                pattern.name(),
+                width,
+                height,
+            );
+            let certified_scanned_cells = workload.diff.last_scanned_cells();
+
             workload.run(1);
+            assert_eq!(
+                workload.diff.changes(),
+                expected.as_slice(),
+                "{} {}x{}: incumbent_row_slice disagrees with full",
+                pattern.name(),
+                width,
+                height,
+            );
+            let incumbent_scanned_cells = workload.diff.last_scanned_cells();
+
+            workload.run(2);
+            assert_eq!(
+                workload.diff.changes(),
+                expected.as_slice(),
+                "{} {}x{}: dirty disagrees with full",
+                pattern.name(),
+                width,
+                height,
+            );
+            let dirty_scanned_cells = workload.diff.last_scanned_cells();
             let tile = workload.diff.last_tile_stats();
+
             let dirty_rows = workload.new.dirty_row_indices();
             let width_cells = usize::from(width);
-            // Narrow scan: a slice compare per dirty row, then a per-cell pass
-            // over each row that differs.
-            let certified_cells: usize = dirty_rows
-                .iter()
-                .map(|&y| {
-                    let differs = workload.old.row_cells(y) != workload.new.row_cells(y);
-                    width_cells + if differs { width_cells } else { 0 }
-                })
-                .sum();
-            workload.run(3);
+            workload.run(4);
             let present_bytes = workload.sink.len();
 
             // The writer's selector input (terminal_writer.rs, bayesian path).
@@ -340,7 +397,7 @@ fn main() {
             );
 
             // Warm-up and batch sizing.
-            let mut iterations = [0u32; 4];
+            let mut iterations = [0u32; 5];
             for (path, slot) in iterations.iter_mut().enumerate() {
                 let start = Instant::now();
                 for _ in 0..64 {
@@ -350,14 +407,14 @@ fn main() {
                 *slot = (BATCH_TARGET_NS / per_call.max(1.0)).clamp(1.0, 1_000_000.0) as u32;
             }
 
-            let mut batches: [Vec<f64>; 4] = Default::default();
+            let mut batches: [Vec<f64>; 5] = Default::default();
             let mut frames = Vec::new();
             for round in 0..ROUNDS {
                 for offset in 0..PATHS.len() {
                     let path = (round + offset) % PATHS.len();
                     let start = Instant::now();
                     for _ in 0..iterations[path] {
-                        if path == 3 {
+                        if path == 4 {
                             let frame = Instant::now();
                             workload.run(path);
                             frames.push(frame.elapsed().as_nanos() as f64);
@@ -384,19 +441,21 @@ fn main() {
                 },
             );
             println!(
-                r#"{{"size":"{width}x{height}","pattern":"{}","changed_cells":{},"dirty_rows":{},"span_coverage_cells":{},"certified_scan_cells":{certified_cells},"dirty_tile_stats":{tile_json},"selector":{selector_json},"certified_ns":{},"dirty_ns":{},"full_ns":{},"certified_present_ns":{},"certified_present_frame_ns":{},"present_bytes":{present_bytes},"ratio_certified_over_dirty":{},"ratio_certified_over_full":{},"ratio_dirty_over_full":{}}}"#,
+                r#"{{"size":"{width}x{height}","pattern":"{}","changed_cells":{},"dirty_rows":{},"span_coverage_cells":{},"certified_scan_cells":{certified_scanned_cells},"incumbent_row_slice_scan_cells":{incumbent_scanned_cells},"dirty_scan_cells":{dirty_scanned_cells},"full_scan_cells":{full_scanned_cells},"dirty_tile_stats":{tile_json},"selector":{selector_json},"certified_ns":{},"incumbent_row_slice_ns":{},"dirty_ns":{},"full_ns":{},"certified_present_ns":{},"certified_present_frame_ns":{},"present_bytes":{present_bytes},"ratio_certified_over_incumbent":{},"ratio_certified_over_dirty":{},"ratio_certified_over_full":{},"ratio_dirty_over_full":{}}}"#,
                 pattern.name(),
                 expected.len(),
                 dirty_rows.len(),
-                workload.new.dirty_span_stats().span_coverage_cells,
+                span_cells,
                 summary(&batches[0]),
                 summary(&batches[1]),
                 summary(&batches[2]),
                 summary(&batches[3]),
+                summary(&batches[4]),
                 summary(&frames),
-                ratio(&batches[0], &batches[1], seed),
-                ratio(&batches[0], &batches[2], seed ^ 0x9E37),
-                ratio(&batches[1], &batches[2], seed ^ 0x7F4A),
+                ratio(&batches[0], &batches[1], seed ^ 0x517C),
+                ratio(&batches[0], &batches[2], seed),
+                ratio(&batches[0], &batches[3], seed ^ 0x9E37),
+                ratio(&batches[2], &batches[3], seed ^ 0x7F4A),
             );
         }
     }

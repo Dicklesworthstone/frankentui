@@ -110,6 +110,7 @@ const _: () = assert!(
 /// Row block size for coarse blockwise skip (32 cells = 512 bytes).
 /// This lets us skip large unchanged regions in sparse rows while
 /// preserving row-major iteration order.
+#[allow(dead_code)]
 const ROW_BLOCK_SIZE: usize = 32;
 
 /// Cache-line-aligned block of 4 cells (64 bytes).
@@ -161,9 +162,6 @@ fn span_diagnostics(buf: &Buffer) -> String {
 /// Scan a row slice for changed cells, appending positions to `changes`.
 ///
 /// `x_offset` is added to each recorded x coordinate.
-///
-/// `#[inline(always)]` forces inlining into the blockwise caller so LLVM can
-/// see the full loop and apply auto-vectorization across the 4-cell block.
 #[inline(always)]
 fn scan_row_changes_range(
     old_row: &[Cell],
@@ -171,93 +169,39 @@ fn scan_row_changes_range(
     y: u16,
     x_offset: u16,
     changes: &mut Vec<(u16, u16)>,
+    scanned_cells: &mut usize,
 ) {
     debug_assert_eq!(old_row.len(), new_row.len());
-    let len = old_row.len();
-    let blocks = len / BLOCK_SIZE;
-    let remainder = len % BLOCK_SIZE;
-
-    // Process full blocks
-    for block_idx in 0..blocks {
-        let base = block_idx * BLOCK_SIZE;
-        let base_x = x_offset + base as u16;
-        if cell_quad_bits_eq(old_row, new_row, base) {
-            continue;
-        }
-
-        // Compare each cell and push changes directly.
-        // We use a constant loop which the compiler will unroll.
-        for i in 0..BLOCK_SIZE {
-            if !old_row[base + i].bits_eq(&new_row[base + i]) {
-                changes.push((base_x + i as u16, y));
-            }
+    *scanned_cells = scanned_cells.saturating_add(old_row.len());
+    let base_x = usize::from(x_offset);
+    for (i, (old_cell, new_cell)) in old_row.iter().zip(new_row.iter()).enumerate() {
+        if !old_cell.bits_eq(new_cell) {
+            changes.push(((base_x + i) as u16, y));
         }
     }
-
-    // Process remainder cells
-    let rem_base = blocks * BLOCK_SIZE;
-    let rem_base_x = x_offset + rem_base as u16;
-    for i in 0..remainder {
-        if !old_row[rem_base + i].bits_eq(&new_row[rem_base + i]) {
-            changes.push((rem_base_x + i as u16, y));
-        }
-    }
-}
-
-#[inline(always)]
-fn cell_quad_bits_eq(old_row: &[Cell], new_row: &[Cell], base: usize) -> bool {
-    old_row[base].bits_eq(&new_row[base])
-        & old_row[base + 1].bits_eq(&new_row[base + 1])
-        & old_row[base + 2].bits_eq(&new_row[base + 2])
-        & old_row[base + 3].bits_eq(&new_row[base + 3])
 }
 
 /// Scan a row pair for changed cells, appending positions to `changes`.
-///
-/// Uses coarse block skipping to avoid full per-cell scans in sparse rows,
-/// then falls back to fine-grained scanning inside dirty blocks.
-#[inline]
-fn scan_row_changes(old_row: &[Cell], new_row: &[Cell], y: u16, changes: &mut Vec<(u16, u16)>) {
-    scan_row_changes_blockwise(old_row, new_row, y, changes);
-}
-
-/// Scan a row in coarse blocks, skipping unchanged blocks, and falling back
-/// to fine-grained scan for blocks that differ.
-#[inline]
-fn scan_row_changes_blockwise(
+#[inline(always)]
+fn scan_row_changes(
     old_row: &[Cell],
     new_row: &[Cell],
     y: u16,
     changes: &mut Vec<(u16, u16)>,
+    scanned_cells: &mut usize,
 ) {
-    debug_assert_eq!(old_row.len(), new_row.len());
-    let len = old_row.len();
-    let blocks = len / ROW_BLOCK_SIZE;
-    let remainder = len % ROW_BLOCK_SIZE;
-
-    for block_idx in 0..blocks {
-        let base = block_idx * ROW_BLOCK_SIZE;
-        let old_block = &old_row[base..base + ROW_BLOCK_SIZE];
-        let new_block = &new_row[base..base + ROW_BLOCK_SIZE];
-        scan_row_changes_range(old_block, new_block, y, base as u16, changes);
-    }
-
-    if remainder > 0 {
-        let base = blocks * ROW_BLOCK_SIZE;
-        let old_block = &old_row[base..base + remainder];
-        let new_block = &new_row[base..base + remainder];
-        scan_row_changes_range(old_block, new_block, y, base as u16, changes);
-    }
+    scan_row_changes_range(old_row, new_row, y, 0, changes, scanned_cells);
 }
 
 /// Scan only dirty spans within a row, preserving row-major ordering.
-#[inline]
+#[inline(always)]
 fn scan_row_changes_spans(
     old_row: &[Cell],
     new_row: &[Cell],
     y: u16,
     spans: &[DirtySpan],
     changes: &mut Vec<(u16, u16)>,
+    scanned_cells: &mut usize,
 ) {
     for span in spans {
         let start = span.x0 as usize;
@@ -268,10 +212,7 @@ fn scan_row_changes_spans(
         let end = end.min(old_row.len());
         let old_slice = &old_row[start..end];
         let new_slice = &new_row[start..end];
-        if old_slice == new_slice {
-            continue;
-        }
-        scan_row_changes_range(old_slice, new_slice, y, span.x0, changes);
+        scan_row_changes_range(old_slice, new_slice, y, span.x0, changes, scanned_cells);
     }
 }
 
@@ -283,6 +224,7 @@ fn scan_row_changes_range_if_needed(
     start: usize,
     end: usize,
     changes: &mut Vec<(u16, u16)>,
+    scanned_cells: &mut usize,
 ) {
     if start >= end || start >= old_row.len() {
         return;
@@ -290,10 +232,14 @@ fn scan_row_changes_range_if_needed(
     let end = end.min(old_row.len());
     let old_slice = &old_row[start..end];
     let new_slice = &new_row[start..end];
-    if old_slice == new_slice {
-        return;
-    }
-    scan_row_changes_range(old_slice, new_slice, y, start as u16, changes);
+    scan_row_changes_range(
+        old_slice,
+        new_slice,
+        y,
+        start as u16,
+        changes,
+        scanned_cells,
+    );
 }
 
 #[inline]
@@ -308,6 +254,7 @@ fn scan_row_tiles(
     tile_row_base: usize,
     dirty_tiles: &[bool],
     changes: &mut Vec<(u16, u16)>,
+    scanned_cells: &mut usize,
 ) {
     for tile_x in 0..tiles_x {
         let tile_idx = tile_row_base + tile_x;
@@ -316,7 +263,7 @@ fn scan_row_tiles(
         }
         let start = tile_x * tile_w;
         let end = ((tile_x + 1) * tile_w).min(width);
-        scan_row_changes_range_if_needed(old_row, new_row, y, start, end, changes);
+        scan_row_changes_range_if_needed(old_row, new_row, y, start, end, changes, scanned_cells);
     }
 }
 
@@ -333,6 +280,7 @@ fn scan_row_tiles_spans(
     dirty_tiles: &[bool],
     spans: &[DirtySpan],
     changes: &mut Vec<(u16, u16)>,
+    scanned_cells: &mut usize,
 ) {
     if spans.is_empty() {
         return;
@@ -362,7 +310,15 @@ fn scan_row_tiles_spans(
             if seg_start > seg_end {
                 continue;
             }
-            scan_row_changes_range_if_needed(old_row, new_row, y, seg_start, seg_end + 1, changes);
+            scan_row_changes_range_if_needed(
+                old_row,
+                new_row,
+                y,
+                seg_start,
+                seg_end + 1,
+                changes,
+                scanned_cells,
+            );
         }
     }
 }
@@ -1133,7 +1089,12 @@ fn reserve_changes_capacity(width: u16, height: u16, changes: &mut Vec<(u16, u16
     }
 }
 
-fn compute_changes(old: &Buffer, new: &Buffer, changes: &mut Vec<(u16, u16)>) {
+fn compute_changes(
+    old: &Buffer,
+    new: &Buffer,
+    changes: &mut Vec<(u16, u16)>,
+    scanned_cells: &mut usize,
+) {
     #[cfg(feature = "tracing")]
     let _span = tracing::debug_span!("diff_compute", width = old.width(), height = old.height());
     #[cfg(feature = "tracing")]
@@ -1147,6 +1108,7 @@ fn compute_changes(old: &Buffer, new: &Buffer, changes: &mut Vec<(u16, u16)>) {
     let w = width as usize;
 
     changes.clear();
+    *scanned_cells = 0;
     reserve_changes_capacity(width, height, changes);
 
     let old_cells = old.cells();
@@ -1161,7 +1123,7 @@ fn compute_changes(old: &Buffer, new: &Buffer, changes: &mut Vec<(u16, u16)>) {
         // Scan for changed cells using blockwise row scan.
         // This avoids a full-row equality pre-scan and prevents
         // double-scanning rows that contain changes.
-        scan_row_changes(old_row, new_row, y, changes);
+        scan_row_changes(old_row, new_row, y, changes, scanned_cells);
     }
 
     #[cfg(feature = "tracing")]
@@ -1175,6 +1137,7 @@ fn compute_dirty_changes(
     tile_builder: &mut TileDiffBuilder,
     tile_config: &TileDiffConfig,
     tile_stats_out: &mut Option<TileDiffStats>,
+    scanned_cells: &mut usize,
 ) {
     assert_eq!(old.width(), new.width(), "buffer widths must match");
     assert_eq!(old.height(), new.height(), "buffer heights must match");
@@ -1184,6 +1147,7 @@ fn compute_dirty_changes(
     let w = width as usize;
 
     changes.clear();
+    *scanned_cells = 0;
     reserve_changes_capacity(width, height, changes);
 
     let old_cells = old.cells();
@@ -1232,10 +1196,6 @@ fn compute_dirty_changes(
                 let old_row = &old_cells[row_start..row_start + w];
                 let new_row = &new_cells[row_start..row_start + w];
 
-                if old_row == new_row {
-                    continue;
-                }
-
                 let y16 = y as u16;
                 let span_row = new.dirty_span_row(y16);
                 if let Some(span_row) = span_row {
@@ -1250,6 +1210,7 @@ fn compute_dirty_changes(
                             tile_row_base,
                             dirty_tiles,
                             changes,
+                            scanned_cells,
                         );
                         continue;
                     }
@@ -1265,6 +1226,7 @@ fn compute_dirty_changes(
                             tile_row_base,
                             dirty_tiles,
                             changes,
+                            scanned_cells,
                         );
                         continue;
                     }
@@ -1279,6 +1241,7 @@ fn compute_dirty_changes(
                         dirty_tiles,
                         spans,
                         changes,
+                        scanned_cells,
                     );
                 } else {
                     scan_row_tiles(
@@ -1291,6 +1254,7 @@ fn compute_dirty_changes(
                         tile_row_base,
                         dirty_tiles,
                         changes,
+                        scanned_cells,
                     );
                 }
             }
@@ -1316,26 +1280,20 @@ fn compute_dirty_changes(
         let old_row = &old_cells[row_start..row_start + w];
         let new_row = &new_cells[row_start..row_start + w];
 
-        // Even for dirty rows, row-skip fast path applies:
-        // a row may be marked dirty but end up identical after compositing.
-        if old_row == new_row {
-            continue;
-        }
-
         let span_row = new.dirty_span_row(y);
         if let Some(span_row) = span_row {
             if span_row.is_full() {
-                scan_row_changes(old_row, new_row, y, changes);
+                scan_row_changes(old_row, new_row, y, changes, scanned_cells);
                 continue;
             }
             let spans = span_row.spans();
             if spans.is_empty() {
-                scan_row_changes(old_row, new_row, y, changes);
+                scan_row_changes(old_row, new_row, y, changes, scanned_cells);
                 continue;
             }
-            scan_row_changes_spans(old_row, new_row, y, spans, changes);
+            scan_row_changes_spans(old_row, new_row, y, spans, changes, scanned_cells);
         } else {
-            scan_row_changes(old_row, new_row, y, changes);
+            scan_row_changes(old_row, new_row, y, changes, scanned_cells);
         }
     }
 }
@@ -1388,6 +1346,8 @@ pub struct BufferDiff {
     tile_config: TileDiffConfig,
     /// Last tile diagnostics from a dirty diff pass.
     last_tile_stats: Option<TileDiffStats>,
+    /// Number of cells inspected during the most recent diff computation.
+    last_scanned_cells: usize,
 }
 
 impl BufferDiff {
@@ -1398,6 +1358,7 @@ impl BufferDiff {
             tile_builder: TileDiffBuilder::default(),
             tile_config: TileDiffConfig::default(),
             last_tile_stats: None,
+            last_scanned_cells: 0,
         }
     }
 
@@ -1426,6 +1387,7 @@ impl BufferDiff {
         }
         let mut diff = Self::new();
         diff.changes = changes;
+        diff.last_scanned_cells = total;
         diff
     }
 
@@ -1460,7 +1422,7 @@ impl BufferDiff {
     /// Compute the diff into an existing buffer to reuse allocation.
     pub fn compute_into(&mut self, old: &Buffer, new: &Buffer) {
         self.last_tile_stats = None;
-        compute_changes(old, new, &mut self.changes);
+        compute_changes(old, new, &mut self.changes, &mut self.last_scanned_cells);
     }
 
     /// Compute the diff between two buffers using dirty-row hints.
@@ -1502,6 +1464,7 @@ impl BufferDiff {
             &mut self.tile_builder,
             &self.tile_config,
             &mut self.last_tile_stats,
+            &mut self.last_scanned_cells,
         );
     }
 
@@ -1511,22 +1474,22 @@ impl BufferDiff {
     /// and passes the result as a `DiffSkipHint`. This method shortcuts the
     /// diff computation when the certificate allows it:
     ///
-    /// - `FullDiff`: performs the standard dirty-diff computation.
+    /// - `FullDiff`: performs a full un-hinted buffer diff (`compute_into`) so
+    ///   certificate fallback remains sound even when dirty tracking is stale
+    ///   or inconsistent.
     /// - `SkipDiff`: clears changes (no work to present). The caller must
     ///   ensure that old and new buffers are identical when issuing this hint.
-    /// - `NarrowToRows(rows)`: only diffs the specified rows, skipping all
-    ///   others even if marked dirty. Useful when the certificate identifies
-    ///   exactly which rows changed.
+    /// - `NarrowToRows(rows)`: only diffs the specified rows and narrows within
+    ///   each row to `new.dirty_span_row(row)` when valid spans are recorded,
+    ///   using the blockwise `bits_eq` kernel.
     ///
     /// # Safety invariant
     ///
     /// Issuing `SkipDiff` when buffers differ produces stale frames.
     /// The certificate evaluator must guarantee correctness — this method
-    /// trusts the hint without verification. The `FullDiff` arm delegates to
-    /// [`compute_dirty_into`](Self::compute_dirty_into) and inherits its
-    /// baseline-equals-`old` precondition. `NarrowToRows` rows are processed
-    /// in ascending unique order (the method sorts/dedups defensively) so
-    /// the change list keeps the sorted-unique invariant `runs()` requires.
+    /// trusts the hint without verification. `NarrowToRows` rows are processed
+    /// in ascending unique order (sorting/deduping defensively only if unsorted)
+    /// so the change list keeps the sorted-unique invariant `runs()` requires.
     ///
     /// # Tracing
     ///
@@ -1535,13 +1498,14 @@ impl BufferDiff {
     pub fn compute_certified_into(&mut self, old: &Buffer, new: &Buffer, hint: DiffSkipHint) {
         match hint {
             DiffSkipHint::FullDiff => {
-                // Standard path — no certificate benefit
-                self.compute_dirty_into(old, new);
+                // Full un-hinted scan — safe fallback even when dirty state is invalid.
+                self.compute_into(old, new);
             }
             DiffSkipHint::SkipDiff => {
                 // Certificate guarantees buffers are identical — skip all work
                 self.changes.clear();
                 self.last_tile_stats = None;
+                self.last_scanned_cells = 0;
                 #[cfg(feature = "tracing")]
                 tracing::debug!(
                     event = "diff_skip_certified",
@@ -1553,6 +1517,7 @@ impl BufferDiff {
                 // Only diff the specified rows
                 self.changes.clear();
                 self.last_tile_stats = None;
+                self.last_scanned_cells = 0;
 
                 let w = old.width();
                 let h = old.height();
@@ -1566,11 +1531,96 @@ impl BufferDiff {
                 let new_cells = new.cells();
                 let stride = w as usize;
 
-                // Defensive sort+dedup: `runs()` and downstream accounting
-                // (change counts fed to the strategy selector) rely on the
-                // change list being (y, x)-sorted and duplicate-free. The
-                // production witness (dirty_row_indices) is already
-                // ascending/unique, so this is a no-op there.
+                // Avoid heap allocation on the production fast path where
+                // `dirty_row_indices()` is already strictly ascending.
+                let mut owned_sorted: Vec<u16>;
+                let sorted_rows: &[u16] = if rows.windows(2).all(|pair| pair[0] < pair[1]) {
+                    rows.as_slice()
+                } else {
+                    owned_sorted = rows.clone();
+                    owned_sorted.sort_unstable();
+                    owned_sorted.dedup();
+                    owned_sorted.as_slice()
+                };
+
+                for &row in sorted_rows {
+                    if row >= h {
+                        continue;
+                    }
+                    let start = row as usize * stride;
+                    let end = start + stride;
+                    if end > old_cells.len() || end > new_cells.len() {
+                        continue;
+                    }
+                    let old_row = &old_cells[start..end];
+                    let new_row = &new_cells[start..end];
+
+                    if let Some(span_row) = new.dirty_span_row(row)
+                        && !span_row.is_full()
+                    {
+                        let spans = span_row.spans();
+                        if !spans.is_empty() {
+                            scan_row_changes_spans(
+                                old_row,
+                                new_row,
+                                row,
+                                spans,
+                                &mut self.changes,
+                                &mut self.last_scanned_cells,
+                            );
+                            continue;
+                        }
+                    }
+                    scan_row_changes(
+                        old_row,
+                        new_row,
+                        row,
+                        &mut self.changes,
+                        &mut self.last_scanned_cells,
+                    );
+                }
+
+                #[cfg(feature = "tracing")]
+                tracing::debug!(
+                    event = "diff_narrow_certified",
+                    hint = "narrow_to_rows",
+                    rows_checked = sorted_rows.len(),
+                    changes = self.changes.len(),
+                );
+            }
+        }
+    }
+
+    /// Pre-`.48.2` whole-row-slice narrow scan retained for paired A/B benchmarking.
+    pub fn compute_certified_row_slice_into(
+        &mut self,
+        old: &Buffer,
+        new: &Buffer,
+        hint: DiffSkipHint,
+    ) {
+        match hint {
+            DiffSkipHint::FullDiff => {
+                self.compute_dirty_into(old, new);
+            }
+            DiffSkipHint::SkipDiff => {
+                self.changes.clear();
+                self.last_tile_stats = None;
+                self.last_scanned_cells = 0;
+            }
+            DiffSkipHint::NarrowToRows(ref rows) => {
+                self.changes.clear();
+                self.last_tile_stats = None;
+                self.last_scanned_cells = 0;
+
+                let w = old.width();
+                let h = old.height();
+                assert_eq!(w, new.width(), "diff dimension mismatch");
+                assert_eq!(h, new.height(), "diff dimension mismatch");
+
+                let old_cells = old.cells();
+                let new_cells = new.cells();
+                let stride = w as usize;
+
                 let mut sorted_rows: Vec<u16> = rows.clone();
                 sorted_rows.sort_unstable();
                 sorted_rows.dedup();
@@ -1586,23 +1636,17 @@ impl BufferDiff {
                     }
                     let old_row = &old_cells[start..end];
                     let new_row = &new_cells[start..end];
+                    self.last_scanned_cells = self.last_scanned_cells.saturating_add(stride);
                     if old_row == new_row {
                         continue;
                     }
+                    self.last_scanned_cells = self.last_scanned_cells.saturating_add(stride);
                     for (x, (o, n)) in old_row.iter().zip(new_row.iter()).enumerate() {
                         if !o.bits_eq(n) {
                             self.changes.push((x as u16, row));
                         }
                     }
                 }
-
-                #[cfg(feature = "tracing")]
-                tracing::debug!(
-                    event = "diff_narrow_certified",
-                    hint = "narrow_to_rows",
-                    rows_checked = sorted_rows.len(),
-                    changes = self.changes.len(),
-                );
             }
         }
     }
@@ -1622,6 +1666,7 @@ impl BufferDiff {
         // Tile diagnostics describe the previous dirty pass, not this full
         // refill — drop them so telemetry can't attribute stale stats here.
         self.last_tile_stats = None;
+        self.last_scanned_cells = total;
     }
 
     /// Number of changed cells.
@@ -1646,6 +1691,12 @@ impl BufferDiff {
     #[inline]
     pub fn last_tile_stats(&self) -> Option<TileDiffStats> {
         self.last_tile_stats
+    }
+
+    /// Number of cells inspected during the most recent diff computation.
+    #[inline]
+    pub const fn last_scanned_cells(&self) -> usize {
+        self.last_scanned_cells
     }
 
     /// Mutably access tile diff configuration.
@@ -1752,6 +1803,7 @@ impl BufferDiff {
     pub fn clear(&mut self) {
         self.changes.clear();
         self.last_tile_stats = None;
+        self.last_scanned_cells = 0;
     }
 }
 
@@ -1777,11 +1829,13 @@ mod tests {
         let old = vec![Cell::default(); 8];
         let mut new = old.clone();
         let mut changes = Vec::new();
+        let mut scanned_cells = 0usize;
 
         new[7] = Cell::from_char('X');
-        scan_row_changes_range(&old, &new, 4, 10, &mut changes);
+        scan_row_changes_range(&old, &new, 4, 10, &mut changes, &mut scanned_cells);
 
         assert_eq!(changes, vec![(17, 4)]);
+        assert_eq!(scanned_cells, 8);
     }
 
     #[test]
