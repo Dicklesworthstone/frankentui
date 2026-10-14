@@ -592,6 +592,17 @@ impl LogViewer {
         self.virt.len()
     }
 
+    /// Current top scroll offset in lines.
+    #[must_use]
+    pub fn scroll_offset(&self) -> usize {
+        if let Some(indices) = self.filtered_indices.as_ref() {
+            self.filtered_scroll_offset
+                .min(indices.len().saturating_sub(1))
+        } else {
+            self.virt.scroll_offset()
+        }
+    }
+
     /// Check if follow mode (auto-scroll) is enabled.
     #[must_use]
     pub fn auto_scroll_enabled(&self) -> bool {
