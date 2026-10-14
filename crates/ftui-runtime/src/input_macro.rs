@@ -196,7 +196,12 @@ impl MacroRecorder {
         let now = Instant::now();
         let delay = now.saturating_duration_since(self.last_event_time);
         #[cfg(feature = "tracing")]
-        tracing::debug!(event = ?event, delay = ?delay, "macro record event");
+        tracing::debug!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
+            event = ?event,
+            delay = ?delay,
+            "macro record event"
+        );
         self.events.push(TimedEvent::new(event, delay));
         self.recorded_duration = self.recorded_duration.saturating_add(delay);
         self.last_event_time = now;
@@ -205,7 +210,12 @@ impl MacroRecorder {
     /// Record an event with an explicit delay from the previous event.
     pub fn record_event_with_delay(&mut self, event: Event, delay: Duration) {
         #[cfg(feature = "tracing")]
-        tracing::debug!(event = ?event, delay = ?delay, "macro record event");
+        tracing::debug!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
+            event = ?event,
+            delay = ?delay,
+            "macro record event"
+        );
         self.events.push(TimedEvent::new(event, delay));
         self.recorded_duration = self.recorded_duration.saturating_add(delay);
         // Advance the synthetic clock when representable. Overflow should not
@@ -289,7 +299,12 @@ impl<'a> MacroPlayer<'a> {
 
         let timed = &self.input_macro.events[self.position];
         #[cfg(feature = "tracing")]
-        tracing::debug!(event = ?timed.event, delay = ?timed.delay, "macro playback event");
+        tracing::debug!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
+            event = ?timed.event,
+            delay = ?timed.delay,
+            "macro playback event"
+        );
         self.elapsed = self.elapsed.saturating_add(timed.delay);
         sim.inject_events(std::slice::from_ref(&timed.event));
         self.position += 1;
@@ -489,6 +504,7 @@ impl MacroPlayback {
             if !self.error_logged {
                 let meta = self.input_macro.metadata();
                 tracing::warn!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     macro_event = "playback_error",
                     reason = "macro_empty",
                     name = %meta.name,
@@ -507,6 +523,7 @@ impl MacroPlayback {
         if !self.start_logged {
             let meta = self.input_macro.metadata();
             tracing::info!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 macro_event = "playback_start",
                 name = %meta.name,
                 events = self.input_macro.len(),
@@ -533,6 +550,7 @@ impl MacroPlayback {
         if self.is_done() && !self.stop_logged {
             let meta = self.input_macro.metadata();
             tracing::info!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 macro_event = "playback_stop",
                 reason = "completed",
                 name = %meta.name,
@@ -567,7 +585,12 @@ impl MacroPlayback {
         {
             let timed = &self.input_macro.events[self.position];
             #[cfg(feature = "tracing")]
-            tracing::debug!(event = ?timed.event, delay = ?timed.delay, "macro playback event");
+            tracing::debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
+                event = ?timed.event,
+                delay = ?timed.delay,
+                "macro playback event"
+            );
             out.push(timed.event.clone());
             self.position += 1;
             if self.position < self.input_macro.len() {
@@ -736,6 +759,7 @@ impl EventRecorder {
                 self.state = RecordingState::Recording;
                 #[cfg(feature = "tracing")]
                 tracing::info!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     macro_event = "recorder_start",
                     name = %self.inner.name,
                     term_cols = self.inner.terminal_size.0,
@@ -828,6 +852,7 @@ impl EventRecorder {
         if log {
             let meta = macro_data.metadata();
             tracing::info!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 macro_event = "recorder_stop",
                 name = %meta.name,
                 events = macro_data.len(),
@@ -1002,6 +1027,7 @@ impl FilteredEventRecorder {
         {
             let meta = macro_data.metadata();
             tracing::info!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 macro_event = "recorder_stop",
                 name = %meta.name,
                 events = macro_data.len(),

@@ -412,7 +412,7 @@ App::new(model)
 Example event line:
 
 ```json
-{"event":"diff_decision","run_id":"diff-4242","event_idx":12,"strategy":"DirtyRows","cost_full":1.230000,"cost_dirty":0.410000,"cost_redraw":0.000000,"posterior_mean":0.036000,"posterior_variance":0.000340,"alpha":3.500000,"beta":92.500000,"dirty_rows":4,"total_rows":40,"total_cells":3200,"span_count":2,"span_coverage_pct":6.250000,"max_span_len":12,"fallback_reason":"none","scan_cost_estimate":200,"bayesian_enabled":true,"dirty_rows_enabled":true}
+{"schema_version":"ftui-evidence-v1","event":"diff_decision","run_id":"diff-521820","event_idx":0,"screen_mode":"altscreen","cols":100,"rows":30,"strategy":"DirtyRows","cost_full":5311.417405,"cost_dirty":5308.417405,"cost_redraw":18000.0,"posterior_mean":0.05,"posterior_variance":0.002262,"alpha":1.0,"beta":19.0,"guard_reason":"uncertainty_variance","hysteresis_applied":false,"hysteresis_ratio":0.05,"dirty_rows":30,"total_rows":30,"total_cells":3000,"span_count":0,"span_coverage_pct":100.0,"max_span_len":100,"fallback_reason":"none","scan_cost_estimate":3000,"tile_used":false,"tile_fallback":"none","tile_w":0,"tile_h":0,"tile_size":0,"tiles_x":0,"tiles_y":0,"dirty_tiles":0,"dirty_tile_count":0,"dirty_cells":0,"dirty_tile_ratio":0.0,"dirty_cell_ratio":0.0,"scanned_tiles":0,"skipped_tiles":0,"skipped_tile_count":0,"tile_scan_cells_estimate":0,"sat_build_cost_est":0,"skipped_tile_rows":0,"sat_queries":0,"bayesian_enabled":true,"dirty_rows_enabled":true,"regime":"sparse"}
 ```
 
 ---
@@ -1156,7 +1156,7 @@ Decision:
 height measurement runs whenever the runtime has no height estimate, independently
 of this sampling decision.
 
-**Inline-auto defaults:**
+**Inline-auto defaults (`InlineAutoRemeasureConfig::default()`):**
 
 - `prior_alpha=1.0, prior_beta=9.0` (expect 10% violation rate)
 - `max_interval_ms=1000` (force sampling at the next decision after one second)
@@ -1165,8 +1165,10 @@ of this sampling decision.
 
 These defaults rely on forced intervals: since `n ≥ 10` and `boundary_score ≤ 1`,
 the VOI score is at most `1/242 ≈ 0.00413`, below `sample_cost`. The cost comparison
-therefore requests no extra samples with this configuration. Other `VoiConfig`
-settings can enable sampling between forced intervals.
+therefore requests no extra samples with this configuration. Standalone `VoiConfig::default()`
+uses a more permissive prior (`prior_alpha=1.0, prior_beta=1.0`, `max_interval_ms=250`,
+`min_interval_ms=0`, `sample_cost=0.01`, `value_scale=1.0`, `boundary_weight=1.0`) that
+actively samples between forced intervals.
 
 ### E-Process: Anytime-Valid Testing
 

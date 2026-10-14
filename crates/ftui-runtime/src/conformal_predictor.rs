@@ -456,6 +456,7 @@ impl ConformalPredictor {
         span.record("required_rank", required_rank);
 
         tracing::debug!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             bucket = %key,
             y_hat_us,
             quantile = ?quantile,

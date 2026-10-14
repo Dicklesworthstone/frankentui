@@ -96,6 +96,7 @@ pub fn save_transitions(counter: &TransitionCounter<String>, path: &Path) -> io:
     std::fs::rename(&temp, path)?;
 
     info!(
+        target: crate::telemetry_schema::TARGET_RUNTIME,
         path = %path.display(),
         transitions = total,
         entries = entry_count,
@@ -139,6 +140,7 @@ pub fn load_transitions(path: &Path) -> io::Result<TransitionCounter<String>> {
     }
 
     info!(
+        target: crate::telemetry_schema::TARGET_RUNTIME,
         path = %path.display(),
         loaded_transitions = file.total_transitions,
         entries = file.transitions.len(),

@@ -457,6 +457,7 @@ pub fn emit_slo_check(breach: &BreachResult, safe_mode: &SafeModeDecision) {
     match safe_mode {
         SafeModeDecision::Triggered(reason) => {
             tracing::error!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 metric = breach.metric_name.as_str(),
                 ratio = breach.ratio,
                 reason = reason.as_str(),
@@ -466,6 +467,7 @@ pub fn emit_slo_check(breach: &BreachResult, safe_mode: &SafeModeDecision) {
         SafeModeDecision::Normal => match breach.severity {
             BreachSeverity::Breach | BreachSeverity::AbsoluteBreach => {
                 tracing::warn!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     metric = breach.metric_name.as_str(),
                     baseline = breach.baseline,
                     current = breach.current,
@@ -476,6 +478,7 @@ pub fn emit_slo_check(breach: &BreachResult, safe_mode: &SafeModeDecision) {
             }
             BreachSeverity::Noise => {
                 tracing::debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     metric = breach.metric_name.as_str(),
                     ratio = breach.ratio,
                     "noise-level change within tolerance"
@@ -483,6 +486,7 @@ pub fn emit_slo_check(breach: &BreachResult, safe_mode: &SafeModeDecision) {
             }
             BreachSeverity::None => {
                 tracing::trace!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     metric = breach.metric_name.as_str(),
                     ratio = breach.ratio,
                     "metric within SLO"

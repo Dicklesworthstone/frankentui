@@ -695,4 +695,113 @@ mod tests {
             "evidence schema events must match ALL_EVIDENCE_EVENTS"
         );
     }
+
+    #[test]
+    fn spec_lists_every_evidence_event() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root");
+        let spec_path = root.join("docs/spec/telemetry-events.md");
+        let spec = std::fs::read_to_string(&spec_path).expect("docs/spec/telemetry-events.md");
+        for event in ALL_EVIDENCE_EVENTS {
+            let heading = format!("#### Event: `{event}`");
+            assert!(
+                spec.contains(&heading),
+                "docs/spec/telemetry-events.md is missing heading `{heading}`"
+            );
+        }
+    }
+
+    #[test]
+    fn no_untargeted_tracing_macros_in_runtime() {
+        use std::path::{Path, PathBuf};
+
+        let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        collect(&src_dir, &mut files);
+        files.sort();
+
+        let mut offenders = Vec::new();
+        for file in files {
+            if file.file_name().is_some_and(|n| n == "debug_trace.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).expect("read source");
+            let prod = match text.find("#[cfg(test)]") {
+                Some(idx) => &text[..idx],
+                None => &text[..],
+            };
+            let bytes = prod.as_bytes();
+            let mut idx = 0;
+            while idx < bytes.len() {
+                // Skip line and block comments so doc examples do not trigger
+                if bytes[idx..].starts_with(b"//") {
+                    while idx < bytes.len() && bytes[idx] != b'\n' {
+                        idx += 1;
+                    }
+                    continue;
+                }
+                if bytes[idx..].starts_with(b"/*") {
+                    idx += 2;
+                    while idx + 1 < bytes.len() && !bytes[idx..].starts_with(b"*/") {
+                        idx += 1;
+                    }
+                    idx += 2;
+                    continue;
+                }
+                for macro_name in ["trace!", "debug!", "info!", "warn!", "error!"] {
+                    if bytes[idx..].starts_with(macro_name.as_bytes()) {
+                        let prev = if idx > 0 { bytes[idx - 1] } else { b' ' };
+                        if prev.is_ascii_alphanumeric() || prev == b'_' {
+                            continue;
+                        }
+                        let after = &prod[idx + macro_name.len()..];
+                        let trimmed = after.trim_start();
+                        if trimmed.starts_with('(') {
+                            let end = trimmed.find(");").unwrap_or_else(|| {
+                                let mut e = trimmed.len().min(300);
+                                while !trimmed.is_char_boundary(e) {
+                                    e -= 1;
+                                }
+                                e
+                            });
+                            let body = &trimmed[..end];
+                            if !body.contains("target:") {
+                                let line_no =
+                                    bytes[..idx].iter().filter(|&&b| b == b'\n').count() + 1;
+                                offenders.push(format!(
+                                    "{}:{}: untargeted {}",
+                                    file.strip_prefix(&src_dir).unwrap_or(&file).display(),
+                                    line_no,
+                                    macro_name
+                                ));
+                            }
+                        }
+                    }
+                }
+                idx += 1;
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "all production tracing macros in ftui-runtime must specify `target:`:\n{}",
+            offenders.join("\n")
+        );
+    }
 }

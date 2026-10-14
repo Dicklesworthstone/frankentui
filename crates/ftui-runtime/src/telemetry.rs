@@ -293,7 +293,10 @@ impl Drop for TelemetryGuard {
             let _ = provider.shutdown();
         }
         // Log for visibility.
-        tracing::debug!("TelemetryGuard dropped, flushing spans");
+        tracing::debug!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
+            "TelemetryGuard dropped, flushing spans"
+        );
     }
 }
 
@@ -475,7 +478,11 @@ impl TelemetryConfig {
     #[cfg(feature = "telemetry")]
     pub fn install(self) -> Result<TelemetryGuard, TelemetryError> {
         if !self.enabled {
-            tracing::debug!(reason = ?self.enabled_reason, "Telemetry disabled");
+            tracing::debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
+                reason = ?self.enabled_reason,
+                "Telemetry disabled"
+            );
             return Ok(TelemetryGuard::new(None));
         }
 
@@ -494,6 +501,7 @@ impl TelemetryConfig {
         }
 
         tracing::info!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             endpoint = ?endpoint,
             protocol = ?protocol,
             trace_context = ?trace_context,

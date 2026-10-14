@@ -449,9 +449,9 @@ impl TransitionReasonCode {
     }
 }
 
-/// Event emitted when a resize operation is applied (bd-bksf.6 stub).
+/// Event emitted when a resize operation is applied.
 ///
-/// Used by `ResizeSlaMonitor` for latency tracking.
+/// Recorded on [`ResizeCoalescer::last_applied_event`] and used by SLA monitoring for latency tracking.
 #[derive(Debug, Clone)]
 pub struct ResizeAppliedEvent {
     /// New terminal size after resize.
@@ -464,9 +464,9 @@ pub struct ResizeAppliedEvent {
     pub forced: bool,
 }
 
-/// Event emitted when regime changes between Steady and Burst (bd-bksf.6 stub).
+/// Event emitted when regime changes between Steady and Burst.
 ///
-/// Used by SLA monitoring for regime-aware alerting.
+/// Recorded on [`ResizeCoalescer::last_regime_change_event`] and used by SLA monitoring for regime-aware alerting.
 #[derive(Debug, Clone)]
 pub struct RegimeChangeEvent {
     /// Previous regime.
@@ -836,6 +836,12 @@ pub struct ResizeCoalescer {
 
     /// Regime decisions per detector.
     detector_decisions: DetectorDecisions,
+
+    /// Most recent resize-applied event for SLA monitoring.
+    last_applied_event: Option<ResizeAppliedEvent>,
+
+    /// Most recent regime-change event for SLA monitoring.
+    last_regime_change_event: Option<RegimeChangeEvent>,
 }
 
 /// Cycle time percentiles for reflow diagnostics (bd-1rz0.7).
@@ -903,6 +909,8 @@ impl ResizeCoalescer {
             bocpd,
             last_detector: RegimeDetector::Heuristic,
             detector_decisions: DetectorDecisions::default(),
+            last_applied_event: None,
+            last_regime_change_event: None,
         }
     }
 
@@ -976,6 +984,7 @@ impl ResizeCoalescer {
             }
         }
 
+        let old_size = self.last_applied;
         self.pending_size = None;
         self.window_start = None;
         self.last_event = Some(now);
@@ -983,6 +992,12 @@ impl ResizeCoalescer {
         self.last_render = now;
         self.events_in_window = 0;
         self.cooldown_remaining = 0;
+        self.last_applied_event = Some(ResizeAppliedEvent {
+            new_size: (width, height),
+            old_size,
+            elapsed: Duration::ZERO,
+            forced: false,
+        });
 
         self.log_decision(now, "apply_immediate", false, Some(0.0), Some(0.0));
 
@@ -991,6 +1006,18 @@ impl ResizeCoalescer {
         {
             hooks.fire_resize_applied(entry);
         }
+    }
+
+    /// Most recent resize-applied event recorded by this coalescer.
+    #[must_use]
+    pub fn last_applied_event(&self) -> Option<&ResizeAppliedEvent> {
+        self.last_applied_event.as_ref()
+    }
+
+    /// Most recent regime-change event recorded by this coalescer.
+    #[must_use]
+    pub fn last_regime_change_event(&self) -> Option<&RegimeChangeEvent> {
+        self.last_regime_change_event.as_ref()
     }
 
     /// Get current regime transition count.
@@ -1513,6 +1540,39 @@ impl ResizeCoalescer {
         lines.join("\n")
     }
 
+    /// Flush the session `summary` (and `cycle_time_percentiles` if any cycle
+    /// times were recorded) to the attached [`EvidenceSink`].
+    ///
+    /// Called by [`crate::program::Program`] at shutdown when resize logging is
+    /// enabled and at least one resize decision occurred during the session.
+    pub fn flush_summary_to_evidence_sink(&self) {
+        if !self.config.enable_logging || self.logs.is_empty() {
+            return;
+        }
+        let Some(ref sink) = self.evidence_sink else {
+            return;
+        };
+        let (cols, rows) = self.last_applied;
+        let run_id = self.evidence_run_id.as_str();
+        let screen_mode = self.evidence_screen_mode;
+        let summary_event_idx = self
+            .logs
+            .last()
+            .map(|entry| entry.event_idx)
+            .or_else(|| self.transition_logs.last().map(|entry| entry.event_idx))
+            .unwrap_or(0);
+        let _ = sink.write_jsonl(&self.decision_summary().to_jsonl(
+            run_id,
+            screen_mode,
+            cols,
+            rows,
+            summary_event_idx,
+        ));
+        if let Some(percentiles) = self.cycle_time_percentiles() {
+            let _ = sink.write_jsonl(&percentiles.to_jsonl());
+        }
+    }
+
     // --- Internal methods ---
 
     fn apply_pending_at(&mut self, now: Instant, forced: bool) -> CoalesceAction {
@@ -1529,9 +1589,16 @@ impl ResizeCoalescer {
         // Track cycle time for percentile calculation (bd-1rz0.7)
         self.record_cycle_time(coalesce_ms);
 
+        let old_size = self.last_applied;
         self.window_start = None;
         self.last_applied = (width, height);
         self.last_render = now;
+        self.last_applied_event = Some(ResizeAppliedEvent {
+            new_size: (width, height),
+            old_size,
+            elapsed: coalesce_time,
+            forced,
+        });
 
         // Reset events in window counter
         self.events_in_window = 0;
@@ -1730,6 +1797,13 @@ impl ResizeCoalescer {
         }
         self.regime = to_regime;
         self.regime_transitions += 1;
+        self.last_regime_change_event = Some(RegimeChangeEvent {
+            from: from_regime,
+            to: to_regime,
+            event_idx: self.event_count,
+            reason_code,
+            confidence,
+        });
         self.pending_transition_evidence = Some(PendingTransitionEvidence {
             reason_code,
             confidence,
@@ -1858,6 +1932,20 @@ impl ResizeCoalescer {
             }
             if let Some(entry) = self.logs.last() {
                 let _ = sink.write_jsonl(&entry.to_jsonl(run_id, screen_mode, cols, rows));
+                let decision_ev = if forced {
+                    DecisionEvidence::forced_deadline(self.config.hard_deadline_ms as f64)
+                } else if action == "coalesce" {
+                    DecisionEvidence::favor_coalesce(entry.regime, entry.dt_ms, entry.event_rate)
+                } else {
+                    DecisionEvidence::favor_apply(entry.regime, entry.dt_ms, entry.event_rate)
+                };
+                let _ = sink.write_jsonl(&decision_ev.to_jsonl(
+                    run_id,
+                    screen_mode,
+                    cols,
+                    rows,
+                    entry.event_idx,
+                ));
             }
             if let Some(ref bocpd) = self.bocpd
                 && let Some(jsonl) = bocpd.decision_log_jsonl(
@@ -5490,5 +5578,68 @@ mod tests {
         let mut hash = FNV_OFFSET_BASIS;
         fnv_hash_bytes(&mut hash, b"");
         assert_eq!(hash, FNV_OFFSET_BASIS);
+    }
+
+    #[test]
+    fn evidence_sink_emits_decision_evidence_summary_and_events() {
+        use std::sync::{Arc, Mutex};
+
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = EvidenceSink::from_writer(SharedBuf(Arc::clone(&buf)));
+        let mut c = ResizeCoalescer::new(test_config(), (80, 24)).with_evidence_sink(sink);
+        assert!(c.last_applied_event().is_none());
+        assert!(c.last_regime_change_event().is_none());
+
+        let base = Instant::now();
+        // Drive a burst of resizes to trigger regime transition + coalescing
+        for i in 0..8u16 {
+            let now = base + Duration::from_millis(u64::from(i) * 5);
+            c.handle_resize_at(90 + i, 30 + i, now);
+        }
+        assert!(
+            c.last_regime_change_event().is_some(),
+            "burst should populate last_regime_change_event"
+        );
+        let regime_evt = c.last_regime_change_event().unwrap();
+        assert_eq!(regime_evt.from, Regime::Steady);
+        assert_eq!(regime_evt.to, Regime::Burst);
+
+        // Apply after deadline
+        let action = c.tick_at(base + Duration::from_millis(200));
+        assert!(matches!(action, CoalesceAction::ApplyResize { .. }));
+        let applied_evt = c
+            .last_applied_event()
+            .expect("apply should populate last_applied_event");
+        assert_eq!(applied_evt.old_size, (80, 24));
+        assert_eq!(applied_evt.new_size, (97, 37));
+        assert!(applied_evt.forced);
+
+        c.flush_summary_to_evidence_sink();
+
+        let output = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        let events: Vec<String> = output
+            .lines()
+            .map(|line| {
+                let v: serde_json::Value = serde_json::from_str(line).expect("valid jsonl row");
+                v["event"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        assert!(events.contains(&"config".to_owned()));
+        assert!(events.contains(&"decision".to_owned()));
+        assert!(events.contains(&"decision_evidence".to_owned()));
+        assert!(events.contains(&"regime_transition".to_owned()));
+        assert!(events.contains(&"summary".to_owned()));
+        assert!(events.contains(&"cycle_time_percentiles".to_owned()));
     }
 }

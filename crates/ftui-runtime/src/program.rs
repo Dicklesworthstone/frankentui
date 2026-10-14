@@ -3880,7 +3880,10 @@ impl<M: Send + 'static> EffectQueue<M> {
         use std::sync::atomic::Ordering;
         if self.closed {
             crate::effect_system::record_queue_drop("post_shutdown");
-            tracing::debug!("rejecting task enqueue after effect queue shutdown");
+            tracing::debug!(
+                target: crate::telemetry_schema::TARGET_EFFECT,
+                "rejecting task enqueue after effect queue shutdown"
+            );
             return;
         }
         let max_depth = self.max_depth;
@@ -3999,7 +4002,10 @@ impl<M: Send + 'static> SpawnTaskExecutor<M> {
         if self.closed {
             self.dropped += 1;
             crate::effect_system::record_queue_drop("post_shutdown");
-            tracing::debug!("rejecting spawned task submit after shutdown");
+            tracing::debug!(
+                target: crate::telemetry_schema::TARGET_EFFECT,
+                "rejecting spawned task submit after shutdown"
+            );
             return;
         }
         // Join finished threads first so the in-flight depth used for
@@ -4141,7 +4147,10 @@ impl<M: Send + 'static> AsupersyncTaskExecutor<M> {
         if self.closed {
             self.dropped += 1;
             crate::effect_system::record_queue_drop("post_shutdown");
-            tracing::debug!("rejecting asupersync task submit after shutdown");
+            tracing::debug!(
+                target: crate::telemetry_schema::TARGET_EFFECT,
+                "rejecting asupersync task submit after shutdown"
+            );
             return;
         }
         // Prune completed handles so the in-flight depth used for backpressure
@@ -4186,6 +4195,7 @@ impl<M: Send + 'static> AsupersyncTaskExecutor<M> {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() || !handle.wait_timeout(remaining) {
                 tracing::warn!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     timeout_ms = Self::SHUTDOWN_TIMEOUT.as_millis() as u64,
                     pending_handles = self
                         .handles
@@ -4371,6 +4381,7 @@ fn panic_payload_message(payload: Box<dyn Any + Send>) -> String {
 fn log_task_executor_panic(backend: &str, panic_msg: &str) {
     #[cfg(feature = "tracing")]
     tracing::error!(
+        target: crate::telemetry_schema::TARGET_EFFECT,
         executor_backend = backend,
         panic_msg,
         "task executor task panicked"
@@ -6099,7 +6110,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         }
         self.write_job_control_evidence("resume", signal, Some(size_changed));
         if let Err(error) = stopped {
-            tracing::warn!(signal, %error, "job-control stop failed; resumed without stopping");
+            tracing::warn!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
+                signal,
+                %error,
+                "job-control stop failed; resumed without stopping"
+            );
         }
         Ok(())
     }
@@ -6160,6 +6176,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         }
         let events = self.startup_parser.parse(bytes);
         debug!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             bytes = bytes.len(),
             events = events.len(),
             "queued startup input recovered from the capability probes"
@@ -6355,6 +6372,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                         }
 
                         trace!(
+                            target: crate::telemetry_schema::TARGET_RUNTIME,
                             tick = tick_count,
                             active = %active,
                             ticked = tick_targets.len(),
@@ -6552,6 +6570,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             shutdown_error.get_or_insert(error);
         }
 
+        self.resize_coalescer.flush_summary_to_evidence_sink();
+
         if let Some(ref sink) = self.evidence_sink {
             let (hits, misses, len, capacity, enabled) =
                 if let Some(stats) = ftui_core::text_width::width_cache_stats() {
@@ -6676,10 +6696,18 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         if let Some(registry) = &self.state_registry {
             match registry.load() {
                 Ok(count) => {
-                    info!(count, "loaded widget state from persistence");
+                    info!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        count,
+                        "loaded widget state from persistence"
+                    );
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to load widget state");
+                    tracing::warn!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        error = %e,
+                        "failed to load widget state"
+                    );
                 }
             }
         }
@@ -6690,13 +6718,20 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         if let Some(registry) = &self.state_registry {
             match registry.flush() {
                 Ok(true) => {
-                    debug!("saved widget state to persistence");
+                    debug!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        "saved widget state to persistence"
+                    );
                 }
                 Ok(false) => {
                     // No changes to save
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to save widget state");
+                    tracing::warn!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        error = %e,
+                        "failed to save widget state"
+                    );
                 }
             }
         }
@@ -6774,6 +6809,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                     coalescer.clear();
                 }
                 debug!(
+                    target: crate::telemetry_schema::TARGET_RESIZE,
                     width,
                     height,
                     behavior = ?self.resize_behavior,
@@ -6781,6 +6817,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 );
                 if let Some((forced_width, forced_height)) = self.forced_size {
                     debug!(
+                        target: crate::telemetry_schema::TARGET_RESIZE,
                         forced_width,
                         forced_height, "Resize ignored due to forced size override"
                     );
@@ -7244,9 +7281,18 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 if let Some(mut previous) = self.tick_strategy.replace(strategy) {
                     let old_name = previous.name().to_owned();
                     previous.shutdown();
-                    info!(old = %old_name, new = %new_name, "tick strategy changed at runtime");
+                    info!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        old = %old_name,
+                        new = %new_name,
+                        "tick strategy changed at runtime"
+                    );
                 } else {
-                    info!(new = %new_name, "tick strategy changed at runtime");
+                    info!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        new = %new_name,
+                        "tick strategy changed at runtime"
+                    );
                 }
                 self.last_active_screen_for_strategy = None;
             }
@@ -7468,6 +7514,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             // stop collecting measurements by repeatedly degrading to SkipFrame.
             if !predictor.is_calibrated(&prediction) {
                 debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     bucket = %prediction.bucket,
                     sample_count = prediction.sample_count,
                     fallback_level = prediction.fallback_level,
@@ -7478,6 +7525,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 );
             } else if prediction.risk && self.budget.degrade_respecting_floor() {
                 info!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     bucket = %prediction.bucket,
                     upper_us = ?prediction.upper_us,
                     budget_us = prediction.budget_us,
@@ -7486,12 +7534,14 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                     "conformal gate triggered strategy downgrade"
                 );
                 debug!(
-                    monotonic.counter.conformal_gate_triggers_total = 1_u64,
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     bucket = %prediction.bucket,
+                    monotonic.counter.conformal_gate_triggers_total = 1_u64,
                     "conformal gate trigger"
                 );
             }
             debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 bucket = %prediction.bucket,
                 upper_us = ?prediction.upper_us,
                 budget_us = prediction.budget_us,
@@ -7503,8 +7553,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 && let Some(quantile) = prediction.quantile
             {
                 debug!(
-                    monotonic.histogram.conformal_prediction_interval_width_us = quantile.max(0.0),
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     bucket = %prediction.bucket,
+                    monotonic.histogram.conformal_prediction_interval_width_us = quantile.max(0.0),
                     "conformal prediction interval width"
                 );
             }
@@ -7528,6 +7579,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 self.budget.degradation().as_str()
             );
             debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 degradation = self.budget.degradation().as_str(),
                 "frame skipped: budget exhausted before render"
             );
@@ -7603,6 +7655,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         let render_budget = self.budget.phase_budgets().render;
         if render_elapsed > render_budget {
             debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 render_ms = render_elapsed.as_millis() as u32,
                 budget_ms = render_budget.as_millis() as u32,
                 "render phase exceeded budget"
@@ -7630,6 +7683,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             let present_budget = self.budget.phase_budgets().present;
             if present_elapsed > present_budget {
                 debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     present_ms = present_elapsed.as_millis() as u32,
                     budget_ms = present_budget.as_millis() as u32,
                     "present phase exceeded budget"
@@ -7637,6 +7691,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             }
         } else {
             debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 degradation = self.budget.degradation().as_str(),
                 elapsed_ms = self.budget.elapsed().as_millis() as u32,
                 "frame present skipped: budget exhausted after render"
@@ -8186,6 +8241,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         self.complete_pending_fairness_input(now);
         if !fairness_decision.should_process {
             debug!(
+                target: crate::telemetry_schema::TARGET_RESIZE,
                 reason = ?fairness_decision.reason,
                 pending_latency_ms = fairness_decision.pending_input_latency.map(|d| d.as_millis() as u64),
                 "Resize yielding to input for fairness"
@@ -8249,6 +8305,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         self.height = height;
         self.presenter.resize(width, height);
         info!(
+            target: crate::telemetry_schema::TARGET_RESIZE,
             width = width,
             height = height,
             coalesce_ms = coalesce_time.as_millis() as u64,

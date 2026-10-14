@@ -326,6 +326,7 @@ pub fn check_schema_compat(kind: SchemaKind, writer_version: &str) -> CompatChec
 
         if !compatible {
             error!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 schema_kind = kind.as_str(),
                 reader_version = result.reader_version,
                 writer_version = writer_version,

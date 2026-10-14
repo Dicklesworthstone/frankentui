@@ -221,6 +221,7 @@ impl RunningSubscription {
         if handle.is_finished() {
             let _ = handle.join();
             tracing::trace!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 sub_id = self.id,
                 panicked = self.has_panicked(),
                 elapsed_us = start.elapsed().as_micros() as u64,
@@ -233,6 +234,7 @@ impl RunningSubscription {
         while !handle.is_finished() {
             if start.elapsed() >= SUBSCRIPTION_STOP_JOIN_TIMEOUT {
                 tracing::warn!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     sub_id = self.id,
                     panicked = self.has_panicked(),
                     timeout_ms = SUBSCRIPTION_STOP_JOIN_TIMEOUT.as_millis() as u64,
@@ -245,6 +247,7 @@ impl RunningSubscription {
 
         let _ = handle.join();
         tracing::trace!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             sub_id = self.id,
             panicked = self.has_panicked(),
             elapsed_us = start.elapsed().as_micros() as u64,
@@ -266,6 +269,7 @@ impl RunningSubscription {
             if handle.is_finished() {
                 let _ = handle.join();
                 tracing::trace!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     sub_id = self.id,
                     panicked = self.has_panicked(),
                     elapsed_us = start.elapsed().as_micros() as u64,
@@ -277,6 +281,7 @@ impl RunningSubscription {
             while !handle.is_finished() {
                 if start.elapsed() >= SUBSCRIPTION_STOP_JOIN_TIMEOUT {
                     tracing::warn!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
                         sub_id = self.id,
                         panicked = self.has_panicked(),
                         timeout_ms = SUBSCRIPTION_STOP_JOIN_TIMEOUT.as_millis() as u64,
@@ -288,6 +293,7 @@ impl RunningSubscription {
             }
             let _ = handle.join();
             tracing::trace!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 sub_id = self.id,
                 panicked = self.has_panicked(),
                 elapsed_us = start.elapsed().as_micros() as u64,
@@ -345,6 +351,7 @@ impl<M: Send + 'static> SubscriptionManager<M> {
             active_count_before
         );
         tracing::trace!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             new_id_count = new_ids.len(),
             active_before = active_count_before,
             new_ids = ?new_ids,
@@ -359,7 +366,11 @@ impl<M: Send + 'static> SubscriptionManager<M> {
                 remaining.push(running);
             } else {
                 crate::debug_trace!("stopping subscription: id={}", running.id);
-                tracing::debug!(sub_id = running.id, "Stopping subscription");
+                tracing::debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
+                    sub_id = running.id,
+                    "Stopping subscription"
+                );
                 crate::effect_system::record_subscription_stop("subscription", running.id, 0);
                 crate::effect_system::record_dynamics_sub_stop();
                 to_stop.push(running);
@@ -387,7 +398,11 @@ impl<M: Send + 'static> SubscriptionManager<M> {
             started_count += 1;
 
             crate::debug_trace!("starting subscription: id={}", id);
-            tracing::debug!(sub_id = id, "Starting subscription");
+            tracing::debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
+                sub_id = id,
+                "Starting subscription"
+            );
             crate::effect_system::record_subscription_start("subscription", id);
             crate::effect_system::record_dynamics_sub_start();
             let (signal, trigger) = StopSignal::new();
@@ -440,6 +455,7 @@ impl<M: Send + 'static> SubscriptionManager<M> {
         crate::effect_system::record_dynamics_reconcile(reconcile_elapsed_us);
         crate::debug_trace!("reconcile complete: active_after={}", active_count_after);
         tracing::trace!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             active_before = active_count_before,
             active_after = active_count_after,
             started = started_count,

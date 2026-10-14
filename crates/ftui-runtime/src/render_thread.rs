@@ -342,7 +342,11 @@ fn process_msg<W: Write>(
                 *latest_render = None;
             }
             writer.set_screen_mode(mode);
-            tracing::info!(?mode, "render thread updated screen mode");
+            tracing::info!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
+                ?mode,
+                "render thread updated screen mode"
+            );
         }
         OutMsg::Shutdown => {
             *shutdown = true;

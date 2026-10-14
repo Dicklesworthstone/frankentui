@@ -192,6 +192,7 @@ fn flush() {
     let duration_us = propagation_start.elapsed().as_micros() as u64;
     tracing::Span::current().record("duration_us", duration_us);
     info!(
+        target: crate::telemetry_schema::TARGET_RUNTIME,
         bloodstream_propagation_duration_us = duration_us,
         rows_changed, widgets_invalidated, "bloodstream propagation duration histogram"
     );
