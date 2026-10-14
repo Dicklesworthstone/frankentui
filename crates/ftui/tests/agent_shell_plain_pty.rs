@@ -228,7 +228,15 @@ fn plain_pty_answering_cpr_uses_the_scroll_region_and_keeps_every_line() {
         "an answered self-test must select the scroll-region transport; output began:\n{}",
         excerpt(&run.output)
     );
-    assert_every_line_reached_history(&run, "scroll region");
+    // Plain xterm-256color is not on the synchronized-output allowlist and
+    // the model answers no DECRQM, so this is the Hybrid strategy: DECSTBM
+    // without DEC 2026 brackets.
+    assert_eq!(
+        count(&run.output, b"\x1b[?2026h"),
+        0,
+        "plain xterm runs the Hybrid strategy, without synchronized output"
+    );
+    assert_every_line_reached_history(&run, "hybrid scroll region");
 }
 
 #[test]
