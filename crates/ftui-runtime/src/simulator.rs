@@ -53,7 +53,7 @@ impl std::fmt::Display for SimulatorError {
 impl std::error::Error for SimulatorError {}
 
 /// Record of a command that was executed during simulation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CmdRecord {
     /// No-op command.
     None,
@@ -75,6 +75,12 @@ pub enum CmdRecord {
     MouseCapture(bool),
     /// Clipboard effect captured without accessing an external clipboard.
     Clipboard(ClipboardRequest),
+    /// Widget state save requested (`Cmd::SaveState`).
+    SaveState,
+    /// Widget state restore requested (`Cmd::RestoreState`).
+    RestoreState,
+    /// Runtime tick strategy updated (`Cmd::SetTickStrategy`), carrying the strategy name.
+    SetTickStrategy(String),
     /// Error delivered to `Model::on_error`.
     Error(String),
     /// One-shot model/runtime shutdown.
@@ -108,6 +114,12 @@ pub struct ProgramSimulator<M: Model> {
     now: Duration,
     /// Next scheduled tick at the injected simulator clock.
     next_tick_at: Option<Duration>,
+    /// Monotonic tick counter for tick-strategy dispatch.
+    tick_count: u64,
+    /// Optional tick strategy for selective background screen ticking.
+    tick_strategy: Option<Box<dyn crate::tick_strategy::TickStrategy>>,
+    /// Last active screen observed by the tick strategy dispatch path.
+    last_active_screen_for_strategy: Option<String>,
     /// Declarative subscription IDs from the last reconciliation.
     active_subscriptions: Vec<SubId>,
     /// Log messages emitted via Cmd::Log.
@@ -136,6 +148,9 @@ impl<M: Model> ProgramSimulator<M> {
             tick_rate: None,
             now: Duration::ZERO,
             next_tick_at: None,
+            tick_count: 0,
+            tick_strategy: None,
+            last_active_screen_for_strategy: None,
             active_subscriptions: Vec::new(),
             logs: Vec::new(),
             clipboard_requests: Vec::new(),
@@ -154,6 +169,25 @@ impl<M: Model> ProgramSimulator<M> {
         sim
     }
 
+    /// Attach a [`TickStrategy`](crate::tick_strategy::TickStrategy) for selective per-screen tick dispatch.
+    #[must_use]
+    pub fn with_tick_strategy(
+        mut self,
+        strategy: impl crate::tick_strategy::TickStrategy + 'static,
+    ) -> Self {
+        self.tick_strategy = Some(Box::new(strategy));
+        self.last_active_screen_for_strategy = None;
+        self
+    }
+
+    /// Name of the active tick strategy, if one is configured.
+    #[must_use]
+    pub fn tick_strategy_name(&self) -> Option<&str> {
+        self.tick_strategy
+            .as_deref()
+            .map(crate::tick_strategy::TickStrategy::name)
+    }
+
     /// Initialize the model once and execute its startup commands.
     ///
     /// Should be called once before injecting events or capturing frames.
@@ -165,6 +199,7 @@ impl<M: Model> ProgramSimulator<M> {
         let cmd = self.model.init();
         self.execute_cmd(cmd);
         self.poll_subscriptions();
+        self.check_screen_transition();
     }
 
     /// Inject terminal events into the model.
@@ -180,6 +215,7 @@ impl<M: Model> ProgramSimulator<M> {
             let cmd = self.model.update(msg);
             self.execute_cmd(cmd);
             self.poll_subscriptions();
+            self.check_screen_transition();
         }
     }
 
@@ -202,6 +238,7 @@ impl<M: Model> ProgramSimulator<M> {
         let cmd = self.model.update(msg);
         self.execute_cmd(cmd);
         self.poll_subscriptions();
+        self.check_screen_transition();
     }
 
     /// Current deterministic monotonic simulator time.
@@ -231,7 +268,7 @@ impl<M: Model> ProgramSimulator<M> {
                 .tick_rate
                 .filter(|rate| !rate.is_zero())
                 .and_then(|rate| due.checked_add(rate));
-            self.send(M::Message::from(Event::Tick));
+            self.tick();
             delivered = delivered.saturating_add(1);
         }
 
@@ -241,9 +278,87 @@ impl<M: Model> ProgramSimulator<M> {
 
     /// Deliver one tick immediately without advancing deterministic time.
     pub fn tick(&mut self) {
-        if self.running {
+        if !self.running {
+            return;
+        }
+        self.tick_count = self.tick_count.wrapping_add(1);
+        let tick_count = self.tick_count;
+        let mut used_screen_dispatch = false;
+
+        if let Some(strategy) = self.tick_strategy.as_mut() {
+            let dispatch_snapshot = self.model.as_screen_tick_dispatch().map(|dispatch| {
+                let active = dispatch.active_screen_id();
+                let all_screens = dispatch.screen_ids();
+                (active, all_screens)
+            });
+
+            if let Some((active, all_screens)) = dispatch_snapshot {
+                used_screen_dispatch = true;
+                if let Some(previous_active) = self.last_active_screen_for_strategy.as_deref()
+                    && previous_active != active
+                {
+                    strategy.on_screen_transition(previous_active, &active);
+                }
+                self.last_active_screen_for_strategy = Some(active.clone());
+
+                let mut tick_targets = Vec::with_capacity(all_screens.len().max(1));
+                tick_targets.push(active.clone());
+                for screen_id in all_screens {
+                    if screen_id != active
+                        && strategy.should_tick(&screen_id, tick_count, &active)
+                            == crate::tick_strategy::TickDecision::Tick
+                    {
+                        tick_targets.push(screen_id);
+                    }
+                }
+                if let Some(dispatch) = self.model.as_screen_tick_dispatch() {
+                    for screen_id in &tick_targets {
+                        dispatch.tick_screen(screen_id, tick_count);
+                    }
+                }
+                strategy.maintenance_tick(tick_count);
+            }
+        }
+
+        if used_screen_dispatch {
+            if self.running {
+                self.poll_subscriptions();
+            }
+        } else {
+            self.last_active_screen_for_strategy = None;
             self.send(M::Message::from(Event::Tick));
         }
+    }
+
+    fn check_screen_transition(&mut self) {
+        if self.tick_strategy.is_none() || !self.running {
+            return;
+        }
+        let current_active = match self.model.as_screen_tick_dispatch() {
+            Some(dispatch) => dispatch.active_screen_id(),
+            None => return,
+        };
+        let previous = match self.last_active_screen_for_strategy.take() {
+            Some(prev) => prev,
+            None => {
+                self.last_active_screen_for_strategy = Some(current_active);
+                return;
+            }
+        };
+        if previous == current_active {
+            self.last_active_screen_for_strategy = Some(current_active);
+            return;
+        }
+        if let Some(strategy) = self.tick_strategy.as_mut() {
+            strategy.on_screen_transition(&previous, &current_active);
+        }
+        if let Some(dispatch) = self.model.as_screen_tick_dispatch() {
+            dispatch.tick_screen(&current_active, self.tick_count);
+            if self.running {
+                self.poll_subscriptions();
+            }
+        }
+        self.last_active_screen_for_strategy = Some(current_active);
     }
 
     /// Reconcile the model's declarative subscriptions without starting
@@ -293,6 +408,7 @@ impl<M: Model> ProgramSimulator<M> {
 
         let cmd = self.model.update(msg);
         self.execute_cmd(cmd);
+        self.check_screen_transition();
         self.poll_subscriptions();
         Ok(())
     }
@@ -328,6 +444,9 @@ impl<M: Model> ProgramSimulator<M> {
         self.shutdown_complete = true;
         self.running = false;
         self.command_log.push(CmdRecord::Shutdown);
+        if let Some(ref mut strategy) = self.tick_strategy {
+            strategy.shutdown();
+        }
         let cmd = self.model.on_shutdown();
         self.execute_lifecycle_cmd(cmd);
         self.active_subscriptions.clear();
@@ -556,6 +675,7 @@ impl<M: Model> ProgramSimulator<M> {
                 }
             }
             Cmd::SaveState => {
+                self.command_log.push(CmdRecord::SaveState);
                 let error = self
                     .state_registry
                     .as_ref()
@@ -566,6 +686,7 @@ impl<M: Model> ProgramSimulator<M> {
                 }
             }
             Cmd::RestoreState => {
+                self.command_log.push(CmdRecord::RestoreState);
                 let error = self
                     .state_registry
                     .as_ref()
@@ -575,8 +696,14 @@ impl<M: Model> ProgramSimulator<M> {
                     self.report_error(error);
                 }
             }
-            Cmd::SetTickStrategy(_) => {
-                // No-op in simulator mode for now.
+            Cmd::SetTickStrategy(strategy) => {
+                let name = strategy.name().to_owned();
+                self.command_log.push(CmdRecord::SetTickStrategy(name));
+                if let Some(ref mut prev) = self.tick_strategy {
+                    prev.shutdown();
+                }
+                self.tick_strategy = Some(strategy);
+                self.last_active_screen_for_strategy = None;
             }
         }
         None
@@ -1730,10 +1857,112 @@ mod tests {
         sim.execute_cmd(Cmd::save_state());
         sim.execute_cmd(Cmd::restore_state());
 
-        assert_eq!(sim.command_log().len(), log_len);
+        assert_eq!(
+            &sim.command_log()[log_len..],
+            &[CmdRecord::SaveState, CmdRecord::RestoreState]
+        );
         assert_eq!(sim.tick_rate(), tick_rate);
         assert_eq!(sim.model().value, value_before);
         assert!(sim.is_running());
+    }
+
+    #[test]
+    fn set_tick_strategy_drives_selective_screen_ticks_in_simulator() {
+        use crate::tick_strategy::{ActiveOnly, ScreenTickDispatch, TickDecision, Uniform};
+
+        struct MultiScreenModel {
+            active: &'static str,
+            active_ticks: Vec<u64>,
+            bg_ticks: Vec<u64>,
+        }
+
+        enum MultiMsg {
+            Switch(&'static str),
+            UseUniform(u64),
+            Tick,
+        }
+
+        impl From<Event> for MultiMsg {
+            fn from(_: Event) -> Self {
+                Self::Tick
+            }
+        }
+
+        impl Model for MultiScreenModel {
+            type Message = MultiMsg;
+
+            fn init(&mut self) -> Cmd<Self::Message> {
+                Cmd::set_tick_strategy(ActiveOnly)
+            }
+
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    MultiMsg::Switch(screen) => {
+                        self.active = screen;
+                        Cmd::none()
+                    }
+                    MultiMsg::UseUniform(divisor) => Cmd::set_tick_strategy(Uniform::new(divisor)),
+                    MultiMsg::Tick => {
+                        self.active_ticks.push(0);
+                        Cmd::none()
+                    }
+                }
+            }
+
+            fn view(&self, _frame: &mut Frame) {}
+
+            fn as_screen_tick_dispatch(&mut self) -> Option<&mut dyn ScreenTickDispatch> {
+                Some(self)
+            }
+        }
+
+        impl ScreenTickDispatch for MultiScreenModel {
+            fn active_screen_id(&self) -> String {
+                self.active.to_owned()
+            }
+
+            fn screen_ids(&self) -> Vec<String> {
+                vec!["alpha".to_owned(), "beta".to_owned()]
+            }
+
+            fn tick_screen(&mut self, screen_id: &str, tick_count: u64) {
+                if screen_id == self.active {
+                    self.active_ticks.push(tick_count);
+                } else {
+                    self.bg_ticks.push(tick_count);
+                }
+            }
+        }
+
+        let mut sim = ProgramSimulator::new(MultiScreenModel {
+            active: "alpha",
+            active_ticks: Vec::new(),
+            bg_ticks: Vec::new(),
+        });
+        sim.init();
+        assert_eq!(sim.tick_strategy_name(), Some("ActiveOnly"));
+        assert!(
+            sim.command_log()
+                .contains(&CmdRecord::SetTickStrategy("ActiveOnly".to_owned()))
+        );
+
+        // Under ActiveOnly, background screen "beta" is skipped.
+        sim.tick();
+        sim.tick();
+        assert_eq!(sim.model().active_ticks, vec![1, 2]);
+        assert!(sim.model().bg_ticks.is_empty());
+
+        // Switch to Uniform(2): background screen "beta" ticks on even tick counts.
+        sim.send(MultiMsg::UseUniform(2));
+        assert_eq!(sim.tick_strategy_name(), Some("Uniform"));
+        sim.tick(); // tick_count = 3 (odd -> Skip)
+        sim.tick(); // tick_count = 4 (even -> Tick)
+        assert_eq!(sim.model().bg_ticks, vec![4]);
+
+        // Switching active screen notifies strategy and force-ticks newly active screen.
+        sim.send(MultiMsg::Switch("beta"));
+        assert_eq!(sim.model().active_ticks, vec![1, 2, 3, 4, 4]);
+        let _ = TickDecision::Tick;
     }
 
     #[test]

@@ -1128,13 +1128,27 @@ impl<W: Write> TerminalWriter<W> {
     /// Set the screen mode.
     ///
     /// Leaving inline mode streams any batched overlay log lines first
-    /// (best effort), so they reach scrollback instead of being dropped.
+    /// (best effort), so they reach scrollback instead of being dropped,
+    /// deactivates any active DECSTBM scroll region, and invalidates cached
+    /// geometry and diff baselines.
     pub fn set_screen_mode(&mut self, mode: ScreenMode) {
+        if self.screen_mode == mode {
+            return;
+        }
+        let _output_guard = terminal_output_lock();
         if matches!(mode, ScreenMode::AltScreen) && !self.pending_logs.is_empty() {
-            let _output_guard = terminal_output_lock();
             let _ = self.flush_pending_logs(false);
         }
+        if self.scroll_region_active {
+            let _ = self.deactivate_scroll_region();
+        }
         self.screen_mode = mode;
+        self.auto_ui_height = None;
+        self.prev_buffer = None;
+        self.stale_frame = None;
+        self.log_floor = None;
+        self.last_inline_region = None;
+        self.reset_diff_strategy();
     }
 
     /// Height to use for rendering a frame.

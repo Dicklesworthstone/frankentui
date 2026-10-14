@@ -192,6 +192,7 @@ fn render_loop<W: Write + Send>(
         let mut latest_render: Option<PendingRender> = None;
         let mut shutdown = false;
 
+        let mut io_failed = false;
         process_msg(
             first,
             &mut logs,
@@ -199,7 +200,11 @@ fn render_loop<W: Write + Send>(
             &mut writer,
             &mut shutdown,
             &err_tx,
+            &mut io_failed,
         );
+        if io_failed {
+            return;
+        }
 
         if !shutdown {
             while let Ok(msg) = rx.try_recv() {
@@ -210,7 +215,11 @@ fn render_loop<W: Write + Send>(
                     &mut writer,
                     &mut shutdown,
                     &err_tx,
+                    &mut io_failed,
                 );
+                if io_failed {
+                    return;
+                }
                 if shutdown {
                     break;
                 }
@@ -276,13 +285,29 @@ fn render_loop<W: Write + Send>(
     }
 }
 
+fn flush_queued_logs<W: Write>(
+    logs: &mut Vec<(Vec<u8>, SanitizeMode)>,
+    writer: &mut TerminalWriter<W>,
+    err_tx: &mpsc::SyncSender<io::Error>,
+) -> bool {
+    for (log_bytes, mode) in logs.drain(..) {
+        if let Err(e) = writer.write_log_with_mode(&String::from_utf8_lossy(&log_bytes), mode) {
+            let _ = err_tx.try_send(e);
+            return false;
+        }
+    }
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
 fn process_msg<W: Write>(
     msg: OutMsg,
     logs: &mut Vec<(Vec<u8>, SanitizeMode)>,
     latest_render: &mut Option<PendingRender>,
     writer: &mut TerminalWriter<W>,
     shutdown: &mut bool,
-    _err_tx: &mpsc::SyncSender<io::Error>,
+    err_tx: &mpsc::SyncSender<io::Error>,
+    io_failed: &mut bool,
 ) {
     match msg {
         OutMsg::Log { bytes, mode } => {
@@ -296,10 +321,28 @@ fn process_msg<W: Write>(
             *latest_render = Some((buffer, cursor, cursor_visible));
         }
         OutMsg::Resize { w, h } => {
+            if !flush_queued_logs(logs, writer, err_tx) {
+                *io_failed = true;
+                return;
+            }
+            if latest_render
+                .as_ref()
+                .is_some_and(|(buf, _, _)| buf.width() != w || buf.height() != h)
+            {
+                *latest_render = None;
+            }
             writer.set_size(w, h);
         }
-        OutMsg::SetMode(_mode) => {
-            tracing::warn!("SetMode received but runtime mode switching not yet implemented");
+        OutMsg::SetMode(mode) => {
+            if !flush_queued_logs(logs, writer, err_tx) {
+                *io_failed = true;
+                return;
+            }
+            if writer.screen_mode() != mode {
+                *latest_render = None;
+            }
+            writer.set_screen_mode(mode);
+            tracing::info!(?mode, "render thread updated screen mode");
         }
         OutMsg::Shutdown => {
             *shutdown = true;
@@ -873,5 +916,75 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *released = true;
         released_ready.notify_all();
+    }
+
+    #[test]
+    fn set_mode_updates_writer_and_invalidates_stale_render_on_resize() {
+        let (mut writer, _tw) = test_writer();
+        writer.set_size(20, 10);
+        let mut logs = Vec::new();
+        let mut latest_render = None;
+        let mut shutdown = false;
+        let mut io_failed = false;
+        let (err_tx, _err_rx) = mpsc::sync_channel(4);
+
+        let mut old_buf = Buffer::new(20, 10);
+        old_buf.set(0, 0, Cell::from_char('A'));
+        process_msg(
+            OutMsg::Render {
+                buffer: old_buf,
+                cursor: None,
+                cursor_visible: false,
+            },
+            &mut logs,
+            &mut latest_render,
+            &mut writer,
+            &mut shutdown,
+            &err_tx,
+            &mut io_failed,
+        );
+        assert!(latest_render.is_some());
+
+        // Resize to 40x15 must drop the stale 20x10 pending render and update writer dimensions.
+        process_msg(
+            OutMsg::Resize { w: 40, h: 15 },
+            &mut logs,
+            &mut latest_render,
+            &mut writer,
+            &mut shutdown,
+            &err_tx,
+            &mut io_failed,
+        );
+        assert!(latest_render.is_none());
+        assert_eq!((writer.width(), writer.height()), (40, 15));
+
+        // SetMode(AltScreen) must update writer.screen_mode() and invalidate any inline pending render.
+        let mut new_buf = Buffer::new(40, 15);
+        new_buf.set(0, 0, Cell::from_char('B'));
+        process_msg(
+            OutMsg::Render {
+                buffer: new_buf,
+                cursor: None,
+                cursor_visible: false,
+            },
+            &mut logs,
+            &mut latest_render,
+            &mut writer,
+            &mut shutdown,
+            &err_tx,
+            &mut io_failed,
+        );
+        process_msg(
+            OutMsg::SetMode(ScreenMode::AltScreen),
+            &mut logs,
+            &mut latest_render,
+            &mut writer,
+            &mut shutdown,
+            &err_tx,
+            &mut io_failed,
+        );
+        assert_eq!(writer.screen_mode(), ScreenMode::AltScreen);
+        assert!(latest_render.is_none());
+        assert!(!io_failed);
     }
 }
