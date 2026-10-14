@@ -37,7 +37,9 @@ use ftui_core::session_teardown::seq::{
     KITTY_KEYBOARD_DISABLE, KITTY_KEYBOARD_ENABLE, MOUSE_DISABLE, MOUSE_DISABLE_MUX_SAFE,
     MOUSE_ENABLE, MOUSE_ENABLE_MUX_SAFE,
 };
-use ftui_core::session_teardown::{KittyPopLatch, TeardownPlan, install_chained_panic_hook};
+use ftui_core::session_teardown::{
+    KittyPopLatch, TeardownPlan, install_chained_panic_hook, terminal_output_lock,
+};
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 #[cfg(test)]
 use ftui_render::buffer::Buffer;
@@ -248,21 +250,34 @@ fn best_effort_termination_cleanup() {
     if !TTY_SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
         return;
     }
-    let mut stdout = io::stdout();
     let caps = TerminalCapabilities::with_overrides();
+    termination_cleanup_to(&mut io::stdout(), &caps);
+    restore_raw_mode_snapshot();
+}
+
+/// Emission body of `best_effort_termination_cleanup`, parameterized over the
+/// output for testability. Consumes the process-global kitty pop latch.
+#[cfg(unix)]
+fn termination_cleanup_to(out: &mut impl Write, caps: &TerminalCapabilities) {
+    // Serialize against the render path: this runs on the signal thread while
+    // `TerminalWriter` may be mid-frame on another, and teardown bytes must
+    // not land inside that frame (bd-g00-root-epic-ewths.33.4; the Crossterm
+    // backend's cleanup has held this lock since bd-kdn7n). Reentrant, so the
+    // panic hook may run it on a render thread that already holds it.
+    let _output_guard = terminal_output_lock();
+
     // This path cannot prove ownership of an active sync block; avoid emitting
     // standalone DEC ?2026l during panic/signal cleanup. Extracting the shared
     // TeardownPlan in bd-g00-root-epic-ewths.17.6 flipped this to true, which
     // fails vfx_shape3d_wezterm_mux_policy_omits_sync_output_sequences: under a
     // multiplexer identity the policy forbids the sequence outright, and there
     // is no open block here for it to close even when it does not.
-    let mut plan = TeardownPlan::from_capabilities(&caps, true, false);
+    let mut plan = TeardownPlan::from_capabilities(caps, true, false);
     if !KittyPopLatch::try_claim() {
         plan.pop_kitty_keyboard = false;
     }
-    let _ = plan.write_for_backend(&mut stdout, "tty");
-    let _ = stdout.flush();
-    restore_raw_mode_snapshot();
+    let _ = plan.write_for_backend(out, "tty");
+    let _ = out.flush();
 }
 
 #[cfg(unix)]
@@ -1205,6 +1220,7 @@ impl BackendEventSource for TtyEventSource {
     fn set_features(&mut self, features: BackendFeatures) -> Result<(), Self::Error> {
         let effective_features = self.sanitize_features(features);
         if self.live {
+            let _output_guard = terminal_output_lock();
             let mut stdout = io::stdout();
             if let Err(err) = Self::write_feature_delta(
                 &self.features,
@@ -1407,6 +1423,7 @@ impl TtyBackend {
 
         // Enable initial features.
         let mut events = TtyEventSource::live(width, height, capabilities)?;
+        let _output_guard = terminal_output_lock();
         let setup: io::Result<()> = (|| {
             // Enter alt screen if requested.
             if options.alternate_screen {
@@ -1493,6 +1510,7 @@ impl TtyBackend {
             features: self.events.features(),
             alt_screen: self.alt_screen_active,
         };
+        let _output_guard = terminal_output_lock();
         let mut stdout = io::stdout();
         let mouse_disable_seq = mouse_disable_sequence_for_capabilities(self.events.capabilities);
         // Same sequence and order as `drop`, and for the same reasons: no
@@ -1527,6 +1545,7 @@ impl TtyBackend {
             return Ok(());
         };
         raw_mode.reenter_raw()?;
+        let _output_guard = terminal_output_lock();
         let mut stdout = io::stdout();
         if session.alt_screen {
             stdout.write_all(ALT_SCREEN_ENTER)?;
@@ -1579,6 +1598,9 @@ impl Drop for TtyBackend {
             if !TTY_SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
                 return;
             }
+            // One emission batch, serialized against a frame in flight on
+            // another thread (bd-g00-root-epic-ewths.33.4).
+            let _output_guard = terminal_output_lock();
             let mut stdout = io::stdout();
             let mouse_disable_seq =
                 mouse_disable_sequence_for_capabilities(self.events.capabilities);
@@ -3096,6 +3118,35 @@ mod tests {
                 "core and tty cleanup must produce identical bytes for features={features:?}"
             );
         }
+    }
+
+    /// The signal thread's teardown must wait for a frame batch in flight on
+    /// another thread (bd-g00-root-epic-ewths.33.4). Until it took
+    /// `terminal_output_lock`, a Ctrl-C during a frame could put `?1049l` and
+    /// friends in the middle of it, and the frame's remainder on the cooked
+    /// screen.
+    #[test]
+    fn termination_cleanup_waits_for_a_frame_batch_in_flight() {
+        let _latch_guard = kitty_latch_test_lock();
+        let frame_batch = terminal_output_lock();
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let signal_thread = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            termination_cleanup_to(&mut out, &TerminalCapabilities::modern());
+            tx.send(out).expect("receiver alive");
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "teardown must not emit while another thread holds the output lock"
+        );
+        drop(frame_batch);
+        let bytes = rx.recv().expect("teardown completes once the batch ends");
+        assert!(
+            bytes.windows(CURSOR_SHOW.len()).any(|w| w == CURSOR_SHOW),
+            "teardown still emits its restore sequence: {bytes:?}"
+        );
+        signal_thread.join().expect("signal thread joins");
     }
 
     #[test]

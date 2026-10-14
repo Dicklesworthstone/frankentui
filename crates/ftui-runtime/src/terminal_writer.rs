@@ -128,10 +128,10 @@ use crate::render_trace::{
 };
 use ftui_core::caps_probe::CapabilityDecision;
 use ftui_core::inline_mode::{InlineStrategy, sanitize_overlay_log_line};
+use ftui_core::session_teardown::terminal_output_lock;
 #[cfg(test)]
 use ftui_core::terminal_capabilities::ColorDepth;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
-use ftui_core::terminal_session::terminal_output_lock;
 use ftui_render::ansi;
 use ftui_render::buffer::{Buffer, DirtySpanConfig, DirtySpanStats};
 use ftui_render::counting_writer::CountingWriter;

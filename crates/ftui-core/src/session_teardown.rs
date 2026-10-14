@@ -2,8 +2,8 @@
 
 //! Unified terminal session teardown plan, escape sequences, and panic/signal hooks.
 //!
-//! Shared by both the Crossterm backend ([`crate::terminal_session`]) and the native
-//! Unix backend (`ftui-tty`).
+//! Shared by the Crossterm backend (`terminal_session`, with the `crossterm`
+//! feature) and the native Unix backend (`ftui-tty`).
 //!
 //! # Canonical Teardown Sequence Order
 //! 1. `SYNC_END` (`\x1b[?2026l`) if requested
@@ -88,6 +88,79 @@ pub mod seq {
 
     /// Enter alternate screen buffer (DECSET 1049).
     pub const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h";
+}
+
+/// Process-wide serialization for terminal byte emission.
+///
+/// The signal/panic teardown paths (both backends' best-effort cleanup,
+/// `TerminalSession::cleanup`, `ftui-tty`'s `TtyBackend` drop) and the render
+/// path (ftui-runtime's `TerminalWriter`) all write escape sequences to the
+/// same stdout. Without mutual exclusion, a frame flush in progress
+/// interleaves with teardown bytes (`ESC[r`, `1049l`, ...) and the frame
+/// remainder lands on the cooked screen (bd-kdn7n item 2, the one-writer
+/// violation).
+///
+/// It lives here rather than in the Crossterm-gated `terminal_session`
+/// because the native backend needs it as much: until
+/// bd-g00-root-epic-ewths.33.4 a build without the `crossterm` feature got a
+/// no-op stub, and `ftui-tty` never took the lock at all, so its signal
+/// thread could write teardown bytes into the middle of a frame.
+///
+/// Reentrant on purpose: the panic hook runs ON the rendering thread while it
+/// may already hold this lock mid-frame, so same-thread re-entry must not
+/// deadlock; cross-thread callers (the signal thread) still block until the
+/// in-flight emission batch completes. Emission batches are short (one
+/// buffered frame or one teardown sequence), so a signal thread waiting on
+/// this lock is bounded by a single flush.
+static TERMINAL_OUTPUT_LOCK: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    /// Per-thread nesting depth for [`TERMINAL_OUTPUT_LOCK`]. The outermost
+    /// acquisition on a thread owns the mutex; nested acquisitions (teardown
+    /// re-entering from the panic hook on the render thread) hold no OS lock.
+    static TERMINAL_OUTPUT_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Guard produced by [`terminal_output_lock`]; releases on drop.
+#[derive(Debug)]
+pub struct TerminalOutputGuard {
+    /// Held only by the OUTERMOST acquisition on its thread; re-entries
+    /// keep `None`.
+    _inner: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+/// Acquire the process-wide terminal output lock (see
+/// [`TERMINAL_OUTPUT_LOCK`]).
+///
+/// Emission sites hold this guard for the duration of one write batch:
+/// teardown paths for their full restore sequence, `TerminalWriter` methods
+/// per frame / log / control write. Reentrant per thread; cross-thread
+/// callers block until the in-flight batch completes.
+#[doc(hidden)]
+#[must_use]
+pub fn terminal_output_lock() -> TerminalOutputGuard {
+    let is_outermost = TERMINAL_OUTPUT_DEPTH.with(|depth| {
+        let current = depth.get();
+        depth.set(current + 1);
+        current == 0
+    });
+    // A panic while holding (e.g. a panicking write) poisons the mutex; the
+    // teardown paths must still be able to acquire it, so poison is ignored.
+    let inner = is_outermost.then(|| {
+        TERMINAL_OUTPUT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
+    TerminalOutputGuard { _inner: inner }
+}
+
+impl Drop for TerminalOutputGuard {
+    fn drop(&mut self) {
+        // Release the OS lock before decrementing so a waiting thread can
+        // proceed immediately once this thread's outermost batch ends.
+        self._inner = None;
+        TERMINAL_OUTPUT_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
 }
 
 static KITTY_POP_LATCH: AtomicBool = AtomicBool::new(false);
@@ -348,6 +421,46 @@ pub fn install_chained_panic_hook(name: &'static str, f: fn()) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CONTRACT (bd-kdn7n item 2): the lock excludes OTHER threads — a
+    /// signal thread running teardown must not complete acquisition while a
+    /// frame batch is in flight, and must proceed once it completes. Lives
+    /// here, not in the Crossterm-gated `terminal_session`, so builds without
+    /// that feature run it too (bd-g00-root-epic-ewths.33.4).
+    #[test]
+    fn output_lock_excludes_other_threads() {
+        let held = terminal_output_lock();
+        let (tx, rx) = std::sync::mpsc::channel::<&'static str>();
+        let worker = std::thread::spawn(move || {
+            tx.send("started").expect("receiver alive");
+            // Blocks until the main thread drops its guard.
+            let _acquired = terminal_output_lock();
+            tx.send("acquired").expect("receiver alive");
+        });
+
+        assert_eq!(rx.recv().expect("worker started"), "started");
+        // The worker cannot have completed acquisition: it can only pass the
+        // lock after this thread releases it, which has not happened yet.
+        assert!(
+            rx.try_recv().is_err(),
+            "worker must still be blocked while the batch is held"
+        );
+        drop(held);
+        assert_eq!(
+            rx.recv().expect("worker acquired after release"),
+            "acquired"
+        );
+        worker.join().expect("worker thread joins");
+    }
+
+    /// Same-thread re-entry holds no second OS lock: a nested guard on the
+    /// owning thread returns at once (the panic hook re-enters mid-frame).
+    #[test]
+    fn output_lock_is_reentrant_on_the_owning_thread() {
+        let _outer = terminal_output_lock();
+        let inner = terminal_output_lock();
+        assert!(inner._inner.is_none(), "a nested guard owns no mutex guard");
+    }
 
     #[test]
     fn panic_cleanup_suppression_scope_restores_state() {

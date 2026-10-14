@@ -51,8 +51,8 @@ tracing-subscriber = { version = "0.3.20", features = ["registry", "env-filter",
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 proptest = "1.7.0"
 # `crossterm` / `crossterm-compat` move here for the same reason. ftui-core
-# excludes its real `terminal_session` on wasm32 whatever the feature says, and
-# leaves a stub exposing only `terminal_output_lock`, while ftui-runtime gates
+# excludes its `terminal_session` module on wasm32 whatever the feature says,
+# while ftui-runtime gates
 # its `SessionOptions`/`TerminalSession` import on `crossterm-compat` alone.
 # Enabling that feature from here turned the mismatch into a build error the
 # moment ftui-demo-showcase started depending on this crate at runtime, even
