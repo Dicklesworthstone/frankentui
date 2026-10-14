@@ -66,7 +66,11 @@ use crate::resize_coalescer::{CoalesceAction, CoalescerConfig, ResizeCoalescer};
 use crate::state_persistence::StateRegistry;
 use crate::subscription::SubscriptionManager;
 use crate::terminal_presenter::TerminalPresenter;
-#[cfg(any(feature = "crossterm-compat", test))]
+#[cfg(any(
+    feature = "crossterm-compat",
+    all(feature = "native-backend", unix),
+    test
+))]
 use crate::terminal_writer::TerminalWriter;
 use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, UiAnchor};
 use crate::voi_sampling::{VoiConfig, VoiSampler};
@@ -4359,6 +4363,11 @@ fn panic_payload_message(payload: Box<dyn Any + Send>) -> String {
     }
 }
 
+/// No `eprintln!` fallback without `tracing`: stderr is the terminal the UI is
+/// drawing on (bd-g00-root-epic-ewths.33.4). The panic hook's report covers a
+/// task panic - kept until the teardown while a session is live, see
+/// `ftui_core::session_teardown::install_chained_panic_hook` - and an enabled
+/// evidence sink records a `task_executor_panic` row.
 fn log_task_executor_panic(backend: &str, panic_msg: &str) {
     #[cfg(feature = "tracing")]
     tracing::error!(
@@ -4367,7 +4376,7 @@ fn log_task_executor_panic(backend: &str, panic_msg: &str) {
         "task executor task panicked"
     );
     #[cfg(not(feature = "tracing"))]
-    eprintln!("ftui: task executor task panicked ({backend}): {panic_msg}");
+    let _ = (backend, panic_msg);
 }
 
 fn run_task_closure<M: Send + 'static>(

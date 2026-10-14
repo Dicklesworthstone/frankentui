@@ -316,7 +316,7 @@ Every component crate includes inline `#[cfg(test)]` unit tests alongside the im
 - Error conditions
 
 Cross-component integration tests live in each crate's own `tests/`
-directory -- 297 files on 2026-10-13, the largest being `ftui-runtime`
+directory -- 298 files on 2026-10-14, the largest being `ftui-runtime`
 (51), `ftui-harness` (48) and `ftui-demo-showcase` (46).
 
 **Not** in the repository-root `tests/`. That directory holds fixtures,

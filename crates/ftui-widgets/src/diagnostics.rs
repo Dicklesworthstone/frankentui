@@ -94,6 +94,12 @@ pub fn json_string_literal(value: &str) -> String {
 // DiagnosticLog<E>
 // =============================================================================
 
+/// Whether stderr is a terminal, checked once per process.
+fn stderr_is_terminal() -> bool {
+    static IS_TERMINAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *IS_TERMINAL.get_or_init(|| std::io::IsTerminal::is_terminal(&std::io::stderr()))
+}
+
 /// Bounded in-memory diagnostic log with optional stderr mirroring.
 ///
 /// Generic over the entry type `E` so different subsystems can use
@@ -128,7 +134,9 @@ impl<E: DiagnosticRecord> DiagnosticLog<E> {
     }
 
     /// Enable stderr mirroring — each recorded entry is also written
-    /// to stderr as a JSONL line.
+    /// to stderr as a JSONL line, unless stderr is a terminal: that is the
+    /// terminal the UI draws on, and a line written there lands between
+    /// frames (bd-g00-root-epic-ewths.33.4). Redirect stderr to capture it.
     #[must_use]
     pub fn with_stderr(mut self) -> Self {
         self.write_stderr = true;
@@ -145,7 +153,7 @@ impl<E: DiagnosticRecord> DiagnosticLog<E> {
 
     /// Record a diagnostic entry.
     pub fn record(&mut self, entry: E) {
-        if self.write_stderr {
+        if self.write_stderr && !stderr_is_terminal() {
             let _ = writeln!(std::io::stderr(), "{}", entry.to_jsonl());
         }
 

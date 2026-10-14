@@ -679,6 +679,7 @@ mod tests {
         ftui_core::session_teardown::install_chained_panic_hook(
             "retry-worker-panic-test",
             count_cleanup,
+            || false,
         );
 
         let cmd = task_with_timeout(

@@ -129,6 +129,11 @@ impl EvidenceSinkConfig {
     /// UI draws on: JSONL written there lands in the middle of frames,
     /// breaking the one-writer rule (bd-g00-root-epic-ewths.33.4). Piped or
     /// redirected stdout stays allowed.
+    #[cfg(any(
+        test,
+        feature = "crossterm-compat",
+        all(feature = "native-backend", unix)
+    ))]
     pub(crate) fn check_terminal_ui_stdout(&self, stdout_is_terminal: bool) -> io::Result<()> {
         if self.enabled
             && stdout_is_terminal

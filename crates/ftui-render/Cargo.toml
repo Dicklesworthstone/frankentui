@@ -60,6 +60,10 @@ name = "diff_bench"
 harness = false
 
 [[bench]]
+name = "diff_paths_paired"
+harness = false
+
+[[bench]]
 name = "presenter_bench"
 harness = false
 
