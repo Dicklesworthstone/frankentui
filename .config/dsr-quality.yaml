@@ -126,3 +126,22 @@ tools:
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-core -p ftui-render -p ftui-style -p ftui-text -p ftui-layout -p ftui-runtime -p ftui-web
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-web --features input-parser,tracing
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-showcase-wasm
+  # Feature-gated modules (bd-g00-root-epic-ewths.6.38): ~2,160+ tests across
+  # experimental runtime modules, ftui-extras features, normalization, and
+  # telemetry that default `--workspace` never compiles.
+  frankentui-all-features:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --all-features --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTDOCFLAGS="-D warnings" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness doc --workspace --all-features --no-deps --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --workspace --all-features --no-fail-fast --locked
+  # Release-profile performance budget suites (bd-g00-root-epic-ewths.6.38):
+  # perf_hud_regression, mermaid_perf_budget, and visual_effects_pty skip their
+  # release-only frame budget assertions when debug_assertions are enabled.
+  frankentui-release-perf-budgets:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --cargo-profile release --locked -p ftui-demo-showcase --test perf_hud_regression --test mermaid_perf_budget --test visual_effects_pty --no-fail-fast
+

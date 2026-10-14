@@ -280,5 +280,15 @@ if [[ "$SUITE_FAILURES" -gt 0 ]]; then
     exit 1
 fi
 
+if [[ "${FAILED:-0}" -gt 0 ]]; then
+    log_error "$FAILED test case(s) failed in summary"
+    exit 1
+fi
+
+if [[ "${SKIPPED:-0}" -gt 0 && "${E2E_ALLOW_SKIPS:-0}" != "1" ]]; then
+    log_error "$SKIPPED test case(s) skipped unexpectedly (set E2E_ALLOW_SKIPS=1 to allow)"
+    exit 2
+fi
+
 log_info "All suites passed"
 exit 0

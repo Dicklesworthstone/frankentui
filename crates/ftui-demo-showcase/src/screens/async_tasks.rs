@@ -1153,12 +1153,16 @@ impl AsyncTaskManager {
     /// Spawn a task with a specific name.
     fn spawn_task_with_name(&mut self, name: &str, duration: u64, priority: u8) {
         if self.tasks.len() >= MAX_TASKS {
-            // Remove oldest completed task
-            if let Some(pos) = self.tasks.iter().position(|t| t.is_terminal()) {
-                self.tasks.remove(pos);
-                if self.selected > 0 && self.selected >= self.tasks.len() {
-                    self.selected = self.tasks.len().saturating_sub(1);
-                }
+            // Remove oldest completed task, or oldest queued/first task if all are active
+            let pos = self
+                .tasks
+                .iter()
+                .position(|t| t.is_terminal())
+                .or_else(|| self.tasks.iter().position(|t| t.state == TaskState::Queued))
+                .unwrap_or(0);
+            self.tasks.remove(pos);
+            if self.selected > 0 && self.selected >= self.tasks.len() {
+                self.selected = self.tasks.len().saturating_sub(1);
             }
         }
 

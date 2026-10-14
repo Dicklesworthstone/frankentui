@@ -250,7 +250,11 @@ fn mega_e2e_layout_mode_cycling() {
         );
     }
 
-    // Should have rendered each time without panic.
+    let unique: std::collections::HashSet<u64> = seen_hashes.iter().copied().collect();
+    assert!(
+        unique.len() >= 2,
+        "Cycling layout mode ('l') must produce distinct rendered frames"
+    );
     log_jsonl("result", &[("status", "passed")]);
 }
 
@@ -263,19 +267,26 @@ fn mega_e2e_direction_cycling() {
     log_jsonl("env", &[("test", "mega_e2e_direction_cycling")]);
 
     let mut screen = MermaidMegaShowcaseScreen::new();
-    let _h0 = capture_frame_hash(&screen, 120, 40);
+    let h0 = capture_frame_hash(&screen, 120, 40);
+    let mut seen_hashes = vec![h0];
 
     // Cycle direction with 'O'.
     // Directions: None → TB → LR → RL → BT → None  (5 presses to wrap)
     for i in 0..6 {
         let _ = screen.update(&char_press('O'));
         let h = capture_frame_hash(&screen, 120, 40);
+        seen_hashes.push(h);
         log_jsonl(
             "direction",
             &[("step", &i.to_string()), ("hash", &format!("{h:016x}"))],
         );
     }
 
+    let unique: std::collections::HashSet<u64> = seen_hashes.iter().copied().collect();
+    assert!(
+        unique.len() >= 2,
+        "Cycling direction ('O') must produce distinct rendered frames"
+    );
     log_jsonl("result", &[("status", "passed")]);
 }
 
@@ -335,9 +346,10 @@ fn mega_e2e_help_overlay_visible() {
     let has_help = frame_contains(&screen, 120, 40, "Help");
     log_jsonl("check", &[("has_help", &has_help.to_string())]);
 
-    // Help should be visible (the help overlay should contain "Help" somewhere).
-    // Note: if the screen layout doesn't have room or help is styled differently,
-    // this may need adjustment.
+    assert!(
+        has_help,
+        "Help overlay must contain 'Help' when toggled on with '?'"
+    );
 }
 
 // ===========================================================================
@@ -410,16 +422,28 @@ fn mega_e2e_tier_glyph_wrap_cycling() {
     log_jsonl("env", &[("test", "mega_e2e_tier_glyph_wrap_cycling")]);
 
     let mut screen = MermaidMegaShowcaseScreen::new();
+    let h0 = capture_frame_hash(&screen, 120, 40);
+    let mut tier_hashes = vec![h0];
 
-    // Cycle tier ('t') — Auto/Basic/Full (3 modes, wraps at 3).
+    // Cycle tier ('t') — Auto/Compact/Normal/Rich (4 modes, wraps at 4).
     for i in 0..4 {
         let _ = screen.update(&char_press('t'));
         let h = capture_frame_hash(&screen, 120, 40);
+        tier_hashes.push(h);
         log_jsonl(
             "tier",
             &[("step", &i.to_string()), ("hash", &format!("{h:016x}"))],
         );
     }
+    assert!(
+        tier_hashes
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            >= 2,
+        "Cycling tier ('t') must produce distinct rendered frames"
+    );
 
     // Toggle glyph mode ('g') — Unicode/ASCII.
     let _ = screen.update(&char_press('g'));
@@ -433,16 +457,31 @@ fn mega_e2e_tier_glyph_wrap_cycling() {
             ("unicode_hash", &format!("{h_unicode:016x}")),
         ],
     );
+    assert_ne!(
+        h_ascii, h_unicode,
+        "Toggling glyph mode ('g') between ASCII and Unicode must change the rendered frame"
+    );
 
     // Cycle wrap mode ('w').
+    let mut wrap_hashes = vec![h_unicode];
     for i in 0..4 {
         let _ = screen.update(&char_press('w'));
         let h = capture_frame_hash(&screen, 120, 40);
+        wrap_hashes.push(h);
         log_jsonl(
             "wrap",
             &[("step", &i.to_string()), ("hash", &format!("{h:016x}"))],
         );
     }
+    assert!(
+        wrap_hashes
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            >= 2,
+        "Cycling wrap mode ('w') must produce distinct rendered frames"
+    );
 
     log_jsonl("result", &[("status", "passed")]);
 }
@@ -475,8 +514,14 @@ fn mega_e2e_auto_scale_toggle() {
         ],
     );
 
-    // Double toggle may not produce identical hashes due to cache epoch changes,
-    // but it should not panic and should produce a valid frame.
+    assert_ne!(
+        h0, h1,
+        "Toggling auto-scale ('A') off must change the rendered frame"
+    );
+    assert_ne!(
+        h1, h2,
+        "Toggling auto-scale ('A') back on must change the rendered frame"
+    );
     log_jsonl("result", &[("status", "passed")]);
 }
 
@@ -491,7 +536,7 @@ fn mega_e2e_sweep_lifecycle() {
     let mut screen = MermaidMegaShowcaseScreen::new();
 
     // Initial render.
-    let _h0 = capture_frame_hash(&screen, 120, 40);
+    let h0 = capture_frame_hash(&screen, 120, 40);
 
     // Start sweep with 'S'.
     let _ = screen.update(&char_press('S'));
@@ -531,6 +576,13 @@ fn mega_e2e_sweep_lifecycle() {
             ("hash", &format!("{h_stopped:016x}")),
         ],
     );
+
+    assert_ne!(
+        h0, h_mid,
+        "Starting perf sweep ('S') and advancing ticks must change the rendered frame"
+    );
+    assert_ne!(h_done, 0, "Completed sweep frame must be non-empty");
+    assert_ne!(h_stopped, 0, "Stopped sweep frame must be non-empty");
 }
 
 // ===========================================================================
@@ -580,7 +632,7 @@ fn mega_e2e_search_enter_exit() {
     log_jsonl("env", &[("test", "mega_e2e_search_enter_exit")]);
 
     let mut screen = MermaidMegaShowcaseScreen::new();
-    let _h0 = capture_frame_hash(&screen, 120, 40);
+    let h0 = capture_frame_hash(&screen, 120, 40);
 
     // Enter search mode with '/'.
     let _ = screen.update(&char_press('/'));
@@ -622,6 +674,20 @@ fn mega_e2e_search_enter_exit() {
         "search",
         &[("action", "exited"), ("hash", &format!("{h_exit:016x}"))],
     );
+
+    assert_ne!(
+        h0, h_search,
+        "Entering search mode ('/') must change the rendered frame"
+    );
+    assert_ne!(
+        h_search, h_typed,
+        "Typing a search query must change the rendered frame"
+    );
+    assert_ne!(
+        h_typed, h_accepted,
+        "Accepting search with Enter must transition out of search input mode"
+    );
+    assert_ne!(h_exit, 0, "Frame after Escape must be non-empty");
 }
 
 // ===========================================================================
@@ -634,12 +700,15 @@ fn mega_e2e_all_samples_render_cleanly() {
 
     let mut screen = MermaidMegaShowcaseScreen::new();
     let sizes: &[(u16, u16)] = &[(80, 24), (120, 40), (200, 60)];
+    let mut distinct_120x40_hashes = std::collections::HashSet::new();
 
     // Render first sample at all sizes.
     for &(w, h) in sizes {
-        let mut pool = GraphemePool::new();
-        let mut frame = Frame::new(w, h, &mut pool);
-        screen.view(&mut frame, Rect::new(0, 0, w, h));
+        let hash = capture_frame_hash(&screen, w, h);
+        assert_ne!(hash, 0, "Sample 0 at {w}x{h} must render non-empty content");
+        if (w, h) == (120, 40) {
+            distinct_120x40_hashes.insert(hash);
+        }
     }
     log_jsonl("sample", &[("idx", "0"), ("rendered", "true")]);
 
@@ -649,14 +718,25 @@ fn mega_e2e_all_samples_render_cleanly() {
     for i in 1..35 {
         let _ = screen.update(&char_press('j'));
         for &(w, h) in sizes {
-            let mut pool = GraphemePool::new();
-            let mut frame = Frame::new(w, h, &mut pool);
-            screen.view(&mut frame, Rect::new(0, 0, w, h));
+            let hash = capture_frame_hash(&screen, w, h);
+            assert_ne!(
+                hash, 0,
+                "Sample {i} at {w}x{h} must render non-empty content"
+            );
+            if (w, h) == (120, 40) {
+                distinct_120x40_hashes.insert(hash);
+            }
         }
         if i % 5 == 0 {
             log_jsonl("sample", &[("idx", &i.to_string()), ("rendered", "true")]);
         }
     }
+
+    assert!(
+        distinct_120x40_hashes.len() >= 10,
+        "Cycling through 35 samples should produce at least 10 distinct 120x40 frames (got {})",
+        distinct_120x40_hashes.len()
+    );
 
     log_jsonl(
         "result",
@@ -920,11 +1000,11 @@ fn mega_e2e_generator_controls() {
 
     let mut screen = MermaidMegaShowcaseScreen::new();
 
-    // Navigate to the last sample (the generated one).
-    // We'll navigate far enough to reach it.
-    for _ in 0..35 {
-        let _ = screen.update(&char_press('j'));
-    }
+    // Select the generated sample directly so generator keys affect the active diagram.
+    assert!(
+        screen.select_sample_by_id_for_test("generated"),
+        "Generated sample must exist in MEGA_SAMPLES"
+    );
     let h_gen = capture_frame_hash(&screen, 120, 40);
     log_jsonl("generator", &[("initial_hash", &format!("{h_gen:016x}"))]);
 
@@ -950,6 +1030,19 @@ fn mega_e2e_generator_controls() {
     log_jsonl(
         "generator",
         &[("after_new_seed", &format!("{h_seed:016x}"))],
+    );
+
+    assert_ne!(
+        h_gen, h_more,
+        "Increasing generated node count ('U') must change the rendered frame"
+    );
+    assert_ne!(
+        h_more, h_dec,
+        "Decreasing generated node count ('u') must change the rendered frame"
+    );
+    assert_ne!(
+        h_dec, h_seed,
+        "Changing generator seed ('R') must change the rendered frame"
     );
 
     log_jsonl("result", &[("status", "passed")]);
@@ -1007,7 +1100,7 @@ fn mega_e2e_viewport_override() {
     log_jsonl("env", &[("test", "mega_e2e_viewport_override")]);
 
     let mut screen = MermaidMegaShowcaseScreen::new();
-    let _h0 = capture_frame_hash(&screen, 120, 40);
+    let h0 = capture_frame_hash(&screen, 120, 40);
 
     // Increase viewport width with ']'.
     let _ = screen.update(&char_press(']'));
@@ -1028,6 +1121,19 @@ fn mega_e2e_viewport_override() {
             ("after_dec", &format!("{h2:016x}")),
             ("after_reset", &format!("{h3:016x}")),
         ],
+    );
+
+    assert_ne!(
+        h0, h1,
+        "Increasing viewport override width (']') must change the rendered frame"
+    );
+    assert_ne!(
+        h1, h2,
+        "Decreasing viewport override width ('[') must change the rendered frame"
+    );
+    assert_ne!(
+        h3, 0,
+        "Frame after viewport override reset must be non-empty"
     );
 
     log_jsonl("result", &[("status", "passed")]);

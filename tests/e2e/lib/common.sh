@@ -77,6 +77,53 @@ require_python_module() {
     fi
 }
 
+# Shared prerequisite gate for E2E binaries and fixtures (bd-g00-root-epic-ewths.6.38).
+# Records a `missing_prerequisite` assertion and fails with exit code 2 unless
+# E2E_ALLOW_MISSING_PREREQUISITES=1 is explicitly set (logged).
+e2e_require() {
+    local kind="$1"
+    local target="$2"
+    local reason="${3:-missing prerequisite ($kind: $target)}"
+    local ok=1
+
+    case "$kind" in
+        bin|exe)
+            [[ -n "$target" && -x "$target" ]] || ok=0
+            ;;
+        file)
+            [[ -n "$target" && -f "$target" ]] || ok=0
+            ;;
+        dir)
+            [[ -n "$target" && -d "$target" ]] || ok=0
+            ;;
+        cmd|tool)
+            command -v "$target" >/dev/null 2>&1 || ok=0
+            ;;
+        *)
+            [[ -n "$target" && -e "$target" ]] || ok=0
+            ;;
+    esac
+
+    if (( ok == 1 )); then
+        return 0
+    fi
+
+    if [[ "${E2E_ALLOW_MISSING_PREREQUISITES:-0}" == "1" ]]; then
+        printf 'WARN: missing_prerequisite (opted out via E2E_ALLOW_MISSING_PREREQUISITES=1): %s (%s=%s)\n' \
+            "$reason" "$kind" "$target" >&2
+        if declare -f jsonl_assert >/dev/null 2>&1 && [[ -n "${E2E_JSONL_FILE:-}" ]]; then
+            jsonl_assert "missing_prerequisite" "skipped" "kind=$kind target=$target reason=$reason opt_out=1" || true
+        fi
+        return 1
+    fi
+
+    printf 'ERROR: missing_prerequisite: %s (%s=%s)\n' "$reason" "$kind" "$target" >&2
+    if declare -f jsonl_assert >/dev/null 2>&1 && [[ -n "${E2E_JSONL_FILE:-}" ]]; then
+        jsonl_assert "missing_prerequisite" "failed" "kind=$kind target=$target reason=$reason" || true
+    fi
+    return 2
+}
+
 resolve_python() {
     if command -v python3 >/dev/null 2>&1; then
         echo "python3"

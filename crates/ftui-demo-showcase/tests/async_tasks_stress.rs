@@ -28,7 +28,7 @@ use std::time::Instant;
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_demo_showcase::screens::Screen;
-use ftui_demo_showcase::screens::async_tasks::AsyncTaskManager;
+use ftui_demo_showcase::screens::async_tasks::{AsyncTaskManager, TaskState};
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 
@@ -435,14 +435,31 @@ fn scheduler_respects_max_concurrent_under_stress() {
     }
 
     // Run many ticks and verify max_concurrent is never exceeded
+    let mut max_observed_running = 0usize;
     for tick in 0..200 {
         mgr.tick(tick);
+        let running = mgr
+            .tasks()
+            .iter()
+            .filter(|t| t.state == TaskState::Running)
+            .count();
+        max_observed_running = max_observed_running.max(running);
+        assert!(
+            running <= mgr.max_concurrent(),
+            "Tick {tick}: running count ({running}) exceeded max_concurrent ({})",
+            mgr.max_concurrent()
+        );
     }
+    assert!(
+        max_observed_running > 0,
+        "Scheduler should have started running tasks during 200 ticks"
+    );
 
     log_jsonl(&serde_json::json!({
         "test": "scheduler_respects_max_concurrent_under_stress",
         "ticks_run": 200,
         "tasks_spawned": 50,
+        "max_observed_running": max_observed_running,
         "status": "passed",
     }));
 }
@@ -453,7 +470,7 @@ fn scheduler_policy_determinism() {
     // Run the same sequence twice and verify identical outcomes
     let mut results = Vec::new();
 
-    for run in 0..2 {
+    for _run in 0..2 {
         let mut mgr = AsyncTaskManager::new();
 
         // Fixed sequence of operations
@@ -466,8 +483,18 @@ fn scheduler_policy_determinism() {
             mgr.tick(tick);
         }
 
-        results.push(run);
+        let snapshot: Vec<(u32, TaskState, u64, u64)> = mgr
+            .tasks()
+            .iter()
+            .map(|t| (t.id, t.state, t.elapsed_ticks, t.estimated_ticks))
+            .collect();
+        results.push(snapshot);
     }
+
+    assert_eq!(
+        results[0], results[1],
+        "Two identical runs of AsyncTaskManager must produce identical task state trajectories"
+    );
 
     log_jsonl(&serde_json::json!({
         "test": "scheduler_policy_determinism",
@@ -479,7 +506,7 @@ fn scheduler_policy_determinism() {
 #[test]
 fn all_scheduler_policies_complete_work() {
     let _guard = stress_lock();
-    for policy_idx in 0..4 {
+    for policy_idx in 0..6 {
         let mut mgr = AsyncTaskManager::new();
 
         // Cycle to the desired policy
@@ -493,9 +520,21 @@ fn all_scheduler_policies_complete_work() {
         }
 
         // Run until all tasks complete (or timeout)
-        for tick in 0..500 {
+        for tick in 0..1000 {
             mgr.tick(tick);
         }
+
+        let incomplete = mgr
+            .tasks()
+            .iter()
+            .filter(|t| matches!(t.state, TaskState::Queued | TaskState::Running))
+            .count();
+        assert_eq!(
+            incomplete,
+            0,
+            "Policy {:?} (idx={policy_idx}) left {incomplete} tasks incomplete after 1000 ticks",
+            mgr.policy()
+        );
 
         log_jsonl(&serde_json::json!({
             "test": "all_scheduler_policies_complete_work",
@@ -673,15 +712,32 @@ fn max_tasks_limit_enforced() {
     // Spawn more than MAX_TASKS (100)
     for _ in 0..150 {
         mgr.update(&press(KeyCode::Char('n')));
+        assert!(
+            mgr.tasks().len() <= 100,
+            "Task count ({}) exceeded MAX_TASKS (100)",
+            mgr.tasks().len()
+        );
         // Run ticks to complete some tasks
         for tick in 0..5 {
             mgr.tick(tick);
         }
+        assert!(
+            mgr.tasks().len() <= 100,
+            "Task count ({}) exceeded MAX_TASKS (100) after tick",
+            mgr.tasks().len()
+        );
     }
+
+    assert_eq!(
+        mgr.tasks().len(),
+        100,
+        "After 150 spawns, task history should be capped at MAX_TASKS (100)"
+    );
 
     log_jsonl(&serde_json::json!({
         "test": "max_tasks_limit_enforced",
         "attempted_spawns": 150,
+        "final_task_count": mgr.tasks().len(),
         "status": "passed",
     }));
 }

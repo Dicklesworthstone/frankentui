@@ -66,14 +66,24 @@ resolve_demo_bin() {
     return 1
 }
 
-DEMO_BIN=""
-if ! DEMO_BIN="$(resolve_demo_bin)"; then
+DEMO_BIN="$(resolve_demo_bin)" || true
+rc=0
+e2e_require bin "$DEMO_BIN" "ftui-demo-showcase binary missing" || rc=$?
+if (( rc != 0 )); then
     LOG_FILE="$E2E_LOG_DIR/toast_system_missing.log"
     for t in toast_screen_loads toast_trigger_basic toast_multiple_stack toast_dismiss_key toast_auto_dismiss toast_priority_order toast_rapid_trigger toast_clear_all toast_persistent_urgent toast_queue_overflow; do
-        log_test_skip "$t" "ftui-demo-showcase binary missing"
-        record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
+        if (( rc == 1 )); then
+            log_test_skip "$t" "ftui-demo-showcase binary missing"
+            record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
+        else
+            log_test_fail "$t" "ftui-demo-showcase binary missing"
+            record_result "$t" "failed" 0 "$LOG_FILE" "missing_prerequisite: ftui-demo-showcase binary missing"
+        fi
     done
-    exit 0
+    if (( rc == 1 )); then
+        exit 0
+    fi
+    exit "$rc"
 fi
 
 # Screen numbers shift whenever a screen is added. A hardcoded 16 had drifted
