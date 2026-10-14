@@ -738,15 +738,16 @@ fn readme_frame_arena_snippet() {
     assert_in_readme(&["frame_arena_alloc", "frame_arena_reset"]);
 }
 
-/// Every version `README.md` or `docs/getting-started.md` quotes for a
-/// workspace crate must be this workspace's version.
+/// Every version `README.md`, `docs/getting-started.md`, or `docs/telemetry.md`
+/// quotes (or names via `target X.Y.Z`) for a workspace crate must be this
+/// workspace's version.
 ///
 /// This exists because the drift is real and recent: a 0.8.0 -> 0.9.0 bump
 /// updated all 20 manifests and four of the five README version references,
 /// leaving `ftui-runtime = { version = "0.8" }` in the experimental-modules
-/// snippet and `ftui = "=0.7.0"` in `docs/getting-started.md`. A reader copying
-/// that line pins a version that no longer matches the crate they are reading
-/// about, and nothing failed.
+/// snippet and `0.7.0` pins in `docs/getting-started.md` and `docs/telemetry.md`.
+/// A reader copying that line pins a version that no longer matches the crate
+/// they are reading about, and nothing failed.
 ///
 /// Both forms are accepted, since the docs legitimately use each:
 /// a full `0.9.0` pin and a `0.9` minor-series requirement.
@@ -754,24 +755,31 @@ fn readme_frame_arena_snippet() {
 fn readme_versions_match_the_workspace() {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     const GETTING_STARTED: &str = include_str!("../../../docs/getting-started.md");
+    const TELEMETRY: &str = include_str!("../../../docs/telemetry.md");
     let (major_minor, _) = VERSION
         .rsplit_once('.')
         .expect("crate version should be major.minor.patch");
 
+    let is_version_token = |token: &str| {
+        token
+            .split('.')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+            && token.contains('.')
+    };
+
     for (doc_name, doc_text, min_expected) in [
         ("README.md", README, 2_usize),
-        ("docs/getting-started.md", GETTING_STARTED, 5_usize),
+        ("docs/getting-started.md", GETTING_STARTED, 7_usize),
+        ("docs/telemetry.md", TELEMETRY, 6_usize),
     ] {
         let mut checked = 0;
         for (line_no, line) in doc_text.lines().enumerate() {
-            // `ftui... = "=0.9.0"` / `version = "0.9.0"` / `version = "0.9"`
+            // 1. Quoted pins: `ftui... = "=0.9.0"` / `version = "0.9.0"` / `version = "0.9"`
             for quoted in line.split('"').skip(1).step_by(2) {
                 let candidate = quoted.trim_start_matches('=');
-                let looks_like_version = candidate
-                    .split('.')
-                    .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
-                    && candidate.contains('.');
-                if !looks_like_version || !line.contains("ftui") {
+                if !is_version_token(candidate)
+                    || !(line.contains("ftui") || line.contains("replace `version"))
+                {
                     continue;
                 }
                 assert!(
@@ -782,6 +790,25 @@ fn readme_versions_match_the_workspace() {
                     line.trim()
                 );
                 checked += 1;
+            }
+
+            // 2. Unquoted prose target lines: `These examples target 0.9.0.`
+            if let Some((_, after_target)) = line.split_once("target ") {
+                let raw_token = after_target
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_end_matches(['.', ':', ',', ';']);
+                if is_version_token(raw_token) {
+                    assert!(
+                        raw_token == VERSION || raw_token == major_minor,
+                        "{doc_name}:{} targets {raw_token:?} in prose, but this \
+                         workspace is {VERSION}. Line: {}",
+                        line_no + 1,
+                        line.trim()
+                    );
+                    checked += 1;
+                }
             }
         }
 

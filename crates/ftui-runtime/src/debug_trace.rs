@@ -3,13 +3,18 @@
 //! Zero-cost debug tracing controlled by environment variable.
 //!
 //! Enable runtime debug output by setting `FTUI_DEBUG_TRACE=1` before launching
-//! your application. When disabled (the default), the trace checks compile down
-//! to a single static bool load with no other overhead.
+//! your application, with stderr redirected. When disabled (the default), the
+//! trace checks compile down to a single static bool load with no other
+//! overhead.
+//!
+//! The trace stays off while stderr is a terminal: that is the terminal the UI
+//! draws on, and a trace line written there lands between frames
+//! (bd-g00-root-epic-ewths.33.4).
 //!
 //! # Usage
 //!
 //! ```bash
-//! FTUI_DEBUG_TRACE=1 cargo run -p ftui-demo-showcase
+//! FTUI_DEBUG_TRACE=1 cargo run -p ftui-demo-showcase 2>trace.log
 //! ```
 //!
 //! This module provides `debug_trace!` macro for conditional debug output:
@@ -24,10 +29,17 @@ use web_time::Instant;
 
 /// Static flag checked once at startup. After initialization, this is just a bool load.
 static DEBUG_TRACE_ENABLED: LazyLock<bool> = LazyLock::new(|| {
-    std::env::var("FTUI_DEBUG_TRACE")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    trace_enabled(
+        std::env::var("FTUI_DEBUG_TRACE").ok().as_deref(),
+        std::io::IsTerminal::is_terminal(&std::io::stderr()),
+    )
 });
+
+/// `FTUI_DEBUG_TRACE` is `1` or `true`, and stderr is not a terminal.
+fn trace_enabled(flag: Option<&str>, stderr_is_terminal: bool) -> bool {
+    let requested = flag.is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    requested && !stderr_is_terminal
+}
 
 /// Startup timestamp for relative timing in debug output.
 static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
@@ -51,8 +63,9 @@ pub fn elapsed_ms() -> u64 {
 
 /// Conditionally print debug trace output to stderr.
 ///
-/// When `FTUI_DEBUG_TRACE=1` is set, prints timestamped debug messages.
-/// When disabled, compiles to a single bool check (effectively zero cost).
+/// When `FTUI_DEBUG_TRACE=1` is set and stderr is not a terminal, prints
+/// timestamped debug messages. When disabled, compiles to a single bool check
+/// (effectively zero cost).
 ///
 /// # Example
 ///
@@ -76,6 +89,18 @@ macro_rules! debug_trace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trace_needs_the_flag_and_a_stderr_that_is_not_the_terminal() {
+        assert!(trace_enabled(Some("1"), false));
+        assert!(trace_enabled(Some("TRUE"), false));
+        assert!(
+            !trace_enabled(Some("1"), true),
+            "stderr is the UI's terminal"
+        );
+        assert!(!trace_enabled(Some("0"), false));
+        assert!(!trace_enabled(None, false));
+    }
 
     #[test]
     fn test_is_enabled_returns_bool() {

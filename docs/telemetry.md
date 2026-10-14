@@ -13,11 +13,11 @@ observability without impacting default performance.
 
 ### 1. Enable the Feature
 
-Add the `telemetry` feature to your Cargo dependency. These examples target 0.7.0:
+Add the `telemetry` feature to your Cargo dependency. These examples target 0.9.0:
 
 ```toml
 [dependencies]
-ftui-runtime = { version = "=0.7.0", features = ["telemetry"] }
+ftui-runtime = { version = "=0.9.0", features = ["telemetry"] }
 ```
 
 > Note: `TelemetryConfig` lives in `ftui-runtime` and is **not** re-exported
@@ -28,11 +28,11 @@ Optional: enable richer span emission in runtime + widgets:
 
 ```toml
 [dependencies]
-ftui-runtime = { version = "=0.7.0", features = ["telemetry", "tracing"] }
-ftui-widgets = { version = "=0.7.0", features = ["tracing"] }
+ftui-runtime = { version = "=0.9.0", features = ["telemetry", "tracing"] }
+ftui-widgets = { version = "=0.9.0", features = ["tracing"] }
 ```
 
-For a local checkout, replace `version = "=0.7.0"` with
+For a local checkout, replace `version = "=0.9.0"` with
 `path = "../frankentui/crates/ftui-runtime"` (or the corresponding widget crate
 path), keeping the same features.
 
@@ -308,7 +308,7 @@ feature in addition to any telemetry features you use:
 
 ```toml
 [dependencies]
-ftui-runtime = { version = "=0.7.0", features = ["telemetry", "experimental"] }
+ftui-runtime = { version = "=0.9.0", features = ["telemetry", "experimental"] }
 ```
 
 ```rust

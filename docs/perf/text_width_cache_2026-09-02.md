@@ -31,3 +31,22 @@ a table's hot CJK labels. `FTUI_WIDTH_CACHE=0` disables it; correctness is pinne
 
 Baseline row to add to `tests/baseline.json` when the perf gate (G25) lands:
 `text_width_non_ascii` with p99 budget 30 ns per cluster at steady state.
+
+---
+
+## `display_width` whole-line routing: paired same-invocation benchmark (2026-10-14, `bd-g00-root-epic-ewths.31.11`)
+
+Command: `RCH_CARGO_WRAPPER_BYPASS=1 cargo bench -p ftui-core --bench text_width_bench -- "text_width/display_width" --warm-up-time 1 --measurement-time 1`
+
+Compares three `display_width(text)` strategies in the same invocation over 32-line corpora (4 sample lines cycled 8x each; steady state after 1 warm-up pass, 100% cache hit rate on repeat frames):
+1. `uncached_direct`: ASCII fast-path + uncached `grapheme_width_uncached` sum.
+2. `cached_per_cluster` (selected production path): ASCII fast-path + `text.graphemes(true).map(grapheme_width).sum()` (ASCII graphemes answered inline, non-ASCII graphemes `<= 128B` via S3-FIFO).
+3. `hybrid_multibyte_only`: S3-FIFO only for `>= 3`-byte clusters, uncached for 2-byte UTF-8.
+
+| Corpus (32 lines) | `uncached_direct` median [95% CI] | `cached_per_cluster` median [95% CI] | `hybrid_multibyte_only` median [95% CI] | Winner & Speedup vs Uncached |
+|---|---|---|---|---|
+| `cjk_table` | 97.5 µs [87.6, 109.0 µs] | **55.7 µs** [49.9, 62.3 µs] | 53.5 µs [48.2, 59.3 µs] | `cached_per_cluster` (**1.75x**) |
+| `emoji_logs` | 101.5 µs [91.8, 112.2 µs] | **86.1 µs** [77.7, 95.5 µs] | 84.3 µs [76.3, 92.9 µs] | `cached_per_cluster` (**1.18x**) |
+| `mixed_latin1` | 59.7 µs [54.3, 66.1 µs] | **45.6 µs** [42.7, 49.2 µs] | 61.6 µs [56.6, 67.5 µs] | `cached_per_cluster` (**1.31x** vs uncached, **1.35x** vs hybrid) |
+| `arabic` | 123.1 µs [115.8, 131.4 µs] | **66.2 µs** [60.8, 72.6 µs] | 150.2 µs [135.5, 165.7 µs] | `cached_per_cluster` (**1.86x** vs uncached, **2.27x** vs hybrid) |
+

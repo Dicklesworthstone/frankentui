@@ -343,10 +343,71 @@ thread_local! {
     static PANIC_CLEANUP_SUPPRESS_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+/// Deferred reports kept at most; later ones are only counted.
+const MAX_DEFERRED_PANIC_REPORTS: usize = 16;
+
+/// Reports of panics recovered while a terminal session was live, waiting for
+/// the terminal to be restored (see [`install_chained_panic_hook`]).
+struct DeferredPanicReports {
+    reports: Vec<String>,
+    dropped: usize,
+}
+
+static DEFERRED_PANIC_REPORTS: Mutex<DeferredPanicReports> = Mutex::new(DeferredPanicReports {
+    reports: Vec::new(),
+    dropped: 0,
+});
+
+fn defer_panic_report(info: &std::panic::PanicHookInfo<'_>) {
+    let thread = std::thread::current();
+    // The std hook's wording: `thread 'name' panicked at file:line:col:\nmsg`.
+    let report = format!("thread '{}' {info}", thread.name().unwrap_or("<unnamed>"));
+    let mut deferred = DEFERRED_PANIC_REPORTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if deferred.reports.len() < MAX_DEFERRED_PANIC_REPORTS {
+        deferred.reports.push(report);
+    } else {
+        deferred.dropped = deferred.dropped.saturating_add(1);
+    }
+}
+
+/// Write, and forget, the reports of panics recovered while a terminal
+/// session was live.
+///
+/// Every teardown path calls this once the terminal is back in cooked mode,
+/// with `stderr`; nothing is written when no report is waiting.
+pub fn write_deferred_panic_reports(out: &mut impl io::Write) -> io::Result<()> {
+    let (reports, dropped) = {
+        let mut deferred = DEFERRED_PANIC_REPORTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (
+            std::mem::take(&mut deferred.reports),
+            std::mem::take(&mut deferred.dropped),
+        )
+    };
+    if reports.is_empty() && dropped == 0 {
+        return Ok(());
+    }
+    for report in &reports {
+        writeln!(
+            out,
+            "ftui: recovered from a panic while the terminal UI was running:\n{report}"
+        )?;
+    }
+    if dropped > 0 {
+        writeln!(out, "ftui: {dropped} more recovered panics were not kept")?;
+    }
+    out.flush()
+}
+
 /// Run a closure while suppressing best-effort terminal cleanup in panic hooks.
 ///
-/// Use this around intentional `catch_unwind` boundaries. Panic hooks still run,
-/// but terminal cleanup is skipped for panics that are expected to be recovered.
+/// Use this around intentional `catch_unwind` boundaries. Terminal cleanup is
+/// skipped for panics that are expected to be recovered, and while a terminal
+/// session is live their reports wait for its teardown instead of being
+/// written over the UI (see [`install_chained_panic_hook`]).
 /// Suppression is per thread: a thread spawned inside `f` is not covered.
 ///
 /// This lives here, not in the Crossterm-only `terminal_session`, because both
@@ -394,9 +455,16 @@ pub fn panic_cleanup_suppressed() -> bool {
 /// installed hook.
 ///
 /// Guaranteed to install at most once per `name`. When a panic occurs outside
-/// [`with_panic_cleanup_suppressed`], `f()` is executed; the previously
-/// installed panic hook runs either way.
-pub fn install_chained_panic_hook(name: &'static str, f: fn()) {
+/// [`with_panic_cleanup_suppressed`], `cleanup()` runs, then any deferred
+/// reports are written to stderr, then the previously installed hook runs.
+///
+/// Inside [`with_panic_cleanup_suppressed`] (a panic the caller recovers from)
+/// there is no cleanup, and while `session_live()` holds the previous hook is
+/// not called either: the std default hook writes its report to stderr, which
+/// is the terminal the UI is drawing on. The report is kept instead and
+/// written by [`write_deferred_panic_reports`] once the teardown has restored
+/// the terminal, or before the report of a panic that is not recovered.
+pub fn install_chained_panic_hook(name: &'static str, cleanup: fn(), session_live: fn() -> bool) {
     let mut installed = match INSTALLED_HOOKS.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -407,12 +475,19 @@ pub fn install_chained_panic_hook(name: &'static str, f: fn()) {
     installed.push(name);
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        // A recovered panic must not tear down a session that keeps running.
-        // Checking here covers every cleanup hook: ftui-tty's did not check,
-        // so under the native backend each panic a task or screen recovered
-        // from left raw mode and the alternate screen mid-run.
-        if !panic_cleanup_suppressed() {
-            f();
+        if panic_cleanup_suppressed() {
+            // A recovered panic must not tear down a session that keeps
+            // running (ftui-tty's hook did not check, so under the native
+            // backend each panic a task or screen recovered from left raw
+            // mode and the alternate screen mid-run), nor write over it
+            // (bd-g00-root-epic-ewths.33.4).
+            if session_live() {
+                defer_panic_report(info);
+                return;
+            }
+        } else {
+            cleanup();
+            let _ = write_deferred_panic_reports(&mut io::stderr());
         }
         previous(info);
     }));
@@ -504,7 +579,7 @@ mod tests {
         fn count_cleanup() {
             CLEANUPS.with(|n| n.set(n.get() + 1));
         }
-        install_chained_panic_hook("test-chained-cleanup-gate", count_cleanup);
+        install_chained_panic_hook("test-chained-cleanup-gate", count_cleanup, || false);
 
         let recovered =
             with_panic_cleanup_suppressed(|| std::panic::catch_unwind(|| panic!("recovered")));
@@ -518,6 +593,60 @@ mod tests {
         let unrecovered = std::panic::catch_unwind(|| panic!("not suppressed"));
         assert!(unrecovered.is_err());
         assert_eq!(CLEANUPS.with(std::cell::Cell::get), 1);
+    }
+
+    /// While a session is live, a recovered panic's report is kept instead of
+    /// going to the previous hook (the std one writes it over the UI), and
+    /// the teardown writes it once (bd-g00-root-epic-ewths.33.4).
+    #[cfg(not(panic = "abort"))]
+    #[test]
+    fn recovered_panic_report_waits_for_the_teardown_while_a_session_is_live() {
+        use std::cell::Cell;
+        // Per thread, so panics in parallel tests cannot interfere.
+        thread_local! {
+            static LIVE: Cell<bool> = const { Cell::new(false) };
+            static PREVIOUS_HOOK_CALLS: Cell<u32> = const { Cell::new(0) };
+        }
+        let std_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            PREVIOUS_HOOK_CALLS.with(|n| n.set(n.get() + 1));
+            std_hook(info);
+        }));
+        install_chained_panic_hook("test-deferred-report", || {}, || LIVE.with(Cell::get));
+
+        LIVE.with(|live| live.set(true));
+        let recovered = with_panic_cleanup_suppressed(|| {
+            std::panic::catch_unwind(|| panic!("recovered mid-frame"))
+        });
+        assert!(recovered.is_err());
+        assert_eq!(
+            PREVIOUS_HOOK_CALLS.with(Cell::get),
+            0,
+            "the previous hook would write the report over the live UI"
+        );
+
+        let mut out = Vec::new();
+        write_deferred_panic_reports(&mut out).expect("writes to a Vec");
+        let text = String::from_utf8(out).expect("utf-8 report");
+        assert!(text.contains("recovered mid-frame"), "{text}");
+        assert!(
+            text.contains("session_teardown.rs:"),
+            "the report keeps the panic location: {text}"
+        );
+        let mut again = Vec::new();
+        write_deferred_panic_reports(&mut again).expect("writes to a Vec");
+        assert!(
+            !String::from_utf8_lossy(&again).contains("recovered mid-frame"),
+            "a report is written once"
+        );
+
+        // With no live session the previous hook reports it, as before.
+        LIVE.with(|live| live.set(false));
+        let recovered = with_panic_cleanup_suppressed(|| {
+            std::panic::catch_unwind(|| panic!("recovered without a session"))
+        });
+        assert!(recovered.is_err());
+        assert_eq!(PREVIOUS_HOOK_CALLS.with(Cell::get), 1);
     }
 
     #[test]
@@ -643,8 +772,8 @@ mod tests {
             HOOK_B_RAN.store(true, Ordering::SeqCst);
         }
 
-        install_chained_panic_hook("test-hook-a", hook_a);
-        install_chained_panic_hook("test-hook-b", hook_b);
+        install_chained_panic_hook("test-hook-a", hook_a, || false);
+        install_chained_panic_hook("test-hook-b", hook_b, || false);
 
         // Suppress default stderr output from panic hook during test.
         let prev_hook = std::panic::take_hook();
@@ -675,7 +804,7 @@ mod tests {
             }
         }
 
-        install_chained_panic_hook("test-unwind-hook", session_hook);
+        install_chained_panic_hook("test-unwind-hook", session_hook, || false);
 
         TEST_SESSION_ACTIVE.store(true, Ordering::SeqCst);
         let handle = std::thread::spawn(|| {
