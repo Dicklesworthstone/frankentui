@@ -520,10 +520,17 @@ trait ProcessEndpoint: Send + 'static {}
 #[cfg(not(unix))]
 impl<T: Send + 'static> ProcessEndpoint for T {}
 
+/// Maximum bytes written to a canonical PTY before flushing with `VEOF` so
+/// the kernel's 4095-byte canonical buffer advances `canon_head` and applies
+/// normal flow control instead of discarding bytes.
+const PTY_CANONICAL_CHUNK_BYTES: usize = 2048;
+
 /// Write queued lines, then `end_of_input` once input is closed.
 ///
 /// A pipe signals EOF by closing, so its `end_of_input` is empty. A PTY has no
-/// write side to close: EOF is the VEOF byte (Ctrl-D) at the start of a line.
+/// write side to close: EOF is the VEOF byte (Ctrl-D) at the start of a line,
+/// and intermediate `VEOF` flushes on a non-empty canonical buffer deliver
+/// lines longer than the 4095-byte kernel canonical line limit without newline.
 fn write_process_input<W: Write + ProcessEndpoint>(
     stdin: W,
     receiver: mpsc::Receiver<Box<str>>,
@@ -540,8 +547,22 @@ fn write_process_input<W: Write + ProcessEndpoint>(
                 if stop.is_stopped() {
                     return Err(io::Error::other("queued stdin was canceled before writing"));
                 }
-                stdin.write_all(line.as_bytes())?;
-                stdin.write_all(b"\n")?;
+                if end_of_input.is_empty() {
+                    stdin.write_all(line.as_bytes())?;
+                    stdin.write_all(b"\n")?;
+                } else {
+                    for segment in line.as_bytes().split(|&byte| byte == b'\n') {
+                        let mut rest = segment;
+                        while rest.len() > PTY_CANONICAL_CHUNK_BYTES {
+                            let (chunk, tail) = rest.split_at(PTY_CANONICAL_CHUNK_BYTES);
+                            stdin.write_all(chunk)?;
+                            stdin.write_all(end_of_input)?;
+                            rest = tail;
+                        }
+                        stdin.write_all(rest)?;
+                        stdin.write_all(b"\n")?;
+                    }
+                }
             }
             Err(mpsc::RecvTimeoutError::Timeout) if stop.is_stopped() => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -619,7 +640,7 @@ fn prepare_pty(
 ) -> io::Result<PtyEndpoints> {
     use rustix::fs::{Mode, OFlags};
     use rustix::pty::OpenptFlags;
-    use rustix::termios::{LocalModes, OptionalActions, OutputModes};
+    use rustix::termios::{InputModes, LocalModes, OptionalActions, OutputModes};
 
     #[cfg(any(
         target_os = "linux",
@@ -649,7 +670,10 @@ fn prepare_pty(
         Mode::empty(),
     )?;
     let mut termios = rustix::termios::tcgetattr(&slave)?;
-    termios.local_modes.remove(LocalModes::ECHO);
+    termios
+        .local_modes
+        .remove(LocalModes::ECHO | LocalModes::ECHONL | LocalModes::IEXTEN);
+    termios.input_modes.remove(InputModes::IXON);
     termios.output_modes.remove(OutputModes::ONLCR);
     rustix::termios::tcsetattr(&slave, OptionalActions::Now, &termios)?;
     resize_pty(&master, cols, rows)?;
@@ -854,10 +878,21 @@ impl std::fmt::Display for ProcessReadError {
     }
 }
 
+#[cfg(test)]
 fn read_process_line<R: BufRead>(
     reader: &mut R,
     line: &mut Vec<u8>,
     stop: &StopSignal,
+    preview: Option<&mut dyn FnMut(&str) -> bool>,
+) -> Result<Option<String>, ProcessReadError> {
+    read_process_line_mode(reader, line, stop, false, preview)
+}
+
+fn read_process_line_mode<R: BufRead>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    stop: &StopSignal,
+    cr_rewinds: bool,
     mut preview: Option<&mut dyn FnMut(&str) -> bool>,
 ) -> Result<Option<String>, ProcessReadError> {
     line.clear();
@@ -877,25 +912,74 @@ fn read_process_line<R: BufRead>(
             }
             break;
         }
-        let end = available.iter().position(|byte| *byte == b'\n');
-        let count = end.unwrap_or(available.len());
-        let payload = &available[..count];
-        let total = line.len().saturating_add(count);
-        // Retain one extra CR only while it could still be part of CRLF.
-        // Check before appending so allocation never follows untrusted length.
-        if total > MAX_PROCESS_LINE_BYTES
-            && (total != MAX_PROCESS_LINE_BYTES + 1
-                || payload.last().or_else(|| line.last()) != Some(&b'\r'))
-        {
-            return Err(ProcessReadError::LineTooLong);
-        }
-        line.extend_from_slice(payload);
-        reader.consume(count + usize::from(end.is_some()));
-        if end.is_some() {
-            if line.last() == Some(&b'\r') {
-                line.pop();
+        if cr_rewinds && line.last() == Some(&b'\r') {
+            match available[0] {
+                b'\r' => {
+                    let crs = available.iter().take_while(|&&byte| byte == b'\r').count();
+                    reader.consume(crs);
+                    continue;
+                }
+                b'\n' => {
+                    reader.consume(1);
+                    line.pop();
+                    break;
+                }
+                _ => {
+                    std::str::from_utf8(line).map_err(ProcessReadError::InvalidUtf8)?;
+                    line.clear();
+                    previewed_bytes = 0;
+                }
             }
-            break;
+        }
+        if cr_rewinds {
+            let stop_pos = available
+                .iter()
+                .position(|&byte| byte == b'\n' || byte == b'\r');
+            let count = stop_pos.unwrap_or(available.len());
+            let payload = &available[..count];
+            let total = line.len().saturating_add(count);
+            if total > MAX_PROCESS_LINE_BYTES {
+                return Err(ProcessReadError::LineTooLong);
+            }
+            line.extend_from_slice(payload);
+            match available.get(count) {
+                Some(&b'\n') => {
+                    reader.consume(count + 1);
+                    break;
+                }
+                Some(&b'\r') => {
+                    let crs = available[count..]
+                        .iter()
+                        .take_while(|&&byte| byte == b'\r')
+                        .count();
+                    line.push(b'\r');
+                    reader.consume(count + crs);
+                }
+                _ => {
+                    reader.consume(count);
+                }
+            }
+        } else {
+            let end = available.iter().position(|byte| *byte == b'\n');
+            let count = end.unwrap_or(available.len());
+            let payload = &available[..count];
+            let total = line.len().saturating_add(count);
+            // Retain one extra CR only while it could still be part of CRLF.
+            // Check before appending so allocation never follows untrusted length.
+            if total > MAX_PROCESS_LINE_BYTES
+                && (total != MAX_PROCESS_LINE_BYTES + 1
+                    || payload.last().or_else(|| line.last()) != Some(&b'\r'))
+            {
+                return Err(ProcessReadError::LineTooLong);
+            }
+            line.extend_from_slice(payload);
+            reader.consume(count + usize::from(end.is_some()));
+            if end.is_some() {
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                break;
+            }
         }
         if let Some(preview) = preview.as_mut() {
             let prefix = match std::str::from_utf8(line) {
@@ -936,6 +1020,7 @@ fn forward_lines<R: Read, M: Send + 'static>(
     sender: SubscriptionSender<M>,
     stop: StopSignal,
     partial_output: bool,
+    cr_rewinds: bool,
     make_msg: impl Fn(String) -> M,
     make_partial: impl Fn(String) -> M,
 ) -> Result<(), ProcessReadError> {
@@ -948,10 +1033,11 @@ fn forward_lines<R: Read, M: Send + 'static>(
         let message = make_partial(prefix.to_owned());
         !stop.is_stopped() && sender.send(message).is_ok()
     };
-    while let Some(line) = read_process_line(
+    while let Some(line) = read_process_line_mode(
         &mut reader,
         &mut line,
         &stop,
+        cr_rewinds,
         partial_output.then_some(&mut preview as &mut dyn FnMut(&str) -> bool),
     )? {
         if stop.is_stopped() {
@@ -970,6 +1056,7 @@ struct LineReaders<M: Send + 'static> {
     sender: SubscriptionSender<M>,
     stop: StopSignal,
     partial_output: bool,
+    cr_rewinds: bool,
     make_msg: std::sync::Arc<dyn Fn(ProcessEvent) -> M + Send + Sync>,
 }
 
@@ -984,6 +1071,7 @@ impl<M: Send + 'static> LineReaders<M> {
         let sender = self.sender.clone();
         let stop = self.stop.clone();
         let partial_output = self.partial_output;
+        let cr_rewinds = self.cr_rewinds;
         let make_msg = std::sync::Arc::clone(&self.make_msg);
         std::thread::spawn(move || {
             #[cfg(unix)]
@@ -993,6 +1081,7 @@ impl<M: Send + 'static> LineReaders<M> {
                 sender,
                 stop,
                 partial_output,
+                cr_rewinds,
                 |line| (make_msg.as_ref())(line_event(line)),
                 |prefix| (make_msg.as_ref())(partial_event(prefix)),
             )
@@ -1378,11 +1467,15 @@ impl<M: Send + 'static> ProcessSubscription<M> {
     /// The child's stdout and stderr are the PTY, so `isatty` holds and
     /// programs keep their terminal behavior: color, line-buffered output,
     /// progress lines. Both streams arrive as [`ProcessEvent::Stdout`] and
-    /// [`ProcessEvent::StdoutPartial`]. With [`stdin`](Self::stdin), stdin is
-    /// the PTY as well, each line is written as typed input, and closing input
-    /// sends one end-of-file (Ctrl-D); the line discipline holds at most 4095
-    /// bytes of one unfinished line on Linux. Without it, stdin is `/dev/null`.
-    /// Echo is off and LF is not translated to CRLF; a child may change that.
+    /// [`ProcessEvent::StdoutPartial`], and standalone carriage returns (`\r`)
+    /// rewind the active line so TTY progress updates replace the current
+    /// preview rather than accumulating across frames. With
+    /// [`stdin`](Self::stdin), stdin is the PTY as well, each line is written
+    /// as typed input (chunked with canonical `VEOF` flushes so lines up to
+    /// [`MAX_PROCESS_LINE_BYTES`] are not truncated by the kernel's 4095-byte
+    /// canonical buffer), and closing input sends one end-of-file (Ctrl-D).
+    /// Without it, stdin is `/dev/null`. Echo is off and LF is not translated
+    /// to CRLF; a child may change that.
     ///
     /// The child leads a new session with no controlling terminal, so it
     /// cannot reach the host terminal through `/dev/tty`. Its process group
@@ -1611,6 +1704,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             sender: sender.with_stop_signal(reader_stop.clone()),
             stop: reader_stop.clone(),
             partial_output: self.partial_output,
+            cr_rewinds: self.pty,
             make_msg: std::sync::Arc::clone(&make_msg_ref),
         };
         let poll_interval = Duration::from_millis(50);
@@ -3054,6 +3148,7 @@ mod tests {
                     SubscriptionSender::new(sender, stop.clone()),
                     stop,
                     true,
+                    false,
                     |line| format!("{stream}:line:{line}"),
                     |prefix| format!("{stream}:partial:{prefix}"),
                 )
@@ -5430,5 +5525,90 @@ os._exit(7)
                 events.len()
             );
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_progress_carriage_returns_over_64k_rewind_without_line_too_long() {
+        // 1. Reader-level check across arbitrary chunk sizes, including leading
+        // CR, repeated CRs, CRLF, and >100 KiB of CR-delimited progress frames.
+        let mut stream = Vec::new();
+        for step in 1..=5_000 {
+            stream.extend_from_slice(format!("\rprogress {step:04} of 5000").as_bytes());
+        }
+        stream.extend_from_slice(b"\r\ndone\r\n");
+        assert!(stream.len() > 100 * 1024);
+
+        for capacity in [1, 7, 64, 8192] {
+            let mut reader = io::BufReader::with_capacity(capacity, stream.as_slice());
+            let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
+            let (stop, _trigger) = StopSignal::new();
+            let mut last_preview = String::new();
+            let mut preview = |prefix: &str| {
+                last_preview.clear();
+                last_preview.push_str(prefix);
+                true
+            };
+            let first =
+                read_process_line_mode(&mut reader, &mut pending, &stop, true, Some(&mut preview))
+                    .unwrap();
+            assert_eq!(first.as_deref(), Some("progress 5000 of 5000"));
+            assert_eq!(last_preview, "progress 5000 of 5000");
+            let second =
+                read_process_line_mode(&mut reader, &mut pending, &stop, true, None).unwrap();
+            assert_eq!(second.as_deref(), Some("done"));
+            assert_eq!(
+                read_process_line_mode(&mut reader, &mut pending, &stop, true, None).unwrap(),
+                None
+            );
+        }
+
+        // 2. Real PTY child emitting >100 KiB of CR-delimited progress updates
+        // before LF completes normally without LineTooLong termination.
+        let script = "python3 -u -c 'import sys; \
+            [sys.stdout.write(f\"step {i:04d}-{\"x\"*20}\\r\") for i in range(1, 4001)]; \
+            sys.stdout.write(\"step 4000-done\\r\\n\")'";
+        let events = run_to_end(pty_shell(script).partial_output(true));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ProcessEvent::StdoutPartial(p) if p.starts_with("step "))),
+            "expected partial progress previews, got {events:?}"
+        );
+        let completed: Vec<_> = events
+            .iter()
+            .filter(|e| !matches!(e, ProcessEvent::StdoutPartial(_)))
+            .cloned()
+            .collect();
+        assert_eq!(
+            completed,
+            vec![
+                ProcessEvent::Stdout("step 4000-done".to_owned()),
+                ProcessEvent::Exited(0),
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_input_delivers_lines_over_4095_bytes_without_canonical_truncation() {
+        let input = ProcessInput::new();
+        let long_line = format!("{}{}", "a".repeat(6_000), "b".repeat(6_000));
+        let script = "python3 -u -c 'import sys; \
+            line = sys.stdin.readline().rstrip(\"\\n\"); \
+            print(f\"len={len(line)} head={line[:4]} mid={line[5998:6002]} tail={line[-4:]}\"); \
+            print(f\"eof={sys.stdin.read() == \"\"}\")'";
+        let (events, _trigger, handle) = start_process(pty_shell(script).stdin(input.clone()));
+        input.try_send_line(long_line).unwrap();
+        input.close();
+        assert_eq!(
+            events_until(&events, is_terminal_event),
+            [
+                stdout(&["len=12000 head=aaaa mid=aabb tail=bbbb", "eof=True"]),
+                vec![ProcessEvent::Exited(0)]
+            ]
+            .concat()
+        );
+        handle.join().unwrap();
     }
 }
