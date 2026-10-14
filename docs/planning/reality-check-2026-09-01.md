@@ -1,207 +1,281 @@
-# FrankenTUI Reality Check and Bridge Plan (updated 2026-10-13)
+# FrankenTUI Reality Check and Bridge Plan (updated 2026-10-14)
 
-## Current assessment: 2026-10-13, at v0.9.0 (`befbd247`)
+## Current assessment: 2026-10-14, at v0.9.0 (`3d570fea`, delta since `befbd247`)
 
 ### Verdict
 
-The kernel works, and this pass ran it rather than reading about it. The whole workspace compiles warning-free
-under `cargo check`, strict Clippy and strict rustdoc. 26,288 of 26,293 default tests pass. All 45 showcase
-screens start, render real UI and restore the terminal under a PTY. The README's front-page example compiles
-by construction, and all 17 library crates are on crates.io at 0.9.0. The September 1 failures that made the
-project unusable — a non-compiling example, no default backend, flicker-free off on common terminals, a
-hanging test binary — are fixed.
+Between `befbd247` and `3d570fea`, twenty-two commits closed 14 beads in the commit stream and this reality-check pass
+closed 11 more verified done-but-open beads with full evidence (**25 beads closed total**), resolving:
+- The headline multiplexer scrollback failure for `OverlayRedraw` (G48 `.47` — 25/25 real `tmux 3.6`, `screen 4.09.01`,
+  and `zellij 0.43.1` cases green in DSR receipt `run:20261013T205310-251536`, plus bottom-relative UI row addressing
+  `ansi::cup_from_bottom` and cursor re-anchoring across resizes in `b2a11250`, and 100,000-line G42 flagship journeys
+  under real `tmux 3.6` in `0714956b` with height-only storms delivering 100,000/100,000 lines and 0 UI fragments).
+- Unix `ProcessSubscription::pty(true)` child mode with process-group teardown (`.32.5`, `18a89454`, plus `.32.1`).
+- Command-palette non-ASCII char-indexing panic fix (`.23.21`, `84884e25`) and `default-run = "ftui-harness"` (`.40.4`,
+  `46d38967`, plus `.40.3` and `.40`).
+- `EffectQueue` `max_queue_depth` admission cap (`.50.1`, `46d38967`), `LongPress` deadline wakeup without a tick rate
+  (`.50.2`, `46d38967`), `ActionMapper` Esc-window key preservation (`90184f01`), and pinned `Cmd::tick` / `Cmd::batch`
+  semantics (`.50.5`, `34539cc0`, `463e45d4`, `8aafe87e`).
+- Test-flake fixes in `property_resize_never_panics` (`84884e25`), 8 `process_subscription` sleep-race tests (`18a89454`),
+  and `pane_splitter_drag_pty_e2e` / `pane_terminal_adapter_drag_and_moved_share_motion_bookkeeping` (`34539cc0`).
+- Reconciling and closing `.14.1` (`VirtualizedList` Fenwick default), `.13.4` (`accessibility_panel` live `A11yTree`),
+  `.21.6`/`.21.7`/`.21` (G15 OSC 52 + editor), `.25` (G19 `Help` widget ranking), `.5.10` (`AGENTS.md` / `Makefile` /
+  `docs/getting-started.md` / `docs/claims-ledger.md` truth sync in `33ecc957..3d570fea`), and `bd-3trh0`.
 
-It does not yet deliver the vision, for four reasons that have replaced the old ones:
+However, deep code inspection of the newly landed implementations and the surrounding runtime/render/text kernel at
+`3d570fea` uncovered **five critical root causes and bug clusters** that keep the vision from being fully delivered:
 
-1. **The primary target fails where it is used.** In real tmux 3.6 a plain `seq 1 500` leaves 500 of 500 lines
-   in pane history; `agent_shell` streaming the same child leaves **0 of 500**. Inside tmux, screen, zellij
-   and WezTerm, and on any terminal that misses the 150 ms CPR self-test, the writer uses Overlay Redraw and
-   rewrites one row per log line, so scrollback never accumulates. `bd-th0p6` diagnosed this in August and was
-   closed after a cosmetic fix. No bead tracked it until today (G48).
-2. **Verification is not running.** GitHub Actions has been off since September 6. The only full DSR quality
-   run since then, the v0.9.0 candidate wave of October 2, failed 4 of 5 checks on infrastructure: RCH
-   refused fmt, clippy's completion went unconfirmed, nextest rejected an RCH `--config` argument, and doc was
-   terminated. That wave also ran through RCH, which AGENTS.md forbids. v0.9.0 shipped without a recorded
-   full clippy, test or doc pass.
-3. **The truth gates pass without establishing truth.** `make gates` is green. Yet the reachability gate
-   matches bare names in comments and strings, so `ftui-core::animation` counts as used because a widget
-   has its own `animation` module. The README check only inspects sections carrying a literal marker, and a
-   `path:` proof marks a theorem row "proven". On top of that, one E2E script in `run_all` runs zero tests and
-   reports a stable checksum. About 70 README statements are false or contradicted elsewhere in README,
-   including headline features: shadow-run lane validation does not exist, and "80+ widgets" in
-   ftui-widgets is really 70 implementations on 55 types.
-4. **The swarm has stopped and the tracker no longer steers.** No open bead has been touched since
-   September 24. 35 in-progress claims are 24–37 days idle and hidden from `br ready`. bv's top two picks
-   are already done. Three owner questions have waited since early September.
+1. **G49's certified-diff bypass has a deeper P0 root cause (`Program::render_buffer` -> `Buffer::reset_for_frame`).**
+   Not only does `evaluate_render_certificate` (`crates/ftui-runtime/src/terminal_writer.rs:1055-1068`) return
+   `NarrowToRows(0..height)` whenever `dirty_rows > 0` (routing every frame to `compute_certified_into`, which clones
+   and sorts `rows: Vec<u16>`, ignores `DirtySpan`s and `TileDiffBuilder` SAT, and skips `scan_row_changes_blockwise`),
+   **more fundamentally** `Program::render_buffer` (`crates/ftui-runtime/src/program.rs:7811`) calls
+   `take_render_buffer` -> `Buffer::reset_for_frame` (`crates/ftui-render/src/buffer.rs:1214-1240`) -> `self.clear()`
+   -> `self.mark_all_dirty()` **before** `model.view(&mut frame)` runs. Because every frame starts with
+   `dirty_rows = [true; height]` and `dirty_spans = [Full; height]` before widgets draw, **in real `Program` execution
+   `dirty_row_count()` is ALWAYS `height` (100% of rows) and `span_coverage_cells` is ALWAYS `width * height` on 100%
+   of frames!** `DirtySpan`s, `DiffStrategy::DirtyRows`, and `SummedAreaTable` only ever see `< 100%` dirty rows in
+   synthetic unit tests and benchmarks that manually call `buffer.clear_dirty()`. Tracked in `.48` / `.48.2`.
+2. **G48's `ScrollRegion` / `Hybrid`, `UiAnchor::Top`, and tmux width-shrink reflow paths still have edge-case defects (`.51`, `.42.8`).**
+   - **First DECSTBM log overwrites `log_row` (`terminal_writer.rs`, `.51`)**:
+     `reserve_inline_rows` (when the shell cursor starts at the bottom of a full screen) and `flush_pending_logs` (for
+     logs queued before frame 0, or during resize / `InlineAuto` height changes while `scroll_region_active == false`)
+     leave the newest pre-UI shell line or flushed log line sitting on `log_row = term_height - visible_height`. When
+     `activate_scroll_region` sets `\x1b[1;{log_row}r`, the first subsequent DECSTBM `write_log_inline` moves to
+     `\x1b[{log_row};1H` and writes the new log bytes **before** emitting `\n`, overwriting/splicing into the line on
+     `log_row`. (`flush_pending_logs` solved this for `height == 0` by emitting `\r\n` *before* each line,
+     but `write_log_inline` did not.)
+   - **Missing `\r\n` normalization on `TerminalWriter::write_log*` and `LogSink` in DECSTBM mode (`.51`)**:
+     Both pass `logical_line = false`, so under `scroll_region_active == true` multi-line strings emit bare `\n`
+     (staircasing in raw mode) and partial writes without `\n` stay on `log_row` and get overwritten at column 1.
+   - **`UiAnchor::Top` + `SanitizeMode::Raw` (`.51`)**: Skips single-line clamping at `row = term_height`, scrolling
+     the top-anchored UI into terminal history when a raw log contains `\n`.
+   - **tmux width-shrink reflow fragments (`.42.8`)**: When a tmux pane narrows, tmux reflows full-width CUP-written UI
+     rows (including trailing padded spaces) into extra rows that leak into history (`flagship_journey_width_resizes`
+     observed 35 fragment rows over 50 width+height resizes while delivering 100,000/100,000 log lines).
+   - **`OverlayRedraw` full-UI repaint (`.51`)**: `flush_pending_logs` sets `self.prev_buffer = None` on every
+     log-bearing frame, forcing a 100% UI redraw instead of shifting the diff baseline (Ambition Round 3).
+3. **G26's `ProcessSubscription::pty(true)` breaks `/dev/tty`, `\r` progress bars, and `>4095`-byte stdin (`.32.6`).**
+   - **No controlling terminal (`process_subscription.rs:648, 666`)**: Opens slave with `OFlags::NOCTTY` and calls
+     `setsid()` in `pre_exec` without calling `libc::ioctl(0, libc::TIOCSCTTY as _, 0)` on the slave fd in the child
+     (based on the false belief that `TIOCSCTTY` on the slave would touch the parent's host terminal). The child has
+     no `/dev/tty` (`open("/dev/tty")` -> `ENXIO`), breaking `ssh`, `sudo`, `gpg`, `less`, and password prompts.
+   - **`\r`-only progress output kills the child at 64 KiB (`880-899, 1840-1846`)**: `read_process_line` splits only
+     on `\n`. Because `isatty` is true in PTY mode, CLI spinners/progress bars (`cargo`, `curl`, `pip`, `git`) emit
+     `\r`-delimited updates without `\n`, accumulating in `line: Vec<u8>` until `MAX_PROCESS_LINE_BYTES` (64 KiB)
+     triggers `LineTooLong` and `group.kill()`!
+   - **Default slave `termios` leaves `ICANON` (4095-byte truncation), `ISIG`, and `IXON` enabled (`651-654, 1603`)**:
+     Linux `n_tty` canonical mode truncates lines > 4095 bytes even though `try_send_line` allows 64 KiB; `0x1a` in
+     piped stdin sends `SIGTSTP` to a session-detached group; and `close()` sends `0x04` (`VEOF`), which fails if the
+     child entered raw mode or the line buffer is non-empty.
+   - **F5 restart loses terminal size (`agent_shell.rs:778`)**: `StreamingHarness::restart_child` creates a fresh
+     `ProcessControl::new()` without re-applying the last known `(width, height)`.
+4. **CJK locale width calculation returns wrong widths for multi-codepoint emoji (`.31.11`).**
+   In `crates/ftui-core/src/lib.rs:757-759, 807-809`, when `use_cjk_width()` is `true` (`ja*`/`zh*`/`ko*` locale or
+   `FTUI_CJK_WIDTH=1`), `grapheme_width_with_cjk` and `display_width` call `UnicodeWidthStr::width_cjk(grapheme)`,
+   which sums scalar `char` widths and skips `strip_vs16` — returning width **`8`** (instead of `2`) for `"👨‍👩‍👧‍👦"` and
+   width **`4`** (instead of `2`) for `"👋🏽"`, corrupting cell layout and cursor positioning in CJK locales.
+5. **Runtime contract and One-Writer gaps remain across `Program`, `StepProgram`, `RenderThread`, and `TerminalSession`
+   (`.50.3`, `.50.4`, `.50.6`, `.33.4`).**
+   - `Program::execute_cmd` (`program.rs:7104`) and `StepProgram::execute_cmd` (`step_program.rs:691`) check
+     `if !self.running { return Ok(()); }` at the top of the command-stack loop, silently dropping sibling commands
+     queued after `Cmd::Quit` in `Cmd::Batch` (e.g. `Cmd::batch(vec![Cmd::quit(), Cmd::log("bye")])`).
+   - Final `render_frame()` on `Quit` (`program.rs:6429, 7338, 7425, 7566`) can still be skipped by
+     `guardrails.check_frame` / `budget.exhausted()` or degraded by `conformal_predictor`.
+   - `RenderBudget::next_frame()` (`budget.rs:1315`, `program.rs:7309, 7338`) feeds `self.start.elapsed()` (including
+     startup and idle event-loop sleep time) into the PID controller and e-process on Frame 0 and on the frame after
+     any guardrail-dropped frame; `BudgetController` shadows `FrameBudgetConfig` fields.
+   - `InputFairnessGuard` (`program.rs:6744-6745, 6900`) never records `FairnessEventType::Tick` on ticks and clears
+     `pending_input_arrival = None` after the first batch even when yielding mid-queue with more input waiting.
+   - `StepProgram` (`step_program.rs:356-375, 727-729`) fires `Cmd::Tick(d)` immediately (0ms) on the first step, never
+     invokes `model.subscriptions()`, and skips the final frame on `Quit`; `RenderThread` (`render_thread.rs:299`)
+     applies `OutMsg::Resize` ahead of earlier `Log`/`Render` messages.
+   - `TerminalSession` (`terminal_session.rs:565-614, 790-994, 1050`) writes setup/teardown/suspend/resume ANSI
+     sequences directly to `io::stdout()` without acquiring `terminal_output_lock()`.
 
-The "alien artifact" layer is now honestly labelled where it is quarantined ("Where it runs: nowhere"), but
-unlabelled restatements elsewhere still present the same code as live. Examples: GRAPA, Count-Min/PAC-Bayes,
-the queueing scheduler, the degradation diagram, and the SAT tile skip, which the default certified diff
-path never runs (G49).
+### What was run (2026-10-13 .. 2026-10-14)
 
-### What was run (2026-10-13)
-
-All commands ran locally on the shared 128-core host (load average 33–186) against `befbd247` with a clean
-tree. They are **investigative evidence, not DSR acceptance**.
+All local commands ran against `befbd247..3d570fea` with `RCH_CARGO_WRAPPER_BYPASS=1`. DSR runs `20261013T174912-1105783`
+(`frankentui-full-gates`, 5/6) and `20261013T205310-251536` (`frankentui-inline-scrollback`, 25/25 real mux + plain PTY)
+are retained under `/data/projects/frankentui/tests/e2e/logs/` and `~/.local/state/dsr/logs/`.
 
 | Check | Result |
 |---|---|
-| `make gates` | pass (23 s); ledger 152 rows: 56 proven, 56 retracted, 34 pending-doc, 6 pending-code |
-| `cargo fmt --check` | pass |
-| `cargo check --workspace --all-targets` | pass (596 s); only the known `nix 0.28` future-incompat note |
-| `cargo clippy --workspace --all-targets -- -D warnings` | pass (388 s) |
-| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass (238 s) |
-| `cargo nextest run --workspace --no-fail-fast` | 26,293 run: **26,288 pass, 4 fail, 1 timeout**, 9 skipped (411 s). In isolation 3×: the 4 failures pass (load-sensitive: 2 pane-splitter PTY drags, a mermaid cache count, a subscription idle-wait); `property_resize_never_panics` times out every time (154 s) → `.6.39` |
+| `make gates` (all 5 stdlib Python gates) | pass (~6 s): `reachability` (0 unreferenced, 44 allowlisted), `claims` (152 rows: **62 proven, 56 retracted, 29 pending-doc, 5 pending-code**, 116 proof refs valid, 11 experimental sections valid), `env-docs` (88 binary vars matched), `close-audit` (0 enforced failures), `baseline-benches` (21 resolved, 27 tracked exceptions) |
+| `cargo fmt --check` | pass (both local and DSR `20261013T174912-1105783`) |
+| `cargo check --workspace --all-targets` | pass (both local and DSR `20261013T174912-1105783`) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass (both local and DSR `20261013T174912-1105783`) |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass (both local and DSR `20261013T174912-1105783`) |
+| `cargo nextest run --workspace --no-fail-fast` | Local (`befbd247`): 26,288/26,293 pass; `property_resize_never_panics` capped at `2000x1000` (`84884e25`), 8 `process_subscription` sleep-race tests fixed (`18a89454`), and 2 pane motion/splitter load races fixed (`34539cc0`). Remaining 7 load-sensitive wall-clock assertions under `.6.39`; post-fix 6/6 DSR rerun tracked in `.6.37` |
+| DSR `frankentui-inline-scrollback` (`run:20261013T205310-251536` at `c3940223` + `b2a11250` / `0714956b`) | **pass**: 25/25 real multiplexer cases (`tmux 3.6`, `GNU screen 4.09.01`, `zellij 0.43.1`), `agent_shell_plain_pty`, and 100,000-line G42 flagship journeys under `tmux 3.6` (100,000/100,000 lines delivered; 0 UI fragments on height-only resize storms; 35 width-shrink reflow fragments tracked in `.42.8`) |
 | PTY, 45 screens (alt, deterministic, 2.5 s each) | 45/45 exit 0, no panic, alt enter = leave, cursor visible, ICANON/ECHO restored; `pty_canonicalize` renders show real UI |
-| PTY, inline dashboard / q-quit / `minimal_inline` / `getting_started` / harness `minimal` / `agent_shell` 10k lines | all exit 0, terminal restored |
 | `FTUI_SYNC_OUTPUT=1` (alt dashboard, VFX, inline, agent_shell) | DEC 2026 brackets balanced (31/31, 189/189, 31/31, 5/5) |
-| Scrollback per identity (`agent_shell … seq 1 500`) | forced scroll region: DECSTBM + 501 LF (works); no-CPR PTY, TMUX identity, kitty without CPR reply: 0 LF, 501 single-row overwrites |
-| Real tmux 3.6 (private socket) | control `seq`: 500/500 in history; agent_shell: **0/500**, `history_size` 0; final status stale (`L:448` of 500); teardown leaves an uncleared row |
-| Real tmux, raw `CSI 1;27 r` + 100 LF | 100/100 lines in history — the mux veto on DECSTBM is not justified for current tmux |
-| `cargo run -p ftui-harness` (README twice) | fails: "could not determine which binary to run" (3 bins, no `default-run`) |
-| DSR history | only `frankentui-wave-w1` (2026-10-02, failed 4/5 on infrastructure) and a fmt-only rerun since 2026-09-24 |
+| `cargo run -p ftui-harness` | Fixed in `46d38967` (`default-run = "ftui-harness"`) and guarded by `readme_cargo_run_commands_resolve_a_binary` (`84884e25`) |
+| `readme_versions_match_the_workspace` | Extended in `32a97c22` to guard both `README.md` and `docs/getting-started.md` after catching 7 stale `0.7.0` pins in `docs/getting-started.md` |
 
-Five read-only audit agents checked about 120 README claims against the code (render, runtime/math,
-widgets/text/layout/input/i18n/a11y, showcase/web/distribution, and stubs/dead code/test theater). The most
-consequential findings were re-verified by hand: the certified-diff tautology, the evidence-sink stdout
-default, the Shadow no-op, the PID floor, the byte/char palette bug, the zero-test schedule_trace script, the
-reachability regex, and the harness command.
+### The five questions (at `3d570fea`)
 
-**Disclosure.** `cargo` on this host is an RCH shim, and the Claude Code hook rewrites command lines that
-contain `cargo`. Twice this session a cargo command reached `rch exec` despite the AGENTS.md prohibition.
-The first was the initial `cargo check`, queued remotely for about 4 minutes and then killed. The second was
-`cargo run -p ftui-harness`, which failed remotely in 1.9 s before compiling anything. Every result above
-came from local execution with `RCH_CARGO_WRAPPER_BYPASS=1` set inside script files. UBS was not run
-(AGENTS.md no-deletion constraint).
-
-### The five questions
-
-1. **What works?** Kernel, facade, default backend selection, the native terminal lifecycle (including
-   SIGTSTP), inline mode with a DECSTBM scroll region, sync output where policy allows it, the 45-screen
-   showcase, the agent_shell model on a terminal that verifies the scroll region, the Mondrian conformal
-   frame gate (on by default), the KeyMap system, TextArea mouse, i18n formatting, the a11y tree collection,
-   crates.io and GitHub release distribution, and the deployed browser demo (hashes match its manifest).
+1. **What works?** Kernel, facade, default backend selection, native terminal lifecycle (including SIGTSTP), inline
+   `OverlayRedraw` scrollback transport across real `tmux`, `screen`, `zellij`, and plain PTYs (`run:20261013T205310-251536`,
+   plus bottom-relative UI row addressing and cursor re-anchoring across resizes in `b2a11250`), sync output where policy
+   allows it, the 45-screen showcase (including all 12 `TextPreset`s on the Presets tab), command-palette Bayesian
+   scoring on ASCII and non-ASCII titles, `Help` widget ranking via `HintRanker` (G19 `.25`), OSC 52 clipboard
+   commands/replies (G15 `.21`), `VirtualizedList` Fenwick default + `HeightPredictor` (`.14.1`), `accessibility_panel`
+   live `A11yTree` rendering (`.13.4`), `EffectQueue` `max_queue_depth` admission cap (`.50.1`), `LongPress` deadline
+   wakeup without a tick rate (`.50.2`), `ActionMapper` Esc-window key preservation (`90184f01`, `.50.5`), crates.io and
+   GitHub release distribution at 0.9.0, and the deployed browser demo.
 2. **What does not?**
-   - Scrollback in multiplexers (G48).
-   - Verification infrastructure (`.6.37`).
-   - Shadow/lane validation (`.30.6`).
-   - Default-path diff optimizations (G49).
-   - The one-writer rule: the evidence sink can write to stdout, and `eprintln!` fires on task panic (`.33.4`).
-   - Runtime contract details: `Cmd::tick` is a recurring rate; LongPress needs a tick; the PID floor is
-     SimpleBorders; the fairness guard does the opposite of its doc; EffectQueue memory is unbounded (G51).
-   - An OS accessibility bridge (`.13.10`).
-   - An in-repo browser renderer (`.29.*`).
-   - ~70 README statements (`.5.8`).
+   - Default-path diff optimizations: `Buffer::reset_for_frame` marks 100% of rows/spans dirty before `view()` and
+     `evaluate_render_certificate` routes every frame to `NarrowToRows(0..height)` (G49 `.48`, `.48.2`).
+   - DECSTBM / Hybrid first-log `log_row` overwrite, `write_log*`/`LogSink` missing `\r\n` normalization,
+     `UiAnchor::Top` + `SanitizeMode::Raw` unclamped newlines (G48 follow-up `.51`), and tmux width-shrink reflow
+     fragments (`.42.8`).
+   - `ProcessSubscription::pty(true)` missing `TIOCSCTTY` (no `/dev/tty`), `\r`-only progress output killing the child
+     at 64 KiB, `ICANON` 4095-byte input truncation, and F5 restart losing terminal dimensions (G26 follow-up `.32.6`).
+   - CJK locale width calculation (`use_cjk_width() == true`) returning 8 for `"👨‍👩‍👧‍👦"` and 4 for `"👋🏽"` (`.31.11`).
+   - One-writer rule: `TerminalSession` direct `io::stdout()` writes without `terminal_output_lock()`, task-panic
+     `eprintln!`, `TerminalWriter` Drop raw write, and no-op lock on native-only builds (`.33.4` items 2–5).
+   - Runtime contract details: `Cmd::Batch` dropping commands after `Cmd::Quit`; final `Quit` frame skipped/degraded by
+     guardrails/budget/conformal gate; `RenderBudget::next_frame()` feeding idle sleep time into PID/e-process;
+     `InputFairnessGuard` never recording `Tick` and clearing `pending_input_arrival` mid-queue; `StepProgram`
+     firing `Cmd::Tick` at 0ms on the first step and ignoring `subscriptions()`; `RenderThread` reordering
+     `OutMsg::Resize` (`.50.3`, `.50.4`, `.50.6`).
+   - A 6/6 green native DSR `frankentui-full-gates` receipt and removal of the remaining 7 wall-clock test flakes
+     (`.6.37`, `.6.39`), plus the remaining 4 E2E script audits (`.6.38`).
+   - Shadow/lane validation (`.30.6`), OS accessibility bridge (`.13.10`), in-repo browser renderer (`.29.*`), and the
+     remaining README truth pass items (`.5.8`, `.5.9`, `.5.11`).
 3. **What blocks?**
-   - A verification path that actually runs on a native host without RCH (`.6.37`).
-   - A design decision for multiplexer scrollback (`.47.1`).
-   - Owner answers (`.49.3`).
-   - The idle swarm (`.49.1`).
-   None of these is a hard technical wall.
-4. **Would finishing every open bead close the gap?** Before this pass, no: G48 had no bead (its predecessor
-   was closed), and G49, G51, the gate-soundness and vacuous-test problems, and the AGENTS.md dangling
-   reference were untracked. With the 43 beads filed today, yes for everything found. That holds only if
-   closes require the stated tests. Bead count is not the measure; the vision scorecard (`.42.6`) and the
-   flagship journey (`.42.7`) are.
-5. **What had no bead?** See "New gaps" below. Every item now has an owner bead.
+   - `.6.39` (remaining 7 load-sensitive wall-clock test assertions) + `.6.37` (native DSR `frankentui-full-gates` rerun).
+   - Owner answers in `.49.3` (browser renderer vendor vs rewrite, Shadow lane implementation vs retraction, file deletions).
+   - None of the technical items (`.51`, `.42.8`, `.32.6`, `.48.2`, `.31.11`, `.33.4`, `.50.3`, `.50.4`, `.50.6`) is blocked by external dependencies.
+4. **Would finishing every open bead close the gap?** Yes: every newly discovered defect from the `3d570fea` code audit
+   is now tracked in `.51`, `.42.8`, `.32.6`, `.48.2`, `.31.11`, `.33.4`, and `.50.3`/`.50.4`/`.50.6` with explicit
+   unit/proptest/PTY acceptance tests, and 11 done-but-open beads (`.14.1`, `.13.4`, `.40.3`, `.40`, `.21.6`, `.21.7`,
+   `.21`, `.32.1`, `.25`, `.5.10`, `bd-3trh0`) have been closed with evidence so `br ready` and `bv --robot-triage`
+   surface real work.
+5. **What had no bead before this pass?** The DECSTBM `log_row` overwrite and `write_log`/`LogSink` CRLF bugs (`.51`),
+   the `ProcessSubscription::pty(true)` missing `TIOCSCTTY` / `\r`-progress 64 KiB kill / `ICANON` truncation bugs
+   (`.32.6`), the `Buffer::reset_for_frame` -> `mark_all_dirty()` root cause in G49 (`.48.2`), the CJK emoji width bug
+   (`.31.11`), the `TerminalSession` unlocked `io::stdout()` writes (`.33.4`), and the `Cmd::Batch`-after-`Quit` /
+   `RenderBudget::next_frame` idle-time / `StepProgram` / `RenderThread` bugs (`.50.3`, `.50.4`, `.50.6`).
 
-### Vision checklist: rows that changed since 2026-09-08
+### Vision checklist: rows that changed since 2026-09-08 (updated 2026-10-14 at `3d570fea`)
 
 Rows not listed keep their 2026-09-08 status (historical table below). Bead prefix `bd-g00-root-epic-ewths`
 omitted.
 
-| # | Promise | 2026-10-13 status | Evidence / owner |
+| # | Promise | 2026-10-14 status (`3d570fea`) | Evidence / owner |
 |---|---|---|---|
-| 1 | Inline scrollback, stable chrome | **PARTIAL (critical)** — works with a verified DECSTBM region; in muxes and no-CPR terminals only the latest log line survives | real tmux 0/500; G48 `.47` |
-| 3 | One terminal writer | PARTIAL — evidence sink stdout default, task-panic `eprintln!`, no-op lock on native-only builds | `.33.4` |
-| 4 | Restore terminal on exit/panic | WORKING for exits exercised (45 screens + examples, termios restored); SIGTSTP on both backends; inline teardown leaves an uncleared row | PTY probe; `.47.6` |
-| 6 | Accurate widget inventory | **FALSE as stated** — 70 impls / 55 types in ftui-widgets (93 workspace) | `.5.8`, `.5.11` |
-| 8 | Reproducible browser delivery | PARTIAL — live site matches manifest; renderer only in git history; browser matrix unproven | `.29.*`, `.49.3` |
-| 9 | Bayesian diff selection | WORKING (on by default), but it prices span scans the default path never performs | G49 `.48` |
+| 1 | Inline scrollback, stable chrome | **WORKING in OverlayRedraw (tmux/screen/zellij/plain PTY + height resizes); PARTIAL in DECSTBM/Top/width-shrink reflow** — `OverlayRedraw` passes 25/25 real mux + plain PTY E2E (`run:20261013T205310-251536`) and 100k-line height-resize storms (`b2a11250`, `0714956b`); DECSTBM first-log overwrites `log_row`, `write_log*`/`LogSink` lack `\r\n` normalization, `UiAnchor::Top` + `Raw` skips single-line clamping (`.51`), and tmux width-shrink reflow splits full-width UI rows (`.42.8`) | `.47` closed; follow-up `.51`, `.42.8` |
+| 3 | One terminal writer | PARTIAL — `EvidenceSinkConfig::check_terminal_ui_stdout` fixed (`46d38967`); `TerminalSession` direct `stdout` writes, task-panic `eprintln!`, `TerminalWriter` Drop raw write, and no-op lock on native-only builds remain | `.33.4` (items 2–5) |
+| 4 | Restore terminal on exit/panic | WORKING for exits exercised (45 screens + examples + mux E2E, termios restored, final Quit frame rendered in inline mode); final Quit frame can still be skipped if guardrails/budget trip on that frame | `.47.6` closed; `.50.4` |
+| 5 | Composable crates, add only what you need | **WORKING (proven)** — facade + default backend + individual crates verified | `V05` proven (`3d570fea`) |
+| 6 | Accurate widget inventory | **PARTIAL** — `AGENTS.md` updated to 55 widget types / 70 impls (93 workspace-wide) in `cca992d1`; `README.md` generated counts tracked in `.5.8`, `.5.11` | `.5.8`, `.5.11` |
+| 8 | Reproducible browser delivery | PARTIAL — live site matches manifest; `StepProgram` has `Cmd::Tick` / `subscriptions()` / `Quit` gaps; renderer only in git history | `.29.*`, `.50.6`, `.49.3` |
+| 9 | Bayesian diff selection | PARTIAL — on by default, but `Buffer::reset_for_frame` marks 100% of rows/spans dirty before `view()` and `evaluate_render_certificate` routes every frame to `NarrowToRows(0..height)` | G49 `.48`, `.48.2` |
 | 10 | BOCPD | DECIDED: opt-in after losing the differential replay 6/6 (2026-09-23) | `bd-h8l3d`, `bd-i25qn` |
-| 12 | Anytime-valid budget monitoring | **NOT AS CLAIMED** — fixed λ; budget.rs disclaims Ville; README restates wealth/GRAPA as live | `.43.3`, `.43.5`, `.5.8` |
-| 15 | Allocation CUSUM | WORKING in production (OR-combined, diagnostic only); README says AND and "experimental" | `.5.8` |
-| 20 | Width cache | PARTIAL — S3-FIFO on `grapheme_width`; `display_width` bypasses it for most non-ASCII text | `.31.11` |
-| 27/28 | Macro / simulator | WORKING; `Cmd::batch` and SetTickStrategy semantics differ | `.50.5`, `.50.6` |
+| 12 | Anytime-valid budget monitoring | **NOT AS CLAIMED** — fixed λ; `RenderBudget::next_frame` feeds idle sleep time into e-process on Frame 0 / after dropped frames; README restates wealth/GRAPA | `.43.3`, `.43.5`, `.50.4`, `.5.8` |
+| 15 | Allocation CUSUM + hover | PARTIAL — `README.md:1272` `TableState::hovered` contradiction fixed (`187894af`); allocation CUSUM OR vs AND wording in `.5.8` | `.5.8` |
+| 20 | Width cache & Unicode width | PARTIAL — `display_width` bypasses S3-FIFO for most non-ASCII strings, and `use_cjk_width()` returns width 8 for `"👨‍👩‍👧‍👦"` and 4 for `"👋🏽"` | `.31.11` |
+| 27/28 | Macro / simulator | WORKING; `Cmd::tick` / `Cmd::batch` pinned (`.50.5` closed); `Cmd::Batch` after `Quit`, `StepProgram`, and `SetTickStrategy` semantics still diverge | `.50.6` |
 | 29 | Frame arena | WORKING (reset per frame); used by TextInput and the dashboard only | `.5.8` |
 | 31 | Synchronized output | WORKING where policy enables it (brackets balanced); off in muxes by policy | PTY probe |
-| 35 | Test infrastructure | PARTIAL — 26,288/26,293 pass; one consistent timeout; vacuous scripts and assertion-free tests | `.6.38`, `.6.39` |
-| 37 | PID degradation | PARTIAL — PID (not PI); default floor SimpleBorders | `.50.4` |
-| 38 | Input fairness | WIRED, but the intervention contradicts its doc and rarely fires | `.50.3` |
-| 48 | Queue scheduling | Opt-in only (default Spawned, aging 0); EffectQueue memory unbounded | `.50.1`, `.5.8` |
+| 32 | Elm architecture `Model`/`Cmd`/`Subscription` | **WORKING (proven)** — `V32` proven (`3d570fea`), `.50.5` closed (`8aafe87e`); minor `Cmd::Batch`-after-`Quit` edge case in `.50.6` | `V32` proven; `.50.6` |
+| 35 | Test infrastructure | PARTIAL — `property_resize_never_panics` (1.3s), 8 `process_subscription` races, and 2 pane motion/splitter races fixed (`84884e25`, `18a89454`, `34539cc0`); 2 of 6 E2E scripts fixed (`84884e25`); 7 wall-clock flakes and 4 E2E scripts remain | `.6.38`, `.6.39` |
+| 37 | PID degradation | PARTIAL — PID (not PI); default floor `SimpleBorders`; `RenderBudget::next_frame` includes idle sleep time; `BudgetController` shadows `FrameBudgetConfig` | `.50.4` |
+| 38 | Input fairness | PARTIAL — intervention inverted vs doc, `FairnessEventType::Tick` never recorded in `Program`, and `pending_input_arrival` cleared mid-queue | `.50.3` |
+| 48/53 | Queue scheduling & EffectQueue backpressure | **EffectQueue backpressure WORKING (`V53` proven, `.50.1` closed)**; SRPT/Smith scheduler remains opt-in (`Spawned` default, aging 0) | `.50.1` closed; `.30`, `.5.8` |
+| 49 | Inline strategies A/B/C auto-selected | **WORKING (`V49` proven)** — `OverlayRedraw` streams into scrollback (`46d38967`, `b2a11250`); DECSTBM `log_row` edge cases in `.51` and tmux width-shrink reflow in `.42.8` | `.47` closed; `.51`, `.42.8` |
 | 52 | Lanes / shadow execution | **NOT IMPLEMENTED** — Shadow only logs; Legacy ≡ Structured | `.30.6` |
-| 60 | Gestures | PARTIAL — LongPress requires a tick rate | `.50.2` |
-| 61 | Input protocols | PARTIAL — DCS discarded, APC → Alt+_, SGR-Pixels unparsed | `.27.*` |
-| 66 | Published libraries | WORKING at 0.9.0 (17/17 on crates.io); GitHub release ships 6 showcase binaries README doesn't mention | `.5.8` |
-| 68 | Doctor verification | PARTIAL — E2E exits 0 without vhs/ffmpeg; codegen emits silent placeholders; coverage still failing | `.28.6`, `.28.8` |
-| 70 | Mandatory quality gates | **NOT RUNNING** on any schedule; last DSR wave failed on infrastructure | `.6.37`, `.42.6` |
+| 57 | Editor core + OSC 52 clipboard | **WORKING (`C12`, `C20`, `V57` proven)** — G15 `.21` closed with PTY E2E evidence (`3d570fea`) | `.21` closed |
+| 60 | Gestures | **WORKING (`V60`, `S17` proven)** — `LongPress` wakes `effective_timeout` without a tick rate (`.50.2` closed); full `Program` event-loop wiring in `.24.1`–`.24.3` | `.50.2` closed; `.24.*` |
+| 61 | Input protocols | PARTIAL — `ActionMapper` Esc-window key drop fixed (`90184f01`); DCS discarded, APC → Alt+_, SGR-Pixels unparsed | `.27.*` |
+| 66 | Published libraries | WORKING at 0.9.0 (17/17 on crates.io); `docs/getting-started.md` updated to `0.9.0` and guarded by `readme_versions_match_the_workspace` (`32a97c22`) | `V66` proven; `.5.8` |
+| 68 | Doctor verification | PARTIAL — `vhs`/`ffmpeg`/`ffprobe` prereqs documented in `AGENTS.md` (`cca992d1`); E2E fallback / codegen placeholders / coverage remain | `.28.6`, `.28.8` |
+| 70 | Mandatory quality gates | **IN PROGRESS** — `.config/dsr-quality.yaml` has `frankentui-full-gates` + `RCH_CARGO_WRAPPER_BYPASS=1` across all tools (`33ecc957`); DSR run `20261013T174912-1105783` passed 5/6; needs green 6/6 receipt | `.6.37`, `.6.39`, `.42.6` |
 
 New rows: 72 "README facts are generated, not typed" (`.5.11`); 73 "the truth gates are sound" (`.5.9`);
-74 "the tracker reflects the tree" (G50 `.49`).
+74 "the tracker reflects the tree" (G50 `.49` — `.49.1` closed, 11 beads reconciled under `.49.2` in `3d570fea`).
 
-### New gaps and where they live (bead prefix `bd-g00-root-epic-ewths` omitted)
+### Gaps and current status at `3d570fea` (bead prefix `bd-g00-root-epic-ewths` omitted)
 
-| Gap | Severity | Beads |
+| Gap | Severity | Status & Beads |
 |---|---|---|
-| G48 Inline log output must reach scrollback in every strategy | Critical | `.47` epic; `.47.1` measure+ADR, `.47.2` terminal-model oracle (test-first), `.47.3` implementation (blocked by .1/.2), `.47.4` real-mux E2E, `.47.5` docs now, `.47.6` agent_shell final-frame/teardown |
-| Verification does not run; v0.9.0 shipped unverified | Critical | `.6.37` (RCH×nextest, DSR without RCH, full receipt), `.6.38` (vacuous E2E/tests), `.6.39` (nextest failures/timeout) |
-| G49 Default diff path bypasses span/SAT/block scans behind a tautological certificate | Major | `.48` epic; `.48.1` paired bench (+ plan §0.12 budgets), `.48.2` independent witness/fastest path, `.48.3` default-path proptests, `.48.4` docs |
-| G50 Tracker integrity and swarm restart | Major | `.49` epic; `.49.1` stale claims, `.49.2` reconcile done-but-open, `.49.3` owner questions, `.49.4` freshness report |
-| G51 Runtime contract mismatches | Major | `.50` epic; `.50.1` EffectQueue bound, `.50.2` LongPress, `.50.3` fairness guard, `.50.4` degradation floor, `.50.5` Cmd semantics + ActionMapper, `.50.6` silent no-op commands |
-| Truth gates unsound | Major | `.5.9` |
-| README second truth pass (~70 items) | Major | `.5.8` (now blocks `.5.5`), `.5.11` generated facts |
-| AGENTS.md dangling Rule 0.5, RCH/cargo-shim reality | Major | `.5.10` |
+| G48 Inline log output must reach scrollback in every strategy | Critical → Follow-up P1/P3 | `.47` and `.47.1`–`.47.6` **CLOSED** (`46d38967`, `c3940223`, `2143a621`, `b2a11250`, `0714956b`, DSR `20261013T205310-251536`). **NEW `.51` (P1)** tracks DECSTBM first-log `log_row` overwrite, `write_log*`/`LogSink` CRLF normalization, `UiAnchor::Top` + `Raw` clamping, and scroll-aware diff baseline shift; **NEW `.42.8` (P3)** tracks tmux width-shrink reflow fragments |
+| G26 `agent_shell` PTY child mode + process group | Major → Follow-up P1 | `.32.1` and `.32.5` **CLOSED** (`18a89454`, `3d570fea`). **NEW `.32.6` (P1)** tracks missing `TIOCSCTTY` (no `/dev/tty`), `\r`-progress 64 KiB child kill, `ICANON` 4095-byte truncation, and F5 size restore; `.32.2`–`.32.4` now unblocked |
+| Verification receipt & test flakes | Critical | `.6.37` (`frankentui-full-gates` 5/6 green, all `.config/dsr-quality.yaml` tools now bypass RCH in `33ecc957`; needs 6/6 green receipt), `.6.38` (2/6 E2E scripts fixed in `84884e25`; 4 remain), `.6.39` (`property_resize_never_panics`, 8 `process_subscription` races, and 2 pane motion/splitter races fixed; 7 load-sensitive wall-clock tests remain) |
+| G49 Default diff path bypasses span/SAT/block scans behind `reset_for_frame` + tautological certificate | Critical (P0 perf/arch) | `.48` epic; `.48.1` paired bench (+ §0.12 budgets), `.48.2` fix both `Buffer::reset_for_frame` (`mark_all_dirty` before `view()`) and `evaluate_render_certificate` (`NarrowToRows(0..height)`), `.48.3` default-path proptests, `.48.4` docs |
+| G50 Tracker integrity and swarm restart | Major | `.49.1` **CLOSED** (`cd0fb5f2`); `.49.2` **11 done-but-open beads closed with evidence** (`3d570fea`: `.14.1`, `.13.4`, `.40.3`, `.40`, `.21.6`, `.21.7`, `.21`, `.32.1`, `.25`, `.5.10`, `bd-3trh0`); `.49.3` owner questions, `.49.4` freshness report open |
+| G51 Runtime contract mismatches | Major | `.50.1` (`EffectQueue` bound), `.50.2` (`LongPress` deadline), and `.50.5` (`Cmd` semantics + `ActionMapper` Esc fix) **CLOSED** (`46d38967`, `90184f01`, `8aafe87e`); `.50.3` (fairness guard + missing `Tick` recording + mid-queue clear), `.50.4` (degradation floor + `next_frame` idle-sleep bug + `BudgetController` field shadowing + final `Quit` frame guardrails), `.50.6` (`StepProgram` `Cmd::Tick`/`subscriptions`/`Quit`, `Cmd::Batch`-after-`Quit` drop, and `RenderThread` `OutMsg::Resize` reordering) open |
+| Truth gates & README/AGENTS accuracy | Major | `.5.10` **CLOSED** (`cca992d1`, `32a97c22`, `3d570fea`); `.5.9` (gate soundness), `.5.8` (README second truth pass), `.5.11` (generated facts) open |
 | Shadow/lane validation does not exist | Major | `.30.6` (blocked on owner `.49.3`) |
-| One-writer violations | Major | `.33.4` |
-| `cargo run -p ftui-harness` broken | Major (docs-facing) | `.40.4` |
-| Doctor vacuous E2E / silent codegen placeholders | Major | `.28.8` |
-| Widget features stated but missing; palette non-ASCII bug | Minor | `.23.22`, `.23.21` |
-| Width cache bypass | Minor | `.31.11` |
-| Evidence/telemetry contract | Minor | `.26.8` |
-| Math errors (rough path invariance, alpha-investing, GRAPA objective) | Minor (experimental) | `.43.5` |
-| agent_shell PTY child mode + process group | Major for the primary target | `.32.5` |
-| Executable vision scorecard; flagship journey acceptance | Major (ambition) | `.42.6`, `.42.7` |
+| One-writer violations | Major | `.33.4` (item 1 fixed in `46d38967`; items 2–5 open including `TerminalSession` unlocked `io::stdout()` writes) |
+| `cargo run -p ftui-harness` & G35 docs | Major (docs-facing) | `.40`, `.40.3`, `.40.4` **CLOSED** (`46d38967`, `84884e25`, `3d570fea`) |
+| Doctor vacuous E2E / silent codegen placeholders | Major | `.28.8`, `.28.6` (`AGENTS.md` prereqs updated to list `vhs`/`ffmpeg`/`ffprobe` in `cca992d1`) |
+| Widget features & palette non-ASCII bug | Minor | `.23.21` **CLOSED** (`84884e25`); `.23.22` (Presets tab 12 presets + `README.md` List/Tabs/Tree/TextArea/TableTheme/Table-hover fixed; dead `TableTheme.{padding,column_gap}` fields + ledger rows remain) |
+| Width cache bypass & CJK emoji width bug | Major (correctness + perf) | `.31.11` (expanded to cover `grapheme_width_with_cjk` / `display_width` returning 8 for `"👨‍👩‍👧‍👦"` and 4 for `"👋🏽"` when `use_cjk_width()` is true) |
+| Evidence/telemetry contract & experimental math | Minor | `.26.8`, `.43.5` |
+| Executable vision scorecard; flagship journey acceptance | Major (ambition) | `.42.6`, `.42.7` (100k-line tmux journeys landed in `0714956b`; now also gated on `.51`, `.42.8`, and `.32.6`) |
 
-### Ambition rounds and refinement (applied to the beads, not a new plan)
+### Ambition rounds and refinement (updated 2026-10-14 at `3d570fea`)
 
-- **Round 1** asked whether this delivers the vision or only fixes defects. It added the flagship
-  agent-harness journey (`.42.7`): real tmux, screen and zellij; 100k mixed and hostile lines from a PTY
-  child; typed input, a resize storm, Ctrl-C and restart; every line in history exactly once. It also added
-  the plan's §0.12 present budgets, measured on the default path in a release lane (`.48.1`).
-- **Round 2** asked what stops this class of drift from coming back. It added README/AGENTS numbers generated
-  from the tree and gated (`.5.11`), plus a stale-claim and false-close freshness report (`.49.4`).
-- **Round 3** looked for mathematics with real payoff. Two additions:
-  - A scroll-aware repaint for overlay transport (`.47.3`): shift the diff baseline by k rows after a
-    k-line scroll, so repaint costs O(changed cells), with a proptest proving equivalence to a full repaint.
-  - An incremental per-row fingerprint witness for the render certificate (`.48.2`): a row marked dirty but
-    unchanged is skipped, false-skip probability per row ≤ 2⁻⁶⁴ under the mixing assumption, with sampled
-    exact verification.
-- **Five refinement passes:**
-  1. Cross-references corrected to real IDs, and dependencies added. Test-first: `.47.3` waits on oracle
-     `.47.2`. `.30.6` waits on the owner. `.5.5` waits on the inventory.
-  2. Test coverage. Every implementation bead names its unit, property and PTY tests, and negative controls
-     where a gate is involved.
-  3. A coverage cross-check of every audit finding against the beads. Two omissions found: never-compiled
-     files missing from the deletion question, and the silent no-op commands (`.50.6`).
-  4. Overlap with existing beads. `related` links added to `.32.1`, `.23.20`, `.5.3`, `.6.24`, `bd-jkr00`
-     and `bd-pu3ye`.
-  5. Consistency. The `.47.3` baseline invalidation was reconciled with the round-3 design.
-- **Validation:** `br dep cycles` reports none; `br ready` went from 22 to 53 claimable beads; G48's
-  measurement and oracle are ready at P0.
+- **Round 1 (Vision vs Defect-Fixing)** verified that the 25/25 mux E2E receipt (`20261013T205310-251536`) and 100k-line
+  tmux journeys (`0714956b`) proved `OverlayRedraw` and basic `--pty` (`isatty=True`), but did **not** exercise `/dev/tty`
+  (`ssh`/`sudo`/`gpg`), `>64 KiB` of `\r`-only progress bars/spinners, `>4095`-byte canonical PTY input lines, or DECSTBM
+  transitions after pre-frame-0 logs / full-screen shell output. `.32.6` and `.51` were filed and wired as blockers of the
+  flagship journey (`.42.7`) and `.32.4` so the flagship acceptance test proves real interactive CLI tools under both inline
+  strategies.
+- **Round 2 (Drift Prevention)** closed the version-check blind spot in `crates/ftui/tests/readme_snippets.rs` by
+  extending `readme_versions_match_the_workspace` to guard `docs/getting-started.md` alongside `README.md` (`32a97c22`),
+  updated all remaining `.config/dsr-quality.yaml` `cargo` invocations to carry `RCH_CARGO_WRAPPER_BYPASS=1` and content
+  fingerprints (`33ecc957`), synchronized `Makefile` and `AGENTS.md` on all 5 `make gates` checks (`cca992d1`), and
+  advanced `docs/claims-ledger.md` from 58 to 62 `proven` rows (`3d570fea`, resolving every pending row that cited a
+  closed owner bead).
+- **Round 3 (High-Payoff Mathematics & Kernel Architecture)** traced why G49's Bayesian diff selector, `DirtySpan`
+  interval union, and `SummedAreaTable` tile skip never fire in production: `Program::render_buffer` calls
+  `Buffer::reset_for_frame` -> `mark_all_dirty()` before `view()`, making 100% of rows and spans dirty on every frame
+  before `evaluate_render_certificate` even runs. `.48.2` now specifies fixing both the frame-start dirty reset (via
+  double-buffered comparison or incremental 64-bit per-row fingerprinting against `prev_buffer`) and the certificate
+  routing, while `.51` carries forward the scroll-aware diff baseline shift for `OverlayRedraw` so log-bearing frames
+  do not force `prev_buffer = None` full UI redraws.
+- **Five refinement passes (2026-10-14):**
+  1. **Done-but-open reconciliation (`.49.2`)**: Verified every open bead in `.49.2` against `3d570fea` deliverables
+     and closed 11 100%-complete beads with 80+ char `commit:`/`test:`/`path:`/`run:` evidence (`.14.1`, `.13.4`,
+     `.40.3`, `.40`, `.21.6`, `.21.7`, `.21`, `.32.1`, `.25`, `.5.10`, `bd-3trh0` in `3d570fea`), unblocking
+     `.14.2`–`.14.6`, `.13.5`–`.13.6`, `.32.2`–`.32.4`, and `.36.2`.
+  2. **Root-cause accuracy**: Updated `.48`/`.48.2`, `.31.11`, `.33.4`, and `.50.3`/`.50.4`/`.50.6` with exact `file:line`
+     root causes (`Buffer::reset_for_frame`, CJK `width_cjk` emoji bug, `TerminalSession` unlocked `stdout`,
+     `Cmd::Batch`-after-`Quit`, `RenderBudget::next_frame` idle sleep time, `InputFairnessGuard` missing `Tick`,
+     `StepProgram`, `RenderThread`), and created `.51` (G48 DECSTBM/Top bugs) and `.32.6` (G26 PTY `TIOCSCTTY` / `\r`
+     progress / `ICANON` bugs).
+  3. **Test-first & oracle coverage**: Every new/updated bug bead specifies its exact unit, proptest, and `vt100` / PTY
+     oracle tests (`e2e_inline_mode_scrollback.rs` for DECSTBM `log_row` & `LogSink`; `process_subscription.rs` for
+     `/dev/tty`, `>100 KiB` `\r` progress, and `>4096B` PTY stdin; `ftui-core` for CJK ZWJ/VS16 emoji widths).
+  4. **Dependency hygiene**: Wired `.51` (`related` to `.47`, blocking `.42.7`) and `.32.6` (child of `.32`, blocking
+     `.32.4` and `.42.7`), and verified zero dependency cycles (`br dep cycles`) and zero orphan allowlist/ledger
+     references (`make gates`).
+  5. **Gate & ledger convergence**: Verified all 5 `make gates` scripts exit 0 (`reachability`, `claims`, `env-docs`,
+     `close-audit`, `baseline-benches`).
 
-### Recommended order
+### Recommended execution order from `3d570fea`
 
-1. `.6.37`: get one full, RCH-free verification receipt for HEAD.
-2. `.47.5`: truthful scrollback wording now.
-3. `.47.1` + `.47.2` → `.47.3` → `.47.4`.
-4. `.40.4` (one-line fix).
-5. `.49.1`/`.49.2`: restart the swarm on a truthful graph.
-6. `.5.9` + `.6.38`: make the gates able to fail.
-7. `.33.4`, then G51.
-8. G49 is measurement-gated.
-9. `.42.6`/`.42.7` make the next reality check a command.
+1. **`.6.39` + `.6.37`**: Fix the remaining 7 load-sensitive wall-clock test assertions and record a green 6/6 native
+   DSR `frankentui-full-gates` receipt (plus `--all-features` DSR lanes).
+2. **`.51` + `.42.8` + `.32.6`**: Fix the DECSTBM `log_row` overwrite / `write_log` CRLF / `UiAnchor::Top` bugs in
+   `terminal_writer.rs`, the tmux width-shrink reflow fragments in `.42.8`, and the `ProcessSubscription::pty(true)`
+   `TIOCSCTTY` / `\r`-progress / `ICANON` / F5-resize bugs in `process_subscription.rs` & `agent_shell.rs`.
+3. **`.48.1` → `.48.2` → `.48.3` → `.48.4` (G49)**: Stop `Buffer::reset_for_frame` from marking 100% of rows dirty
+   before `view()` and route `evaluate_render_certificate` through the span/SAT/block diff path.
+4. **`.31.11`**: Fix `grapheme_width_with_cjk` / `display_width` CJK emoji width calculation and S3-FIFO routing.
+5. **`.33.4` + `.50.3`/`.50.4`/`.50.6` (G27 & G51)**: Finish One-Writer enforcement (including `TerminalSession`) and the
+   runtime/web contract fixes (`Cmd::Batch` after `Quit`, `RenderBudget::next_frame` idle time, `InputFairnessGuard`,
+   `StepProgram`, `RenderThread`).
+6. **`.5.9` + `.6.38` + `.5.8` + `.5.11`**: Make the reachability/claims/E2E gates sound and complete the second
+   README truth pass with generated counts.
+7. **`.42.6` + `.42.7`**: Land the executable vision scorecard and complete the 100k-line flagship PTY/mux acceptance journey.
 
-Owner questions (`.49.3`) unblock the browser story, Shadow, and the deletions.
+Owner questions (`.49.3`) unblock the browser renderer story (`.29.*`), Shadow lane validation (`.30.6`), and the
+unreferenced-file deletions.
 
 ## Historical assessment: 2026-09-08, after publication of 0.7.0
 
