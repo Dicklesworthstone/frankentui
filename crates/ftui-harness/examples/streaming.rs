@@ -16,7 +16,10 @@
 //! Pending child prompts appear as sanitized previews; completed lines alone
 //! enter logs and counters. Ctrl-C interrupts the immediate child, a second
 //! press within two seconds quits, and F5 restarts after confirmed cleanup.
-//! This does not provide descendant-tree cleanup or binary output streaming.
+//! `--pty` (Unix) runs the child in its own session (`setsid`), forwards
+//! terminal resizes (`TIOCSWINSZ`), and kills the child process group before
+//! reaping the leader; pipe mode signals only the immediate child PID, and
+//! neither mode streams arbitrary non-UTF-8 binary output.
 
 use ftui::agent_shell::{CHILD_LINK_RETENTION_LINES, StreamingHarness, StreamingOptions};
 use ftui::{App, ScreenMode};

@@ -608,27 +608,53 @@ but it is not implemented in the current runtime API.
 Related docs:
 - `docs/concepts/screen-modes.md`
 
-## Part 6: PTY Child Process Capture (feature-gated)
+## Part 6: PTY Child Process Mode (`ProcessSubscription::pty`)
 
-Use PTY capture to keep subprocess output inside the one-writer path. The
-reference helper lives in `crates/ftui-harness/src/pty_capture.rs` and depends
-on `ftui-extras` with the `pty-capture` feature.
-
-Example (from the harness helper, simplified):
+Many CLI tools and coding agents check `isatty(stdout)` before emitting color,
+progress lines, or interactive prompts. On Unix, enable PTY child mode directly
+on `ProcessSubscription` (or pass `--pty` to `agent_shell` / `streaming`) so the
+child runs under a pseudo-terminal inside its own session (`setsid`) while all
+terminal output still flows through `Cmd::log` / `Cmd::log_text` and the
+one-writer `TerminalWriter`:
 
 ```rust
-#[cfg(feature = "pty-capture")]
-fn run_tool(writer: &mut ftui::TerminalWriter<std::io::Stdout>) -> std::io::Result<()> {
-    use ftui_harness::pty_capture::run_command_with_pty;
-    use ftui_extras::pty_capture::PtyCaptureConfig;
-    use portable_pty::CommandBuilder;
+use ftui::runtime::{ProcessControl, ProcessEvent, ProcessSubscription};
 
-    let mut cmd = CommandBuilder::new("sh");
-    cmd.args(["-c", "printf 'hello from tool\\n'"]);
+let control = ProcessControl::new();
+let sub = ProcessSubscription::new("my-agent", "python3", |event: ProcessEvent| {
+    Msg::Child(event)
+})
+.arg("-u")
+.arg("agent.py")
+.pty(true) // Unix: allocates a PTY, setsid(), forwards resize via control.request_resize(w, h)
+.with_control(control.clone());
+```
 
-    let _status = run_command_with_pty(writer, cmd, PtyCaptureConfig::default())?;
-    Ok(())
-}
+When the terminal resizes, forward `Event::Resize { width, height }` to the
+child PTY via `control.request_resize(width, height)` (which sends `TIOCSWINSZ`
+and `SIGWINCH` to the child group). On stop or quit, `ProcessSubscription`
+signals the child process group and kills remaining group descendants before
+reaping the session leader.
+
+For standalone command capture outside a `Program` loop, `ftui-harness` also
+provides `ftui_harness::pty_capture::run_command_with_pty` (behind the
+`pty-capture` feature).
+
+### End-to-end verification (multiplexers + plain PTY)
+
+Verify inline scrollback retention and `--pty` child cleanup across real
+`tmux`, `screen`, `zellij`, and a plain PTY:
+
+```bash
+# Plain PTY with and without CPR replies
+cargo test -p ftui --test agent_shell_plain_pty
+
+# Real tmux, screen, and zellij multiplexer matrix (10,000 lines + --pty)
+python3 -B tests/e2e/scripts/test_inline_scrollback_mux.py \
+  --agent-shell target/debug/examples/agent_shell \
+  --showcase target/debug/ftui-demo-showcase \
+  --lines 10000 \
+  --out /tmp/ftui-inline-scrollback-e2e
 ```
 
 ## Core Concepts (short and practical)
