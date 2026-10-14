@@ -77,13 +77,11 @@
 //! // Ctrl+C with non-empty input: clears input
 //! let state = AppState { input_nonempty: true, ..Default::default() };
 //! let ctrl_c = KeyEvent::new(KeyCode::Char('c')).with_modifiers(Modifiers::CTRL);
-//! let action = mapper.map(&ctrl_c, &state, now);
-//! assert!(matches!(action, Some(Action::ClearInput)));
+//! assert_eq!(mapper.map(&ctrl_c, &state, now), [Action::ClearInput]);
 //!
 //! // Ctrl+C with empty input and no task: quits (by default)
 //! let idle_state = AppState::default();
-//! let action = mapper.map(&ctrl_c, &idle_state, now);
-//! assert!(matches!(action, Some(Action::Quit)));
+//! assert_eq!(mapper.map(&ctrl_c, &idle_state, now), [Action::Quit]);
 //! ```
 
 use web_time::{Duration, Instant};
@@ -766,8 +764,7 @@ impl ActionConfig {
 /// let state = AppState::default();
 ///
 /// let key = KeyEvent::new(KeyCode::Char('q')).with_modifiers(Modifiers::CTRL);
-/// let action = mapper.map(&key, &state, now);
-/// assert!(matches!(action, Some(Action::HardQuit)));
+/// assert_eq!(mapper.map(&key, &state, now), [Action::HardQuit]);
 /// ```
 #[derive(Debug)]
 pub struct ActionMapper {
@@ -798,59 +795,64 @@ impl ActionMapper {
         Self::new(ActionConfig::from_env())
     }
 
-    /// Map a key event to an action based on current application state.
+    /// Map a key event to the actions it resolves to, in the order to apply them.
     ///
-    /// Returns `Some(action)` if the key resolves to an action, or `None`
-    /// if the event should be ignored (e.g., Noop on Ctrl+C when idle).
+    /// Usually one action. Empty while a lone Esc waits for a possible second
+    /// Esc (drive [`check_timeout`](Self::check_timeout) on ticks), or when the
+    /// resolved action is a no-op (e.g. Ctrl+C when idle with
+    /// [`CtrlCIdleAction::Noop`]). Two when the key interrupts a pending Esc
+    /// that has an action in `state`: the Esc's action first, then this key's
+    /// own; both are resolved against the same `state`. An Esc with no action
+    /// (idle) contributes nothing, as it does on timeout, so
+    /// [`Action::PassThrough`] always means: handle `event` itself.
     ///
     /// # Arguments
     ///
     /// * `event` - The key event to process
     /// * `state` - Current application state flags
     /// * `now` - Current timestamp for sequence detection
-    pub fn map(&mut self, event: &KeyEvent, state: &AppState, now: Instant) -> Option<Action> {
+    pub fn map(&mut self, event: &KeyEvent, state: &AppState, now: Instant) -> Vec<Action> {
         // Only process press events
         if event.kind != KeyEventKind::Press {
-            return Some(Action::PassThrough);
-        }
-
-        // Check for Ctrl+C, Ctrl+D, Ctrl+Q first (they don't participate in sequences)
-        if event.modifiers.contains(Modifiers::CTRL)
-            && let KeyCode::Char(c) = event.code
-        {
-            match c.to_ascii_lowercase() {
-                'c' => return self.resolve_ctrl_c(state),
-                'd' => return Some(Action::SoftQuit),
-                'q' => return Some(Action::HardQuit),
-                _ => {}
-            }
+            return vec![Action::PassThrough];
         }
 
         // Handle Escape through sequence detector
         if event.code == KeyCode::Escape && event.modifiers == Modifiers::NONE {
-            return self.handle_esc_sequence(state, now);
+            return self.handle_esc_sequence(state, now).into_iter().collect();
         }
 
-        // For non-Esc keys, check if we have a pending Esc
-        let seq_output = self.sequence_detector.feed(event, now);
-        match seq_output {
+        // Any other key ends a pending Esc, which takes effect first: "emit
+        // pending Esc first, then process" (keybinding policy).
+        let mut actions = Vec::with_capacity(2);
+        match self.sequence_detector.feed(event, now) {
             SequenceOutput::Esc => {
-                // Pending Esc was interrupted; resolve it and note the key is consumed
-                // The caller should re-feed the current key after handling Esc
-                // For now we return the Esc action; the current key is lost
-                // This matches the spec: "emit pending Esc first, then process"
-                self.resolve_single_esc(state)
+                if let Some(action) = self.resolve_single_esc(state)
+                    && action != Action::PassThrough
+                {
+                    actions.push(action);
+                }
             }
-            SequenceOutput::Pending => {
-                // Should not happen for non-Esc keys
-                Some(Action::PassThrough)
-            }
-            SequenceOutput::EscEsc => {
-                // Should not happen for non-Esc keys
-                Some(Action::ToggleTreeView)
-            }
-            SequenceOutput::PassThrough => Some(Action::PassThrough),
+            // The detector ignores modifiers: a modified Esc that completes
+            // `Esc Esc` belongs to the sequence and has no action of its own.
+            SequenceOutput::EscEsc => return vec![Action::ToggleTreeView],
+            SequenceOutput::Pending | SequenceOutput::PassThrough => {}
         }
+
+        // Ctrl+C, Ctrl+D and Ctrl+Q have policy actions; other keys pass through.
+        let own = match event.code {
+            KeyCode::Char(c) if event.modifiers.contains(Modifiers::CTRL) => {
+                match c.to_ascii_lowercase() {
+                    'c' => self.resolve_ctrl_c(state),
+                    'd' => Some(Action::SoftQuit),
+                    'q' => Some(Action::HardQuit),
+                    _ => Some(Action::PassThrough),
+                }
+            }
+            _ => Some(Action::PassThrough),
+        };
+        actions.extend(own);
+        actions
     }
 
     /// Handle Escape key through the sequence detector.
@@ -1839,6 +1841,11 @@ impl<A: Clone> KeyDispatcher<A> {
                     return out;
                 }
             }
+        } else if key.kind == KeyEventKind::Press && self.esc.is_pending() {
+            // A key that interrupts a lone Esc resolves it now, so the Esc
+            // takes effect before the key rather than at a later tick.
+            let output = self.esc.feed(key, now);
+            self.dispatch_esc(output, &mut out);
         }
 
         match key.kind {
@@ -2621,6 +2628,35 @@ mod keymap_tests {
             plain.tick(t0 + ms(300)),
             vec![Dispatch::Esc(SequenceOutput::Esc)]
         );
+    }
+
+    /// A key typed inside the Esc window resolves the lone Esc first, in the
+    /// same call: modal input (leave insert mode, then move) must not see the
+    /// key before the Esc, and no Esc may fire later at a tick.
+    #[test]
+    fn key_inside_the_esc_window_follows_the_resolved_esc() {
+        let mut map = KeyMap::new();
+        map.bind(chord("Esc"), Act::Mode);
+        map.bind(chord("j"), Act::Down);
+        let mut dispatcher = KeyDispatcher::new(map);
+        let esc = KeyEvent::new(KeyCode::Escape);
+        let t0 = Instant::now();
+
+        dispatcher.feed(&esc, t0);
+        assert_eq!(
+            actions(&dispatcher.feed(&press('j'), t0 + ms(50))),
+            vec![Act::Mode, Act::Down]
+        );
+        assert!(dispatcher.tick(t0 + ms(300)).is_empty());
+
+        // Unbound, the Esc verdict still comes first and the key still fires.
+        let mut plain = KeyMap::new();
+        plain.bind(chord("j"), Act::Down);
+        let mut plain = KeyDispatcher::new(plain);
+        plain.feed(&esc, t0);
+        let out = plain.feed(&press('j'), t0 + ms(50));
+        assert_eq!(out[0], Dispatch::Esc(SequenceOutput::Esc));
+        assert_eq!(actions(&out), vec![Act::Down]);
     }
 
     /// A map round-trips through TOML and JSON with chords as text, contexts
@@ -3406,7 +3442,7 @@ mod tests {
             let t = now();
 
             let action = mapper.map(&ctrl_c(), &input_state(), t);
-            assert_eq!(action, Some(Action::ClearInput));
+            assert_eq!(action, [Action::ClearInput]);
         }
 
         #[test]
@@ -3415,7 +3451,7 @@ mod tests {
             let t = now();
 
             let action = mapper.map(&ctrl_c(), &task_state(), t);
-            assert_eq!(action, Some(Action::CancelTask));
+            assert_eq!(action, [Action::CancelTask]);
         }
 
         #[test]
@@ -3424,7 +3460,7 @@ mod tests {
             let t = now();
 
             let action = mapper.map(&ctrl_c(), &idle_state(), t);
-            assert_eq!(action, Some(Action::Quit));
+            assert_eq!(action, [Action::Quit]);
         }
 
         #[test]
@@ -3433,7 +3469,7 @@ mod tests {
             let t = now();
 
             let action = mapper.map(&ctrl_c(), &modal_state(), t);
-            assert_eq!(action, Some(Action::DismissModal));
+            assert_eq!(action, [Action::DismissModal]);
         }
 
         #[test]
@@ -3444,7 +3480,7 @@ mod tests {
             // Both modal and input are set
             let state = AppState::new().with_modal(true).with_input(true);
             let action = mapper.map(&ctrl_c(), &state, t);
-            assert_eq!(action, Some(Action::DismissModal));
+            assert_eq!(action, [Action::DismissModal]);
         }
 
         #[test]
@@ -3454,7 +3490,7 @@ mod tests {
 
             let state = AppState::new().with_input(true).with_task(true);
             let action = mapper.map(&ctrl_c(), &state, t);
-            assert_eq!(action, Some(Action::ClearInput));
+            assert_eq!(action, [Action::ClearInput]);
         }
 
         #[test]
@@ -3464,7 +3500,7 @@ mod tests {
             let t = now();
 
             let action = mapper.map(&ctrl_c(), &idle_state(), t);
-            assert_eq!(action, None); // Noop returns None
+            assert!(action.is_empty(), "Noop resolves to no action: {action:?}");
         }
 
         #[test]
@@ -3474,7 +3510,7 @@ mod tests {
             let t = now();
 
             let action = mapper.map(&ctrl_c(), &idle_state(), t);
-            assert_eq!(action, Some(Action::Bell));
+            assert_eq!(action, [Action::Bell]);
         }
 
         // --- Ctrl+D and Ctrl+Q tests (policy priorities 10-11) ---
@@ -3485,7 +3521,7 @@ mod tests {
             let t = now();
 
             let action = mapper.map(&ctrl_d(), &idle_state(), t);
-            assert_eq!(action, Some(Action::SoftQuit));
+            assert_eq!(action, [Action::SoftQuit]);
         }
 
         #[test]
@@ -3495,10 +3531,10 @@ mod tests {
 
             // Ctrl+D always does SoftQuit regardless of state
             let action = mapper.map(&ctrl_d(), &modal_state(), t);
-            assert_eq!(action, Some(Action::SoftQuit));
+            assert_eq!(action, [Action::SoftQuit]);
 
             let action = mapper.map(&ctrl_d(), &input_state(), t);
-            assert_eq!(action, Some(Action::SoftQuit));
+            assert_eq!(action, [Action::SoftQuit]);
         }
 
         #[test]
@@ -3507,7 +3543,7 @@ mod tests {
             let t = now();
 
             let action = mapper.map(&ctrl_q(), &idle_state(), t);
-            assert_eq!(action, Some(Action::HardQuit));
+            assert_eq!(action, [Action::HardQuit]);
         }
 
         #[test]
@@ -3517,7 +3553,7 @@ mod tests {
 
             // Ctrl+Q always does HardQuit regardless of state
             let action = mapper.map(&ctrl_q(), &modal_state(), t);
-            assert_eq!(action, Some(Action::HardQuit));
+            assert_eq!(action, [Action::HardQuit]);
         }
 
         // --- Esc tests (policy priorities 1, 6-8) ---
@@ -3529,7 +3565,7 @@ mod tests {
 
             // First Esc: pending
             let action1 = mapper.map(&esc_press(), &modal_state(), t);
-            assert_eq!(action1, None);
+            assert!(action1.is_empty(), "a lone Esc waits: {action1:?}");
 
             // Timeout: emit Esc action
             let action2 = mapper.check_timeout(&modal_state(), t + MS_300);
@@ -3596,7 +3632,7 @@ mod tests {
 
             mapper.map(&esc_press(), &idle_state(), t);
             let action = mapper.map(&esc_press(), &idle_state(), t + MS_100);
-            assert_eq!(action, Some(Action::ToggleTreeView));
+            assert_eq!(action, [Action::ToggleTreeView]);
         }
 
         #[test]
@@ -3607,7 +3643,7 @@ mod tests {
             // Esc Esc always toggles tree view regardless of state
             mapper.map(&esc_press(), &modal_state(), t);
             let action = mapper.map(&esc_press(), &modal_state(), t + MS_100);
-            assert_eq!(action, Some(Action::ToggleTreeView));
+            assert_eq!(action, [Action::ToggleTreeView]);
         }
 
         #[test]
@@ -3620,22 +3656,59 @@ mod tests {
             let action = mapper.map(&esc_press(), &input_state(), t + MS_300);
 
             // First Esc timed out -> ClearInput, second starts new pending
-            assert_eq!(action, Some(Action::ClearInput));
+            assert_eq!(action, [Action::ClearInput]);
             assert!(mapper.is_pending_esc());
         }
 
         // --- Esc then other key ---
 
         #[test]
-        fn test_esc_then_other_key() {
+        fn test_esc_then_other_key_keeps_the_key() {
             let mut mapper = ActionMapper::with_defaults();
             let t = now();
 
             mapper.map(&esc_press(), &input_state(), t);
-            let action = mapper.map(&key_press(KeyCode::Char('a')), &input_state(), t + MS_50);
+            let action = mapper.map(&key_press(KeyCode::Char('j')), &input_state(), t + MS_50);
 
-            // Pending Esc is emitted
-            assert_eq!(action, Some(Action::ClearInput));
+            // The pending Esc takes effect first, then the key itself.
+            assert_eq!(action, [Action::ClearInput, Action::PassThrough]);
+            assert!(!mapper.is_pending_esc());
+        }
+
+        #[test]
+        fn test_idle_esc_then_other_key_passes_only_the_key() {
+            let mut mapper = ActionMapper::with_defaults();
+            let t = now();
+
+            mapper.map(&esc_press(), &idle_state(), t);
+            let action = mapper.map(&key_press(KeyCode::Char('j')), &idle_state(), t + MS_50);
+
+            // An idle Esc has no action (as on timeout); PassThrough is the key's.
+            assert_eq!(action, [Action::PassThrough]);
+        }
+
+        #[test]
+        fn test_esc_then_policy_key_applies_both_in_order() {
+            let mut mapper = ActionMapper::with_defaults();
+            let t = now();
+
+            mapper.map(&esc_press(), &overlay_state(), t);
+            let action = mapper.map(&ctrl_q(), &overlay_state(), t + MS_50);
+            assert_eq!(action, [Action::CloseOverlay, Action::HardQuit]);
+
+            // Nothing is left to fire on a later tick.
+            assert_eq!(mapper.check_timeout(&overlay_state(), t + MS_300), None);
+        }
+
+        #[test]
+        fn test_esc_then_modified_esc_completes_the_sequence() {
+            let mut mapper = ActionMapper::with_defaults();
+            let t = now();
+
+            mapper.map(&esc_press(), &idle_state(), t);
+            let shift_esc = KeyEvent::new(KeyCode::Escape).with_modifiers(Modifiers::SHIFT);
+            let action = mapper.map(&shift_esc, &idle_state(), t + MS_50);
+            assert_eq!(action, [Action::ToggleTreeView]);
         }
 
         // --- Other keys passthrough ---
@@ -3646,7 +3719,7 @@ mod tests {
             let t = now();
 
             let action = mapper.map(&key_press(KeyCode::Char('x')), &idle_state(), t);
-            assert_eq!(action, Some(Action::PassThrough));
+            assert_eq!(action, [Action::PassThrough]);
         }
 
         #[test]
@@ -3656,7 +3729,7 @@ mod tests {
 
             let release = KeyEvent::new(KeyCode::Char('x')).with_kind(KeyEventKind::Release);
             let action = mapper.map(&release, &idle_state(), t);
-            assert_eq!(action, Some(Action::PassThrough));
+            assert_eq!(action, [Action::PassThrough]);
         }
 
         // --- State helper tests ---
@@ -3801,7 +3874,7 @@ mod tests {
             // Ctrl+C with uppercase 'C' should also work
             let ctrl_c_upper = KeyEvent::new(KeyCode::Char('C')).with_modifiers(Modifiers::CTRL);
             let action = mapper.map(&ctrl_c_upper, &idle_state(), t);
-            assert_eq!(action, Some(Action::Quit));
+            assert_eq!(action, [Action::Quit]);
         }
 
         // --- Validation tests ---

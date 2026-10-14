@@ -597,23 +597,21 @@ impl AgentHarness {
             return Cmd::None;
         }
 
-        // Use the ActionMapper for keybinding resolution
+        // Use the ActionMapper for keybinding resolution. A key that ends a
+        // pending Esc yields the Esc's action first, then its own; none while
+        // a lone Esc waits (the tick's timeout check resolves it) or for Noop.
         let state = self.app_state();
         let now = Instant::now();
-        match self.action_mapper.map(&key, &state, now) {
-            Some(Action::PassThrough) => {
-                // Pass through to raw key handling
-                return self.handle_raw_key(key);
-            }
-            Some(action) => {
-                return self.handle_action(action);
-            }
-            None => {
-                // ActionMapper returned None (e.g., pending Esc or Noop)
-                // Nothing to do right now; timeout will be checked on tick
-            }
-        }
-        Cmd::None
+        let commands = self
+            .action_mapper
+            .map(&key, &state, now)
+            .into_iter()
+            .map(|action| match action {
+                Action::PassThrough => self.handle_raw_key(key),
+                action => self.handle_action(action),
+            })
+            .collect();
+        Cmd::sequence(commands)
     }
 
     /// Handle a resolved keybinding action.
