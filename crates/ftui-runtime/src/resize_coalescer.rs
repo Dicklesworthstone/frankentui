@@ -1031,8 +1031,29 @@ impl ResizeCoalescer {
         self.handle_resize_at(width, height, Instant::now())
     }
 
+    /// Handle a resize event while optionally deferring immediate apply so
+    /// `Program::process_resize_coalescer` can evaluate input fairness first.
+    pub(crate) fn handle_resize_with_fairness(
+        &mut self,
+        width: u16,
+        height: u16,
+        defer_immediate_apply: bool,
+    ) -> CoalesceAction {
+        self.handle_resize_at_with_fairness(width, height, Instant::now(), defer_immediate_apply)
+    }
+
     /// Handle a resize event at a specific time (for testing).
     pub fn handle_resize_at(&mut self, width: u16, height: u16, now: Instant) -> CoalesceAction {
+        self.handle_resize_at_with_fairness(width, height, now, false)
+    }
+
+    fn handle_resize_at_with_fairness(
+        &mut self,
+        width: u16,
+        height: u16,
+        now: Instant,
+        defer_immediate_apply: bool,
+    ) -> CoalesceAction {
         self.event_count += 1;
 
         // Calculate dt
@@ -1082,7 +1103,9 @@ impl ResizeCoalescer {
         // a quiet gap is applied instantly, but it is not a deadline breach
         // and must not inflate the SLA forced count (bd-1za0z).
         let time_since_render = duration_since_or_zero(now, self.last_render);
-        if time_since_render >= Duration::from_millis(self.config.hard_deadline_ms) {
+        if !defer_immediate_apply
+            && time_since_render >= Duration::from_millis(self.config.hard_deadline_ms)
+        {
             return self.apply_pending_at(now, had_pending_before_event);
         }
 
@@ -1093,7 +1116,10 @@ impl ResizeCoalescer {
             None => false, // First event must be coalesced to establish steady state timing
         };
 
-        if time_ok && (!self.heuristic_decides() || self.regime == Regime::Steady) {
+        if !defer_immediate_apply
+            && time_ok
+            && (!self.heuristic_decides() || self.regime == Regime::Steady)
+        {
             return self.apply_pending_at(now, false);
         }
 

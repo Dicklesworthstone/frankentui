@@ -1398,8 +1398,8 @@ Properties:
     F = 1/n  →  Complete unfairness (one dominates)
 
 Intervention:
-    if input_latency > threshold OR F < 0.8:
-        force_coalescer_yield()
+    if input_latency >= 50ms OR resize_dominance >= 3 OR F < 0.8:
+        defer_pending_resize()  // Program::process_resize_coalescer yields to input
 ```
 
 **Why Jain's?** Scale-independent, bounded [1/n, 1], interpretable.
@@ -2552,8 +2552,8 @@ Prevents render work from starving input processing:
 ```
 Fairness Index: F = (Σx_i)² / (n × Σx_i²)   ← Jain's Fairness Index
 
-Intervention: if input_latency > threshold OR F < 0.8:
-  force_resize_coalescer_yield()
+Intervention: if input_latency >= 50ms OR resize_dominance >= 3 OR F < 0.8:
+  defer_pending_resize()  // InputFairnessGuard::check_fairness yields to input
 ```
 
 ---

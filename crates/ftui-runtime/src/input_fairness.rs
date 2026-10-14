@@ -26,16 +26,17 @@
 //!
 //! ## Starvation Detection
 //!
-//! Input starvation is detected when:
-//! 1. Input latency exceeds `max_input_latency`, OR
-//! 2. Consecutive resize-dominated cycles exceed `dominance_threshold`
+//! Input starvation is detected when pending input is present and:
+//! 1. Input latency exceeds `input_priority_threshold` (default 50ms), OR
+//! 2. Consecutive resize-dominated cycles reach `dominance_threshold` (default 3), OR
+//! 3. Jain's fairness index `F < fairness_threshold` (default 0.8) with resize time exceeding input time
 //!
 //! ## Intervention
 //!
 //! When starvation is detected:
-//! 1. Force resize coalescer to yield (apply the pending resize instead of coalescing further)
-//! 2. Log the intervention with evidence
-//! 3. Reset dominance counter
+//! 1. Defer applying the pending coalesced resize for that cycle (`FairnessDecision::yield_to_input = true`) so queued input and its frame render proceed first
+//! 2. Log the intervention (`fairness_decision` evidence with `decision = "yield"`)
+//! 3. Reset the resize dominance counter
 //!
 //! # Invariants
 //!
@@ -517,6 +518,25 @@ impl InputFairnessGuard {
     /// Check if there is pending input.
     pub fn has_pending_input(&self) -> bool {
         self.pending_input_arrival.is_some()
+    }
+
+    /// Pure query returning whether a fairness check at `now` would intervene
+    /// to yield resize work to pending input, without mutating counters.
+    #[must_use]
+    pub fn should_yield_resize(&self, now: Instant) -> bool {
+        if !self.config.enabled {
+            return false;
+        }
+        let Some(arrival) = self.pending_input_arrival else {
+            return false;
+        };
+        let pending_latency = Some(
+            now.checked_duration_since(arrival)
+                .unwrap_or(Duration::ZERO),
+        );
+        let jain = self.calculate_jain_index();
+        self.determine_intervention_reason(pending_latency, jain, true)
+            .requires_intervention()
     }
 
     /// Reset the guard state (useful for testing).

@@ -5378,6 +5378,8 @@ pub struct Program<
     resize_behavior: ResizeBehavior,
     /// Input fairness guard for scheduler integration.
     fairness_guard: InputFairnessGuard,
+    /// Accumulated input processing duration awaiting the cycle's resize-fairness check.
+    pending_fairness_input_duration: Option<Duration>,
     /// Optional event recorder for macro capture.
     event_recorder: Option<EventRecorder>,
     /// Subscription lifecycle manager.
@@ -5648,6 +5650,7 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
             fairness_config_logged: false,
             resize_behavior: config.resize_behavior,
             fairness_guard: InputFairnessGuard::new(),
+            pending_fairness_input_duration: None,
             event_recorder: None,
             subscriptions,
             #[cfg(test)]
@@ -5826,6 +5829,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             fairness_config_logged: false,
             resize_behavior: config.resize_behavior,
             fairness_guard: InputFairnessGuard::new(),
+            pending_fairness_input_duration: None,
             event_recorder: None,
             subscriptions,
             #[cfg(test)]
@@ -6294,6 +6298,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 
             // Check for tick - deliver to model so periodic logic can run
             if self.should_tick() {
+                let tick_start = Instant::now();
                 self.tick_count = self.tick_count.wrapping_add(1);
                 let tick_count = self.tick_count;
 
@@ -6399,6 +6404,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                         self.reconcile_subscriptions();
                     }
                 }
+
+                self.fairness_guard.event_processed(
+                    FairnessEventType::Tick,
+                    tick_start.elapsed(),
+                    Instant::now(),
+                );
             }
 
             // Check for periodic checkpoint save
@@ -6792,7 +6803,13 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                         return result;
                     }
                     ResizeBehavior::Throttled => {
-                        let action = self.resize_coalescer.handle_resize(width, height);
+                        let defer_immediate_apply =
+                            self.fairness_guard.should_yield_resize(Instant::now());
+                        let action = self.resize_coalescer.handle_resize_with_fairness(
+                            width,
+                            height,
+                            defer_immediate_apply,
+                        );
                         if let CoalesceAction::ApplyResize {
                             width,
                             height,
@@ -6857,6 +6874,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             for evt in to_dispatch {
                 self.dispatch_input_event(evt)?;
                 if !self.running {
+                    self.record_fairness_event(fairness_event_type, event_start.elapsed());
                     return Ok(());
                 }
             }
@@ -6871,13 +6889,34 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         }
 
         // Track input event processing for fairness.
-        self.fairness_guard.event_processed(
-            fairness_event_type,
-            event_start.elapsed(),
-            Instant::now(),
-        );
+        self.record_fairness_event(fairness_event_type, event_start.elapsed());
 
         Ok(())
+    }
+
+    fn record_fairness_event(&mut self, event_type: FairnessEventType, duration: Duration) {
+        if event_type == FairnessEventType::Input && self.resize_behavior.uses_coalescer() {
+            *self
+                .pending_fairness_input_duration
+                .get_or_insert(Duration::ZERO) += duration;
+        } else {
+            self.fairness_guard
+                .event_processed(event_type, duration, Instant::now());
+        }
+    }
+
+    fn complete_pending_fairness_input(&mut self, now: Instant) {
+        if self
+            .event_coalescer
+            .as_ref()
+            .is_some_and(ftui_core::event_coalescer::EventCoalescer::has_pending)
+        {
+            return;
+        }
+        if let Some(duration) = self.pending_fairness_input_duration.take() {
+            self.fairness_guard
+                .event_processed(FairnessEventType::Input, duration, now);
+        }
     }
 
     /// Dispatch a single input event to the model's `update()` method,
@@ -6918,12 +6957,14 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             Some(coalescer) if coalescer.has_pending() => coalescer.flush(),
             _ => return Ok(()),
         };
+        let flush_start = Instant::now();
         for event in pending {
             self.dispatch_input_event(event)?;
             if !self.running {
                 break;
             }
         }
+        self.record_fairness_event(FairnessEventType::Input, flush_start.elapsed());
         Ok(())
     }
 
@@ -8129,14 +8170,17 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 
     fn process_resize_coalescer(&mut self) -> io::Result<()> {
         if !self.resize_behavior.uses_coalescer() {
+            self.complete_pending_fairness_input(Instant::now());
             return Ok(());
         }
 
         // Check fairness: if input is starving, skip resize application this cycle.
         // This ensures input events are processed before resize is finalized.
+        let now = Instant::now();
         let dominance_count = self.fairness_guard.resize_dominance_count();
-        let fairness_decision = self.fairness_guard.check_fairness(Instant::now());
+        let fairness_decision = self.fairness_guard.check_fairness(now);
         self.emit_fairness_evidence(&fairness_decision, dominance_count);
+        self.complete_pending_fairness_input(now);
         if !fairness_decision.should_process {
             debug!(
                 reason = ?fairness_decision.reason,
@@ -8174,7 +8218,16 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 height,
                 coalesce_time,
                 forced_by_deadline,
-            } => self.apply_resize(width, height, coalesce_time, forced_by_deadline),
+            } => {
+                let apply_start = Instant::now();
+                let result = self.apply_resize(width, height, coalesce_time, forced_by_deadline);
+                self.fairness_guard.event_processed(
+                    FairnessEventType::Resize,
+                    apply_start.elapsed(),
+                    Instant::now(),
+                );
+                result
+            }
             _ => Ok(()),
         }
     }
@@ -13292,6 +13345,7 @@ mod tests {
             fairness_config_logged: false,
             resize_behavior: config.resize_behavior,
             fairness_guard: InputFairnessGuard::new(),
+            pending_fairness_input_duration: None,
             event_recorder: None,
             subscriptions,
             #[cfg(test)]
@@ -17105,6 +17159,128 @@ mod tests {
         assert!(decision_line["dominance_threshold"].is_number());
         assert!(decision_line["fairness_threshold"].is_number());
         assert!(decision_line["input_priority_threshold_ms"].is_number());
+    }
+
+    #[test]
+    fn headless_input_event_starvation_defers_resize_coalescer_then_applies_next_cycle() {
+        struct ResizeAndKeyModel {
+            events: Vec<String>,
+            last_size: Option<(u16, u16)>,
+        }
+
+        #[derive(Debug)]
+        enum Msg {
+            Resize(u16, u16),
+            Key(char),
+            Other,
+        }
+
+        impl From<Event> for Msg {
+            fn from(event: Event) -> Self {
+                match event {
+                    Event::Resize { width, height } => Msg::Resize(width, height),
+                    Event::Key(k) => match k.code {
+                        KeyCode::Char(c) => Msg::Key(c),
+                        _ => Msg::Other,
+                    },
+                    _ => Msg::Other,
+                }
+            }
+        }
+
+        impl Model for ResizeAndKeyModel {
+            type Message = Msg;
+
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    Msg::Resize(w, h) => {
+                        self.events.push(format!("resize:{w}x{h}"));
+                        self.last_size = Some((w, h));
+                    }
+                    Msg::Key(c) => {
+                        self.events.push(format!("key:{c}"));
+                    }
+                    Msg::Other => {}
+                }
+                Cmd::none()
+            }
+
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let evidence_path = temp_evidence_path("fairness_handle_event_storm");
+        let sink_config = EvidenceSinkConfig::enabled_file(&evidence_path);
+        let mut config = ProgramConfig::default().with_resize_behavior(ResizeBehavior::Throttled);
+        config.resize_coalescer.steady_delay_ms = 0;
+        config.resize_coalescer.burst_delay_ms = 0;
+        config.resize_coalescer.hard_deadline_ms = 10_000;
+        config.evidence_sink = sink_config.clone();
+
+        let mut program = headless_program_with_config(
+            ResizeAndKeyModel {
+                events: Vec::new(),
+                last_size: None,
+            },
+            config,
+        );
+        let sink = EvidenceSink::from_config(&sink_config)
+            .expect("evidence sink config")
+            .expect("evidence sink enabled");
+        program.evidence_sink = Some(sink);
+
+        // Configure dominance threshold = 2 and disable fairness_index so we isolate
+        // resize dominance across real handle_event() calls.
+        program.fairness_guard =
+            InputFairnessGuard::with_config(crate::input_fairness::FairnessConfig {
+                input_priority_threshold: Duration::from_secs(10),
+                dominance_threshold: 2,
+                fairness_threshold: 0.5,
+                enabled: true,
+            });
+
+        // Key arrives, followed by 2 throttled resizes in the same burst before
+        // process_resize_coalescer runs.
+        program
+            .handle_event(Event::Key(KeyEvent::new(KeyCode::Char('a'))))
+            .expect("handle key");
+        program
+            .handle_event(Event::Resize {
+                width: 100,
+                height: 30,
+            })
+            .expect("handle resize 1");
+        program
+            .handle_event(Event::Resize {
+                width: 120,
+                height: 40,
+            })
+            .expect("handle resize 2");
+
+        // Key was dispatched, and resize was coalesced (not applied prematurely).
+        assert_eq!(program.model().events, vec!["key:a"]);
+        assert_eq!(program.model().last_size, None);
+        assert!(program.resize_coalescer.has_pending());
+
+        // Cycle 1: process_resize_coalescer sees the pending input from this cycle
+        // and yields due to resize dominance, deferring the pending resize.
+        program
+            .process_resize_coalescer()
+            .expect("process resize coalescer cycle 1");
+        assert_eq!(program.model().last_size, None);
+        assert!(program.resize_coalescer.has_pending());
+
+        let decision_line = read_evidence_event(&evidence_path, "fairness_decision");
+        assert_eq!(decision_line["decision"], "yield");
+        assert_eq!(decision_line["reason"], "resize_dominance");
+
+        // Cycle 2: input turn completed and reset dominance, so the next cycle
+        // applies the pending resize.
+        program
+            .process_resize_coalescer()
+            .expect("process resize coalescer cycle 2");
+        assert_eq!(program.model().last_size, Some((120, 40)));
+        assert!(!program.resize_coalescer.has_pending());
+        assert_eq!(program.model().events, vec!["key:a", "resize:120x40"]);
     }
 
     #[test]
