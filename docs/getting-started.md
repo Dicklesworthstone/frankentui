@@ -15,7 +15,7 @@ path to a working inline (scrollback-preserving) UI.
 ## Stability Notes
 
 - Expect breaking API changes: this is pre-1.0 and moving fast.
-- These examples target 0.7.0. Use the version dependency below, or a local
+- These examples target 0.9.0. Use the version dependency below, or a local
   checkout when developing against repository source.
 - The facade's default features compile a terminal backend (native `ftui-tty`
   on Unix, Crossterm elsewhere) so `App::run()` works without configuration.
@@ -24,20 +24,23 @@ path to a working inline (scrollback-preserving) UI.
 
 Core stack (what most applications use):
 
-- `ftui` (facade): recommended entry point; re-exports core APIs.
+- `ftui` (facade): recommended entry point; re-exports core APIs and `agent_shell`.
 - `ftui-core`: terminal lifecycle, capabilities, and input events.
 - `ftui-render`: buffer/frame, diff computation, and ANSI presenter.
 - `ftui-runtime`: Elm-style program loop, subscriptions, and terminal writer.
 - `ftui-widgets`: core widget library.
-- `ftui-layout`, `ftui-style`, `ftui-text`, `ftui-i18n`: supporting crates.
+- `ftui-layout`, `ftui-style`, `ftui-text`, `ftui-i18n`, `ftui-a11y`: supporting layout, styling, text, localization, and accessibility crates.
+- `ftui-backend`, `ftui-tty`: backend traits and native Unix TTY backend.
 
-Optional / higher-churn:
+Optional / web / verification:
 
-- `ftui-extras`: feature-gated add-ons (markdown, syntax highlighting, mermaid, text effects).
+- `ftui-extras`: feature-gated add-ons (markdown, syntax highlighting, mermaid, text effects, VFX).
+- `ftui-web`, `ftui-showcase-wasm`: WASM-friendly backend (`StepProgram`) and browser showcase target.
 - `ftui-harness`: snapshot + PTY helpers and runnable examples (used heavily in this guide).
 - `ftui-pty`: PTY utilities for tests.
-- `ftui-demo-showcase`: reference app + visual snapshots.
-- `ftui-simd`: internal perf experiments.
+- `ftui-demo-showcase`: reference app + visual snapshots (45 screens).
+- `ftui-simd`: internal portable-SIMD kernels (opt-in).
+- `doctor_frankentui`: verification harness, capture/replay, and migration synthesis.
 
 ## Prereqs
 
@@ -80,7 +83,7 @@ python3 -m http.server --directory /absolute/new-browser-build/site 8080
 ```
 
 The helper requires Cargo, Python 3.11+, curl, tar and `wasm-bindgen` matching
-both checked-in locks (currently `0.2.127`). Install the CLI through Cargo on the
+both checked-in locks (currently `0.2.128`). Install the CLI through Cargo on the
 DSR host when needed. It builds the current showcase and renderer source at
 `88b402b8be9c70a4405895d4172e449940cab2fe`, verifies the source archive SHA-256,
 and applies `crates/ftui-showcase-wasm/renderer.lock` to that isolated source
@@ -209,11 +212,11 @@ Do **not** embed xterm.js as a fallback for this integration path.
 
 ## Add The Dependency
 
-The examples in this guide target 0.7.0 through the `ftui` facade:
+The examples in this guide target 0.9.0 through the `ftui` facade:
 
 ```toml
 [dependencies]
-ftui = "=0.7.0"
+ftui = "=0.9.0"
 ```
 
 To use a local checkout instead, replace that dependency with a path. Adjust
@@ -235,10 +238,10 @@ If you only want a small slice, you can depend on individual crates directly:
 
 ```toml
 [dependencies]
-ftui-core = "=0.7.0"
-ftui-runtime = "=0.7.0"
-ftui-render = "=0.7.0"
-ftui-widgets = "=0.7.0"
+ftui-core = "=0.9.0"
+ftui-runtime = "=0.9.0"
+ftui-render = "=0.9.0"
+ftui-widgets = "=0.9.0"
 ```
 
 For local development, replace each version with a path to its directory under
@@ -392,6 +395,9 @@ See [one-writer-rule.md](one-writer-rule.md).
 
 All of these are runnable and kept aligned with the repo's current APIs:
 
+- [`crates/ftui/examples/getting_started.rs`](../crates/ftui/examples/getting_started.rs) (the inline app from this guide, via the `ftui` facade)
+- [`crates/ftui/examples/minimal_inline.rs`](../crates/ftui/examples/minimal_inline.rs) (the README's front-page inline counter)
+- [`crates/ftui/examples/agent_shell.rs`](../crates/ftui/examples/agent_shell.rs) (canonical inline agent shell + subprocess streaming, with `--pty`)
 - [`crates/ftui-harness/examples/minimal.rs`](../crates/ftui-harness/examples/minimal.rs) (hello world)
 - [`crates/ftui-harness/examples/streaming.rs`](../crates/ftui-harness/examples/streaming.rs) (streaming output + inline UI)
 - [`crates/ftui-harness/examples/counter.rs`](../crates/ftui-harness/examples/counter.rs) (state updates)
