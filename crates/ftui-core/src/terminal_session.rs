@@ -84,7 +84,7 @@ use crate::event::Event;
 use crate::session_teardown::seq;
 use crate::session_teardown::{
     KittyPopLatch, TeardownPlan, install_chained_panic_hook, panic_cleanup_suppressed,
-    terminal_output_lock,
+    terminal_output_lock, write_deferred_panic_reports,
 };
 use crate::terminal_capabilities::TerminalCapabilities;
 
@@ -1181,6 +1181,7 @@ impl TerminalSession {
 
         // Flush to ensure cleanup bytes are sent
         let _ = stdout.flush();
+        let _ = write_deferred_panic_reports(&mut io::stderr());
 
         // Release process-wide exclusivity only after terminal state is restored.
         let _ = self.session_lock.take();
@@ -1221,7 +1222,9 @@ fn size_from_env() -> Option<(u16, u16)> {
 }
 
 fn install_panic_hook() {
-    install_chained_panic_hook("ftui-core", best_effort_cleanup);
+    install_chained_panic_hook("ftui-core", best_effort_cleanup, || {
+        TERMINAL_SESSION_ACTIVE.load(Ordering::SeqCst)
+    });
 }
 
 /// Best-effort cleanup for termination paths that skip `Drop`.
@@ -1239,6 +1242,7 @@ fn best_effort_cleanup() {
     let mut stdout = io::stdout();
     let caps = TerminalCapabilities::with_overrides();
     best_effort_cleanup_to(&mut stdout, &caps);
+    let _ = write_deferred_panic_reports(&mut io::stderr());
 }
 
 /// Emission body of `best_effort_cleanup`, parameterized over the output

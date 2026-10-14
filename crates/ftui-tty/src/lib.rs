@@ -39,6 +39,7 @@ use ftui_core::session_teardown::seq::{
 };
 use ftui_core::session_teardown::{
     KittyPopLatch, TeardownPlan, install_chained_panic_hook, terminal_output_lock,
+    write_deferred_panic_reports,
 };
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 #[cfg(test)]
@@ -253,6 +254,7 @@ fn best_effort_termination_cleanup() {
     let caps = TerminalCapabilities::with_overrides();
     termination_cleanup_to(&mut io::stdout(), &caps);
     restore_raw_mode_snapshot();
+    let _ = write_deferred_panic_reports(&mut io::stderr());
 }
 
 /// Emission body of `best_effort_termination_cleanup`, parameterized over the
@@ -282,7 +284,9 @@ fn termination_cleanup_to(out: &mut impl Write, caps: &TerminalCapabilities) {
 
 #[cfg(unix)]
 fn install_abort_panic_hook() {
-    install_chained_panic_hook("ftui-tty", best_effort_termination_cleanup);
+    install_chained_panic_hook("ftui-tty", best_effort_termination_cleanup, || {
+        TTY_SESSION_ACTIVE.load(Ordering::SeqCst)
+    });
 }
 
 #[cfg(unix)]
@@ -1625,7 +1629,10 @@ impl Drop for TtyBackend {
             // Flush everything before RawModeGuard restores termios.
             let _ = stdout.flush();
 
-            // RawModeGuard::drop() runs after this, restoring original termios.
+            // Restore termios here rather than after this body, so reports of
+            // panics recovered during the session print in cooked mode.
+            self.raw_mode = None;
+            let _ = write_deferred_panic_reports(&mut io::stderr());
         }
     }
 }
