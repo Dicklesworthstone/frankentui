@@ -407,6 +407,11 @@ successful frame logs and input recovery do not prove visible rendering.
 ./scripts/widget_api_e2e.sh
 ./scripts/demo_showcase_e2e.sh
 
+# Agent shell headless 10k-line simulator + plain PTY + multiplexer scrollback E2E
+cargo test -p ftui --test agent_shell_sim
+cargo test -p ftui --test agent_shell_plain_pty
+python3 -B tests/e2e/scripts/test_inline_scrollback_mux.py --agent-shell target/debug/examples/agent_shell --showcase target/debug/ftui-demo-showcase --lines 10000 --out /tmp/ftui-inline-scrollback-e2e
+
 # Run the demo showcase manually
 cargo run -p ftui-demo-showcase
 ```

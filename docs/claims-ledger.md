@@ -46,7 +46,7 @@ Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
 As of 2026-10-14 the distribution across 152 rows is 5 pending-code,
-25 pending-doc, 57 retracted and 65 proven. Regenerate this sentence from
+24 pending-doc, 57 retracted and 66 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -238,9 +238,9 @@ complete `.5.2`.
 | C35 | VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | README.md :: VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::program::inline_auto_remeasure_config_defaults | proven | 2026-09-19 |
 | C36 | SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | README.md :: SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | api | CODE | bd-g00-root-epic-ewths.18 | ident:PROVENANCE: these constants were written by hand | retracted | 2026-09-18 |
 | C37 | `no_flicker_proof.rs` | README.md :: `no_flicker_proof.rs` | api | DOC | bd-g00-root-epic-ewths.48.4 | test:ftui-render::no_flicker_proof::certified_and_dirty_diff_match_full_diff_and_wrap_sync_brackets; test:ftui-harness::render_no_flicker_proof::theorem1_sync_brackets_wrap_all_content | proven | 2026-10-14 |
-| V01 | Inline mode with scrollback preservation and stable chrome | README.md :: Inline mode with scrollback preservation and stable chrome | status | CODE | bd-g00-root-epic-ewths.47 | test:ftui-runtime::e2e_inline_mode_scrollback::multiple_render_passes_preserve_scrollback; test:ftui-runtime::e2e_inline_mode_scrollback::first_frame_does_not_overwrite_shell_output; test:ftui-runtime::e2e_inline_mode_scrollback::inline_auto_mode_preserves_scrollback; test:ftui-runtime::e2e_inline_mode_scrollback::scrollback_intact_after_widget_removal | proven | 2026-10-13 |
+| V01 | Inline mode with scrollback preservation and stable chrome | README.md :: Inline mode with scrollback preservation and stable chrome | status | CODE | bd-g00-root-epic-ewths.47 | test:ftui::agent_shell_sim::inline_writer_never_clears_screen_for_agent_shell_stream; test:ftui-runtime::e2e_inline_mode_scrollback::multiple_render_passes_preserve_scrollback; test:ftui-runtime::e2e_inline_mode_scrollback::first_frame_does_not_overwrite_shell_output; test:ftui-runtime::e2e_inline_mode_scrollback::inline_auto_mode_preserves_scrollback; test:ftui-runtime::e2e_inline_mode_scrollback::scrollback_intact_after_widget_removal; path:crates/ftui/examples/agent_shell.rs; path:tests/e2e/scripts/test_inline_scrollback_mux.py | proven | 2026-10-14 |
 | V02 | Deterministic Buffer -> Diff -> Presenter -> ANSI | README.md :: Deterministic Buffer -> Diff -> Presenter -> ANSI | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
-| V03 | One-writer rule | README.md :: One-writer rule | status | DOC | bd-g00-root-epic-ewths.33.4 | bead:bd-g00-root-epic-ewths.33.4 | pending-doc | - |
+| V03 | One-writer rule | README.md :: One-writer rule | status | DOC | bd-g00-root-epic-ewths.33.4 | test:ftui-runtime::program::tests::cmd_log_dispatches_to_writer_modes; test:ftui::one_writer_pty::a_recovered_task_panic_is_reported_after_the_teardown_not_over_the_ui | proven | 2026-10-14 |
 | V04 | RAII cleanup even on panic | README.md :: RAII cleanup even on panic | status | DOC | bd-g00-root-epic-ewths.37 | bead:bd-g00-root-epic-ewths.37 | pending-doc | - |
 | V05 | Composable crates, add only what you need | README.md :: Composable crates, add only what you need | status | CODE | bd-g00-root-epic-ewths.1 | test:ftui::default_backend::default_features_select_a_terminal_backend; test:ftui::readme_snippets::readme_minimal_example_is_the_shipped_example | proven | 2026-10-14 |
 | V06 | 80+ widgets | README.md :: 80+ widgets | status | CODE | bd-g00-root-epic-ewths.23 | count:91 Widget/StatefulWidget impls under crates/ftui-widgets/src >= 80 | proven | 2026-09-19 |

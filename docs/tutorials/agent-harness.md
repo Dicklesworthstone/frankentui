@@ -617,17 +617,18 @@ child runs under a pseudo-terminal inside its own session (`setsid`) while all
 terminal output still flows through `Cmd::log` / `Cmd::log_text` and the
 one-writer `TerminalWriter`:
 
-```rust
+```rust,ignore
+// (fragment)
 use ftui::runtime::{ProcessControl, ProcessEvent, ProcessSubscription};
 
 let control = ProcessControl::new();
-let sub = ProcessSubscription::new("my-agent", "python3", |event: ProcessEvent| {
+let sub = ProcessSubscription::new("python3", |event: ProcessEvent| {
     Msg::Child(event)
 })
 .arg("-u")
 .arg("agent.py")
 .pty(true) // Unix: allocates a PTY, setsid(), forwards resize via control.request_resize(w, h)
-.with_control(control.clone());
+.control(control.clone());
 ```
 
 When the terminal resizes, forward `Event::Resize { width, height }` to the
@@ -646,6 +647,9 @@ Verify inline scrollback retention and `--pty` child cleanup across real
 `tmux`, `screen`, `zellij`, and a plain PTY:
 
 ```bash
+# Headless 10k-line simulator and wire-invariant checks
+cargo test -p ftui --test agent_shell_sim
+
 # Plain PTY with and without CPR replies
 cargo test -p ftui --test agent_shell_plain_pty
 

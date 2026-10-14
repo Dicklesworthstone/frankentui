@@ -553,6 +553,50 @@ impl StreamingHarness {
         }
     }
 
+    /// Delivered child line count for the current run.
+    #[must_use]
+    pub const fn line_count(&self) -> usize {
+        self.line_count
+    }
+
+    /// Normalized child UTF-8 byte count (payload bytes plus one LF per line) for the current run.
+    #[must_use]
+    pub const fn byte_count(&self) -> usize {
+        self.byte_count
+    }
+
+    /// Delivered child stderr line count for the current run.
+    #[must_use]
+    pub const fn stderr_count(&self) -> usize {
+        self.stderr_count
+    }
+
+    /// Whether the current child run has reached a terminal event.
+    #[must_use]
+    pub const fn child_finished(&self) -> bool {
+        self.child_finished
+    }
+
+    /// Current status label rendered in the status bar.
+    #[must_use]
+    pub fn child_status(&self) -> &str {
+        &self.child_status
+    }
+
+    /// Current [`ProcessControl`] generation for constructing [`Msg::Process`] in tests.
+    #[must_use]
+    pub fn current_generation(&self) -> Option<u64> {
+        self.process_control
+            .as_ref()
+            .map(ProcessControl::generation)
+    }
+
+    /// Current draft text in the input editor.
+    #[must_use]
+    pub fn input_value(&self) -> &str {
+        self.input.value()
+    }
+
     fn advance_clock(&mut self, now: Instant) -> Option<Cmd<Msg>> {
         if !self.child_finished {
             self.run_elapsed = now.saturating_duration_since(self.run_started);

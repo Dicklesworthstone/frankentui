@@ -1,0 +1,5 @@
+{
+  "schema_version": "br.wal_index.quarantine.v1",
+  "stage": "complete",
+  "retained_index": "/data/projects/frankentui/.beads/.br-wal-index-Cit1gt/poisoned-shm"
+}

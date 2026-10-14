@@ -139,7 +139,7 @@ Each screen is also a snapshot test target. `BLESS=1 cargo test -p ftui-demo-sho
 
 ## Use Cases
 
-- Inline UI for CLI tools where logs must keep scrolling.
+- Inline UI for CLI tools and agent harnesses where logs must keep scrolling (see the [agent harness tutorial](docs/tutorials/agent-harness.md)).
 - Full-screen dashboards that must never flicker.
 - Deterministic rendering harnesses for terminal regressions.
 - Libraries that want a strict “kernel” but their own widget layer.
@@ -427,11 +427,15 @@ cargo run -p ftui-demo-showcase
 
 ### Run Harness Examples (tests and reference behavior)
 
+`agent_shell` is the flagship inline child-streaming demo (streams a child
+process into terminal scrollback under a compact 3-row status/input/hint UI).
 `minimal` is a 45-line inline hello world with a tick counter; q, Escape or
-Ctrl-C quits. `streaming` generates high-volume logs and can also run a real
-child command (see the [agent harness tutorial](docs/tutorials/agent-harness.md)).
+Ctrl-C quits. `streaming` demonstrates the 15-row widget-region `LogViewer`
+with generated logs or an optional child command (see the
+[agent harness tutorial](docs/tutorials/agent-harness.md)).
 
 ```bash
+cargo run -p ftui --example agent_shell -- --exit-when-child-exits -- seq 1 10000
 cargo run -p ftui-harness --example minimal
 cargo run -p ftui-harness --example streaming
 ```

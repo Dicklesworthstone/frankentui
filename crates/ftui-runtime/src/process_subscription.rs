@@ -5627,4 +5627,65 @@ os._exit(7)
         );
         handle.join().unwrap();
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn process_subscription_delivers_stdout_stderr_exit_in_order() {
+        let events = run_to_end(shell("echo out; echo err 1>&2; exit 7"));
+        assert!(events.contains(&ProcessEvent::Stdout("out".to_owned())));
+        assert!(events.contains(&ProcessEvent::Stderr("err".to_owned())));
+        assert_eq!(events.last(), Some(&ProcessEvent::Exited(7)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn process_subscription_forwards_stdin() {
+        let input = ProcessInput::new();
+        let sub = ProcessSubscription::new("cat", |event| event)
+            .stdin(input.clone())
+            .timeout(Duration::from_secs(10));
+        let (events, trigger, handle) = start_process(sub);
+        input.try_send_line("hello".to_owned()).unwrap();
+        let seen = events_until(&events, |e| e == &ProcessEvent::Stdout("hello".to_owned()));
+        assert!(seen.contains(&ProcessEvent::Stdout("hello".to_owned())));
+        let stop_start = Instant::now();
+        trigger.stop();
+        let tail = events_until(&events, is_terminal_event);
+        handle.join().unwrap();
+        assert!(
+            stop_start.elapsed() < Duration::from_secs(5),
+            "stop must complete promptly, tail={tail:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn process_subscription_kills_child_on_stop() {
+        let control = ProcessControl::new();
+        let sub = ProcessSubscription::new("sleep", |event| event)
+            .arg("30")
+            .control(control.clone())
+            .timeout(Duration::from_secs(10));
+        let (events, trigger, handle) = start_process(sub);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let pid = loop {
+            if let Some(pid) = control.status().pid {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "sleep child did not report pid");
+            thread::sleep(Duration::from_millis(5));
+        };
+        trigger.stop();
+        let tail = events_until(&events, is_terminal_event);
+        handle.join().unwrap();
+        assert!(
+            tail.contains(&ProcessEvent::Killed),
+            "expected Killed event, got {tail:?}"
+        );
+        let raw_pid = rustix::process::Pid::from_raw(pid as i32).expect("valid pid");
+        assert!(
+            rustix::process::test_kill_process(raw_pid).is_err(),
+            "child pid {pid} must be reaped after stop"
+        );
+    }
 }

@@ -21249,4 +21249,42 @@ mod tests {
         );
         assert_eq!(resume["size_changed"], true);
     }
+
+    #[test]
+    fn cmd_log_dispatches_to_writer_modes() {
+        let mut program = headless_program_with_config(
+            TestModel { value: 0 },
+            ProgramConfig::inline(3)
+                .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5))),
+        );
+        program
+            .execute_cmd(Cmd::log("a\x1b[31mb"))
+            .expect("sanitized log");
+        program
+            .execute_cmd(Cmd::log_sgr_only("c\x1b[31md\x1b[2J"))
+            .expect("sgr_only log");
+        program
+            .execute_cmd(Cmd::log_raw("\x1b[31mz"))
+            .expect("raw log");
+        program.render_frame().expect("render_frame flushes logs");
+
+        let raw_bytes = program.presenter.into_inner().expect("presenter output");
+        let out = String::from_utf8_lossy(&raw_bytes).into_owned();
+        assert!(
+            out.contains("ab"),
+            "Sanitized mode must strip escapes from 'a\\x1b[31mb'; out={out:?}"
+        );
+        assert!(
+            out.contains("c\x1b[31md"),
+            "SgrOnly mode must retain SGR '\\x1b[31m'; out={out:?}"
+        );
+        assert!(
+            !out.contains("\x1b[2J"),
+            "SgrOnly mode must strip non-SGR '\\x1b[2J'; out={out:?}"
+        );
+        assert!(
+            out.contains("\x1b[31mz"),
+            "Raw mode must emit '\\x1b[31mz' verbatim; out={out:?}"
+        );
+    }
 }
