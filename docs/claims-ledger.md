@@ -45,8 +45,8 @@ The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
-As of 2026-10-13 the distribution across 152 rows is 6 pending-code,
-32 pending-doc, 56 retracted and 58 proven. Regenerate this sentence from
+As of 2026-10-14 the distribution across 152 rows is 5 pending-code,
+29 pending-doc, 56 retracted and 62 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -159,7 +159,10 @@ verified on 2026-09-19 and the fourth qualified rather than claimed:
   budget had only 2x headroom over the same 973ns. The plural-categorization
   and coverage-report budgets were dropped to measurement-only: both are still
   logged to JSONL, but neither has a scale-invariant property to assert.
-  V70 still needs one clean `cargo test --workspace` run to go proven.
+  V70 now tracks `bd-g00-root-epic-ewths.6.37` (a full 6/6 native DSR quality
+  receipt under `frankentui-full-gates`, after `18a89454` fixed the 5
+  `process_subscription` race failures and `.6.39` tracks the remaining
+  load-sensitive wall-clock assertions).
 
 Retracted: C36 and V19 (the SOS barrier coefficients were claimed to be
 SDP-solved by a script that does not exist; the source header says they were
@@ -179,7 +182,7 @@ Historical WORKING labels below are not current test results.
 Run `python3 -B scripts/check_readme_claims.py --schema-check` to validate
 the nine-column table, IDs, enums, anchors, proof syntax and dates. Run
 `python3 -B scripts/check_readme_claims.py --self-test` for in-memory malformed
-fixtures. Neither command executes proofs or establishes extracted coverage.
+fixture checks. Neither command executes proofs or establishes extracted coverage.
 
 `--proof-refs` (also in `make claims`) checks that every `test:` proof names a
 `fn` that exists under `crates/`, and every `path:` proof names a file that
@@ -237,9 +240,9 @@ complete `.5.2`.
 | C37 | `no_flicker_proof.rs` | README.md :: `no_flicker_proof.rs` | api | DOC | bd-g00-root-epic-ewths.4.7 | path:crates/ftui-render/tests/no_flicker_proof.rs | proven | 2026-09-19 |
 | V01 | Inline mode with scrollback preservation and stable chrome | README.md :: Inline mode with scrollback preservation and stable chrome | status | CODE | bd-g00-root-epic-ewths.47 | test:ftui-runtime::e2e_inline_mode_scrollback::multiple_render_passes_preserve_scrollback; test:ftui-runtime::e2e_inline_mode_scrollback::first_frame_does_not_overwrite_shell_output; test:ftui-runtime::e2e_inline_mode_scrollback::inline_auto_mode_preserves_scrollback; test:ftui-runtime::e2e_inline_mode_scrollback::scrollback_intact_after_widget_removal | proven | 2026-10-13 |
 | V02 | Deterministic Buffer -> Diff -> Presenter -> ANSI | README.md :: Deterministic Buffer -> Diff -> Presenter -> ANSI | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
-| V03 | One-writer rule | README.md :: One-writer rule | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
+| V03 | One-writer rule | README.md :: One-writer rule | status | DOC | bd-g00-root-epic-ewths.33.4 | bead:bd-g00-root-epic-ewths.33.4 | pending-doc | - |
 | V04 | RAII cleanup even on panic | README.md :: RAII cleanup even on panic | status | DOC | bd-g00-root-epic-ewths.37 | bead:bd-g00-root-epic-ewths.37 | pending-doc | - |
-| V05 | Composable crates, add only what you need | README.md :: Composable crates, add only what you need | status | CODE | bd-g00-root-epic-ewths.1 | bead:bd-g00-root-epic-ewths.1 | pending-code | - |
+| V05 | Composable crates, add only what you need | README.md :: Composable crates, add only what you need | status | CODE | bd-g00-root-epic-ewths.1 | test:ftui::default_backend::default_features_select_a_terminal_backend; test:ftui::readme_snippets::readme_minimal_example_is_the_shipped_example | proven | 2026-10-14 |
 | V06 | 80+ widgets | README.md :: 80+ widgets | status | CODE | bd-g00-root-epic-ewths.23 | count:91 Widget/StatefulWidget impls under crates/ftui-widgets/src >= 80 | proven | 2026-09-19 |
 | V07 | Pane workspaces with drag/dock/snap/throw/undo | README.md :: Pane workspaces with drag/dock/snap/throw/undo | status | DOC | bd-g00-root-epic-ewths.23 | bead:bd-g00-root-epic-ewths.23 | pending-doc | - |
 | V08 | Web/WASM backend, runs in browser | README.md :: Web/WASM backend, runs in browser | status | CODE | bd-g00-root-epic-ewths.29 | test:ftui-showcase-wasm::runner_core::screen_selector_reaches_model_and_preserves_invalid_selection | proven | 2026-09-19 |
@@ -266,7 +269,7 @@ complete `.5.2`.
 | V29 | Frame arena in hot path | README.md :: Frame arena in hot path | status | DOC | bd-g00-root-epic-ewths.31 | bead:bd-g00-root-epic-ewths.31 | pending-doc | - |
 | V30 | Grapheme pool with width bits | README.md :: Grapheme pool with width bits | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V31 | Synchronized output every frame | README.md :: Synchronized output every frame | status | DOC | bd-g00-root-epic-ewths.4 | test:ftui-demo-showcase::capability_sim_e2e::degradation_sync_output_disabled_in_all_muxes | retracted | 2026-09-19 |
-| V32 | Elm architecture Model/Cmd/Subscriptions | README.md :: Elm architecture Model/Cmd/Subscriptions | status | DOC | bd-g00-root-epic-ewths.1 | bead:bd-g00-root-epic-ewths.1 | pending-doc | - |
+| V32 | Elm architecture Model/Cmd/Subscriptions | README.md :: Elm architecture Model/Cmd/Subscriptions | status | DOC | bd-g00-root-epic-ewths.1 | test:ftui::readme_snippets::readme_model_snippets_match; test:ftui-runtime::program::cmd_sequence_executes_in_order | proven | 2026-10-14 |
 | V33 | Zero unsafe | README.md :: Zero unsafe | status | DOC | bd-g00-root-epic-ewths.5 | count:20 of 20 crate roots carry #![forbid(unsafe_code)] | proven | 2026-09-19 |
 | V34 | Formal proof sketches Theorems 1-4 | README.md :: Formal proof sketches Theorems 1-4 | status | DOC | bd-g00-root-epic-ewths.5 | ident:Theorem 4 (Diff-Dirty Equivalence); test:ftui-render::buffer::set_marks_row_dirty | proven | 2026-09-19 |
 | V35 | Property tests, snapshots, benches | README.md :: Property tests, snapshots, benches | status | DOC | bd-g00-root-epic-ewths.31 | bead:bd-g00-root-epic-ewths.31 | pending-doc | - |
@@ -283,18 +286,18 @@ complete `.5.2`.
 | V46 | Accessibility tree, live regions | README.md :: Accessibility tree, live regions | status | CODE | bd-g00-root-epic-ewths.13 | test:ftui::readme_snippets::readme_accessibility_snippets | proven | 2026-09-19 |
 | V47 | i18n formatting/bidi/5 languages | README.md :: i18n formatting/bidi/5 languages | status | CODE | bd-g00-root-epic-ewths.34 | test:ftui-demo-showcase::tests::i18n_e2e::formatting_numbers_all_seven_locales; test:ftui-demo-showcase::screens::i18n_demo::tests::locales_list_has_seven_languages | proven | 2026-09-19 |
 | V48 | Queueing scheduler SRPT/Smith/aging | README.md :: Queueing scheduler SRPT/Smith/aging | status | CODE | bd-g00-root-epic-ewths.30 | bead:bd-g00-root-epic-ewths.30 | pending-code | - |
-| V49 | Inline strategies A/B/C auto-selected | README.md :: Inline strategies A/B/C auto-selected | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
+| V49 | Inline strategies A/B/C auto-selected | README.md :: Inline strategies A/B/C auto-selected | status | DOC | bd-g00-root-epic-ewths.47 | test:ftui-core::inline_mode::tests::strategy_selection_uses_hybrid_without_sync; test:ftui-runtime::e2e_inline_mode_scrollback::overlay_transport_delivers_random_interleavings | proven | 2026-10-14 |
 | V50 | Color system profiles + WCAG | README.md :: Color system profiles + WCAG | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V51 | Evidence sink categories | README.md :: Evidence sink categories | status | CODE | bd-g00-root-epic-ewths.26 | test:ftui::readme_snippets::readme_model_snippets_match | proven | 2026-09-19 |
 | V52 | Runtime lanes + rollout + shadow-run | README.md :: Runtime lanes + rollout + shadow-run | status | CODE | bd-g00-root-epic-ewths.30 | test:ftui::readme_snippets::readme_runtime_lanes_snippet; test:ftui::readme_snippets::readme_shadow_run_snippet; test:ftui::readme_snippets::readme_rollout_scorecard_snippet | proven | 2026-09-19 |
-| V53 | Effect queue telemetry + backpressure | README.md :: Effect queue telemetry + backpressure | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
+| V53 | Effect queue telemetry + backpressure | README.md :: Effect queue telemetry + backpressure | status | DOC | bd-g00-root-epic-ewths.50.1 | test:ftui::readme_snippets::readme_queue_telemetry_snippet; test:ftui-runtime::program::tests::spawned_executor_enforces_max_queue_depth_and_counts_drops | proven | 2026-10-14 |
 | V54 | Telemetry schema targets | README.md :: Telemetry schema targets | status | CODE | bd-g00-root-epic-ewths.26 | test:ftui-runtime::telemetry_schema::schema_events_match_constants | proven | 2026-09-19 |
 | V55 | E-graph layout optimizer before solver | README.md :: E-graph layout optimizer before solver | status | CODE | bd-g00-root-epic-ewths.11 | path:docs/perf/egraph_vs_flex_2026-09-18.md | retracted | 2026-09-19 |
 | V56 | Rope text engine | README.md :: Rope text engine | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V57 | Editor core features | README.md :: Editor core features | status | CODE | bd-g00-root-epic-ewths.21 | test:ftui-text::editor::undo_groups_virtual_idle_boundary_and_clock_reset; test:ftui-text::editor::paragraph_selection_preserves_anchor_and_exact_text | proven | 2026-09-19 |
 | V58 | Degradation cascade module | README.md :: Degradation cascade module | status | CODE | bd-g00-root-epic-ewths.17 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |
 | V59 | Cost models (cache / M-G-1 / batching) | README.md :: Cost models (cache / M-G-1 / batching) | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
-| V60 | Gesture recognizer | README.md :: Gesture recognizer | status | CODE | bd-g00-root-epic-ewths.24 | test:ftui-core::gesture::default_config_values | proven | 2026-09-19 |
+| V60 | Gesture recognizer | README.md :: Gesture recognizer | status | CODE | bd-g00-root-epic-ewths.24 | test:ftui-core::gesture::default_config_values; test:ftui-runtime::program::tests::long_press_fires_without_a_tick_rate | proven | 2026-10-14 |
 | V61 | Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | README.md :: Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | status | DOC | bd-g00-root-epic-ewths.27 | bead:bd-g00-root-epic-ewths.27 | pending-doc | - |
 | V62 | Keybinding system | README.md :: Keybinding system | status | CODE | bd-g00-root-epic-ewths.20 | bead:bd-g00-root-epic-ewths.20 | pending-code | - |
 | V63 | Animation system | README.md :: Animation system | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
@@ -304,7 +307,7 @@ complete `.5.2`.
 | V67 | Windows support | README.md :: Windows support | status | CODE | bd-g00-root-epic-ewths.36 | bead:bd-g00-root-epic-ewths.36 | pending-code | - |
 | V68 | doctor_frankentui verification stack | README.md :: doctor_frankentui verification stack | status | CODE | bd-g00-root-epic-ewths.28 | bead:bd-g00-root-epic-ewths.28 | pending-code | - |
 | V69 | Cross-component tests in workspace `tests/` | AGENTS.md :: Cross-component tests in workspace `tests/` | status | DOC | bd-g00-root-epic-ewths.8 | path:crates/ftui-runtime/tests; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
-| V70 | Mandatory gates green (check/clippy/fmt/tests) | README.md :: Mandatory gates green (check/clippy/fmt/tests) | status | CODE | bd-g00-root-epic-ewths.6 | bead:bd-lbugy | pending-code | - |
+| V70 | Mandatory gates green (check/clippy/fmt/tests) | README.md :: Mandatory gates green (check/clippy/fmt/tests) | status | CODE | bd-g00-root-epic-ewths.6 | bead:bd-g00-root-epic-ewths.6.37 | pending-code | - |
 | V71 | `master` synchronized with `main` | README.md :: `master` synchronized with `main` | status | DOC | bd-g00-root-epic-ewths.5 | cmd:test "$(git rev-parse origin/main)" = "$(git rev-parse origin/master)" | proven | 2026-09-19 |
 | S01 | Bayesian Fuzzy Scoring (Command Palette) production status | README.md:847 :: Bayesian Fuzzy Scoring (Command Palette) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-widgets::command_palette::scorer::tests::tag_match_boosts_score | proven | 2026-09-19 |
 | S02 | Bayesian Hint Ranking (Keybinding Hints) production status | README.md:879 :: Bayesian Hint Ranking (Keybinding Hints) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-widgets::hint_ranker::cold_start_uses_static_priority; test:ftui-widgets::hint_ranker::unit_ranking_stability | proven | 2026-09-19 |
@@ -322,7 +325,7 @@ complete `.5.2`.
 | S14 | Mondrian Conformal Frame-Time Risk Gating production status | README.md:1129 :: Mondrian Conformal Frame-Time Risk Gating | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::conformal_predictor::default_config_matches_the_documented_values | proven | 2026-09-18 |
 | S15 | CUSUM Control Charts production status | README.md:1145 :: CUSUM Control Charts | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-render::frame_guardrails::guardrails_detect_allocation_drift | proven | 2026-09-18 |
 | S16 | CUSUM Hover Stabilizer (Mouse Jitter) production status | README.md:1167 :: CUSUM Hover Stabilizer (Mouse Jitter) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-core::hover_stabilizer::default_config_values | proven | 2026-09-19 |
-| S17 | Gesture Recognition State Machine production status | README.md:1182 :: Gesture Recognition State Machine | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-core::gesture::default_config_values | proven | 2026-09-18 |
+| S17 | Gesture Recognition State Machine production status | README.md:1182 :: Gesture Recognition State Machine | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-core::gesture::default_config_values; test:ftui-runtime::program::tests::long_press_fires_without_a_tick_rate | proven | 2026-10-14 |
 | S18 | Input Parser (3,200+ Lines) production status | README.md:1208 :: Input Parser (3,200+ Lines) | status | DOC | bd-g00-root-epic-ewths.5.5 | count:crates/ftui-core/src/input_parser.rs is 3,660 lines >= 3,200 | proven | 2026-09-19 |
 | S19 | Keybinding System (1,900+ Lines) production status | README.md:1219 :: Keybinding System (1,900+ Lines) | status | DOC | bd-g00-root-epic-ewths.5.5 | count:crates/ftui-core/src/keybinding.rs is 3,796 lines | retracted | 2026-09-19 |
 | S20 | Damped Spring Dynamics (Animation System) production status | README.md:1231 :: Damped Spring Dynamics (Animation System) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
