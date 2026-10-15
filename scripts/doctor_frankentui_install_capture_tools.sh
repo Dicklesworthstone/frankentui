@@ -7,7 +7,7 @@ VHS_VERSION=0.10.0
 VHS_SHA256=b552c3870aca101dcafe533cfef32dceb7b783400ad32642e728775c9f125407
 TTYD_VERSION=1.7.7
 TTYD_SHA256=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
-USER_AGENT='OpenAI File Downloader, XaiImageApiFetch/1.0'
+USER_AGENT='frankentui-capture-tools (+https://github.com/Dicklesworthstone/frankentui)'
 PREFIX="${XDG_DATA_HOME:-${HOME}/.local/share}/doctor-frankentui/capture-tools/vhs-${VHS_VERSION}-ttyd-${TTYD_VERSION}"
 CACHE_DIR=""
 

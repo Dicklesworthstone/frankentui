@@ -15369,7 +15369,7 @@ mod tests {
         telemetry.processor = crate::telemetry::SpanProcessorKind::Simple;
         telemetry.headers.push((
             "User-Agent".into(),
-            "OpenAI File Downloader, XaiImageApiFetch/1.0".into(),
+            "frankentui-test (+https://github.com/Dicklesworthstone/frankentui)".into(),
         ));
         let (layer, provider) = telemetry.build_layer().expect("real OTLP exporter");
         let subscriber = tracing_subscriber::registry().with(layer);

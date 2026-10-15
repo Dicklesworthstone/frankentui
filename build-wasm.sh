@@ -120,7 +120,7 @@ RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-too
 unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS
 export CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never
 export CARGO_BUILD_FINGERPRINT=content
-export CARGO_HTTP_USER_AGENT='OpenAI File Downloader, XaiImageApiFetch/1.0'
+export CARGO_HTTP_USER_AGENT='frankentui-build (+https://github.com/Dicklesworthstone/frankentui)'
 # `cargo` on a DSR host's PATH can be an RCH shim; RCH is not to be used until
 # bd-g00-root-epic-ewths.6.24 (its transfers prune with rm -rf / rsync --delete).
 export RCH_CARGO_WRAPPER_BYPASS=1

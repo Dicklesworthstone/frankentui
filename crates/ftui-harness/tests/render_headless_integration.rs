@@ -347,7 +347,7 @@ fn widget_accessibility_content_stays_out_of_real_otlp_exports() {
     config.processor = SpanProcessorKind::Simple;
     config.headers.push((
         "User-Agent".into(),
-        "OpenAI File Downloader, XaiImageApiFetch/1.0".into(),
+        "frankentui-test (+https://github.com/Dicklesworthstone/frankentui)".into(),
     ));
     let (layer, provider) = config.build_layer().expect("real OTLP exporter");
     let subscriber = tracing_subscriber::registry().with(layer);
