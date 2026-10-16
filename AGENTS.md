@@ -1067,8 +1067,9 @@ characters. A step you can satisfy by believing you did it is not a step.
    for someone who will read it in six weeks with no memory of this session.
    `--bypass-policy` exists, needs `--bypass-reason`, and is recorded.
 
-4. **Sync and commit.** `br sync --flush-only`, then `git add .beads/` and
-   commit — `br` never runs git itself, so an unsynced close exists only on
+4. **Sync and commit.** `br sync --flush-only`, regenerate `docs/main-todo-bead-map.md`
+   with `python3 scripts/render_todo_bead_map.py`, then `git add .beads/ docs/main-todo-bead-map.md`
+   and commit — `br` never runs git itself, so an unsynced close exists only on
    your machine.
 
 5. **Push.** `git pull --rebase && git push && git push origin main:master`.

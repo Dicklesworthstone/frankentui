@@ -1,5 +1,11 @@
 # Plan To Create FrankenTUI: Opus
 
+> **Decisions since this plan (2026-09-01, reality-check G38):**
+> - SSH extra (sections mentioning "SSH/PTY integration"): dropped; not planned.
+> - Formal TLA+ specs (section 2.1 "TLA+-style"): not pursued; `docs/spec/state-machines.md` is an informal prose/table specification whose invariants are enforced by named tests.
+> - Execution tracker (`docs/main-todo-bead-map.md`): regenerated from the bead database by `scripts/render_todo_bead_map.py` per `g34-decision`.
+> The historical text below is unchanged.
+
 ## FrankenTUI (ftui): The Optimal Terminal UI Kernel
 
 **Version 6.4 — Kernel-First, Decision-Driven, Math-Informed, Practice-Proven Architecture (Ultimate Hybrid Plan)**

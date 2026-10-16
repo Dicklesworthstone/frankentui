@@ -8,6 +8,8 @@ This document tracks the failure modes that destroy trust in a terminal UI kerne
 
 ## Risk Summary
 
+Summary derived from the rows below; edit rows, then the summary.
+
 | ID | Risk | Severity | Status |
 |----|------|----------|--------|
 | R1 | Inline mode cursor corruption | Critical | Mitigated |
@@ -16,7 +18,7 @@ This document tracks the failure modes that destroy trust in a terminal UI kerne
 | R4 | Terminal capability mismatches | Medium | Mitigated |
 | R5 | Unsafe code creep | Medium | Mitigated |
 | R6 | Presenter byte bloat | Low | Mitigated |
-| R7 | Interleaved stdout writes | High | Mitigated |
+| R7 | Interleaved stdout writes | High | Partially mitigated (rows: 4 Implemented, 1 Experimental) |
 
 ---
 
@@ -32,13 +34,13 @@ Inline mode overlays UI on scrollback. If cursor position is corrupted:
 
 ### Mitigations
 
-| Mitigation | Implementation | Status |
-|------------|----------------|--------|
-| PTY integration tests | `ftui-pty` crate (bd-10i.11.2) | In progress |
-| Strict cursor policy | DEC ESC7/ESC8 save/restore (ADR-001) | Implemented |
-| Centralized writer API | `TerminalWriter` one-writer (ADR-005) | Implemented |
-| RAII cleanup guards | `TerminalSession` Drop trait | Implemented |
-| Hybrid inline strategy | Overlay-redraw baseline (ADR-001) | Implemented |
+| Mitigation | Implementation | Status | Proof |
+|------------|----------------|--------|-------|
+| PTY integration tests | `ftui-pty` crate (`bd-10i.11.2`) | Implemented | `tests/e2e/scripts/test_cleanup.sh`; `tests/e2e/scripts/test_inline.sh`; `crates/ftui/tests/agent_shell_plain_pty.rs` (`plain_pty_survives_10k_lines_without_scrollback_loss_or_chrome_drift`) |
+| Strict cursor policy | DEC ESC7/ESC8 save/restore (ADR-001) | Implemented | `crates/ftui-runtime/tests/e2e_inline_mode_scrollback.rs` (`multiple_render_passes_preserve_scrollback`) |
+| Centralized writer API | `TerminalWriter` one-writer (ADR-005) | Implemented | `crates/ftui-runtime/src/terminal_writer.rs` (`present_ui_owns_and_closes_sync_bracket_even_on_early_error`) |
+| RAII cleanup guards | `TerminalSession` Drop trait | Implemented | `crates/ftui-core/src/terminal_session.rs` (`terminal_session_panic_cleanup_idempotent`) |
+| Hybrid inline strategy | OverlayRedraw baseline + ScrollRegion/Hybrid selection (ADR-001) | Implemented | `crates/ftui-core/src/inline_mode.rs` (`strategy_selection_uses_hybrid_without_sync`); `crates/ftui-runtime/tests/e2e_inline_mode_scrollback.rs` (`overlay_transport_delivers_random_interleavings`) |
 
 ### Test Suites
 
@@ -66,14 +68,14 @@ Untrusted output (LLM streams, user input, tool output) can smuggle control sequ
 
 ### Mitigations
 
-| Mitigation | Implementation | Status |
-|------------|----------------|--------|
-| Sanitize by default | Strip CSI/OSC/DCS/APC/PM/SOS sequences (`write_log`, `LogSink::new`, ADR-006) | Implemented |
-| Semi-trusted SGR-only mode | Bounded `CSI [0-9;:]* m` (<= 64 B) + per-line `\x1b[0m` reset (`write_log_sgr_only`, `LogSink::sgr_only`) | Implemented |
-| Explicit raw opt-in | `write_log_raw()`, `LogSink::raw()`, `Cmd::log_raw()`, `Text::raw()` require explicit call; emits `ftui.sanitize` debug trace | Implemented (`bd-g00-root-epic-ewths.33.1`) |
-| Adversarial PTY tests | Feed `ADVERSARIAL_PAYLOADS` through PTY log/command paths and verify termios + screen invariants (`pty_terminal_lifecycle.rs`) | Implemented (`bd-g00-root-epic-ewths.33.2`) |
-| Inline never clears screen | Property test asserting inline output never emits `2J`, `3J`, `?1049h`, or `ESC c` (`inline_never_clears_screen`) | Implemented (`bd-g00-root-epic-ewths.33.2`) |
-| C0/C1 control filtering | Only TAB/LF/CR allowed; DEL and C1 controls (`0x80..=0x9F`) stripped | Implemented |
+| Mitigation | Implementation | Status | Proof |
+|------------|----------------|--------|-------|
+| Sanitize by default | Strip CSI/OSC/DCS/APC/PM/SOS sequences (`write_log`, `LogSink::new`, ADR-006) | Implemented | `crates/ftui-runtime/src/log_sink.rs` (`log_sink_sanitizes_multiple_escapes`); ledger `N06` |
+| Semi-trusted SGR-only mode | Bounded `CSI [0-9;:]* m` (<= 64 B) + per-line `\x1b[0m` reset (`write_log_sgr_only`, `LogSink::sgr_only`) | Implemented | `crates/ftui-runtime/src/log_sink.rs` (`sgr_sink_assembles_split_escapes_and_utf8_before_filtering`); ledger `N09` |
+| Explicit raw opt-in | `write_log_raw()`, `LogSink::raw()`, `Cmd::log_raw()`, `Text::raw()` require explicit call; emits `ftui.sanitize` debug trace | Implemented | `crates/ftui-harness/tests/pty_terminal_lifecycle.rs` (`pty_log_raw_requires_explicit_opt_in_and_restores_termios`, `raw_log_emits_mode_and_byte_count_trace`); ledger `N07` |
+| Adversarial PTY tests | Feed `ADVERSARIAL_PAYLOADS` through PTY log/command paths and verify termios + screen invariants (`pty_terminal_lifecycle.rs`) | Implemented | `crates/ftui-harness/tests/pty_terminal_lifecycle.rs` (`pty_log_injection_preserves_text_style_and_terminal_state`) |
+| Inline never clears screen | Property test asserting inline output never emits `2J`, `3J`, `?1049h`, or `ESC c` (`inline_never_clears_screen`) | Implemented | `crates/ftui-harness/tests/proptest_flicker_invariants.rs` (`inline_never_clears_screen`); ledger `N08` |
+| C0/C1 control filtering | Only TAB/LF/CR allowed; DEL and C1 controls (`0x80..=0x9F`) stripped | Implemented | `crates/ftui-render/src/sanitize.rs` (`strips_c1_controls_and_del`) |
 
 ### Test Suites
 
@@ -107,17 +109,17 @@ Incorrect display width calculations cause:
 
 ### Mitigations
 
-| Mitigation | Implementation | Status |
-|------------|----------------|--------|
-| Curated test corpus | WTF-8 corpus, emoji, ZWJ sequences (bd-16k) | Planned |
-| Property tests | Proptest for width invariants | Implemented |
-| ASCII fast path | Only when proven safe, with verification | Implemented |
-| Width cache | LRU cache for repeated measurements | Implemented |
-| Grapheme segmentation | `unicode-segmentation` crate | Implemented |
+| Mitigation | Implementation | Status | Proof |
+|------------|----------------|--------|-------|
+| Curated test corpus | Emoji, ZWJ, CJK, and VS16 width corpus (`bd-16k`) | Implemented | `crates/ftui-core/src/lib.rs` (`grapheme_width_with_cjk_preserves_multi_codepoint_emoji_and_widens_ambiguous`) |
+| Property tests | Proptest for width and wrapping invariants | Implemented | `crates/ftui-text/src/wrap.rs`; `crates/ftui-text/src/text.rs` |
+| ASCII fast path | Scalar and portable-SIMD (`ftui-simd`) fast path with parity verification | Implemented | `crates/ftui-core/src/lib.rs` (`ascii_width_matches_scalar`, `grapheme_width_identical_with_simd`); `crates/ftui-simd/src/lib.rs` (`all_ascii_simd_equals_scalar`) |
+| Width cache | Thread-local S3-FIFO grapheme width cache (`WIDTH_CACHE`) | Implemented | `crates/ftui-core/src/lib.rs` (`display_width_routes_non_ascii_through_s3_fifo_cache`, `width_cache_is_transparent_and_hits_on_repeat`); ledger `S33` |
+| Grapheme segmentation | `unicode-segmentation` crate | Implemented | `crates/ftui-text/src/grapheme.rs` |
 
 ### Test Suites
 
-- **Corpus tests**: `crates/ftui-text/tests/` - width correctness
+- **Corpus tests**: `crates/ftui-core/src/lib.rs` (`text_width::tests`) - width correctness
 - **Property tests**: `crates/ftui-text/src/text.rs` - truncation invariants
 - **Wrap tests**: `crates/ftui-text/src/wrap.rs` - wrapping correctness
 
@@ -141,13 +143,13 @@ Different terminals support different features:
 
 ### Mitigations
 
-| Mitigation | Implementation | Status |
-|------------|----------------|--------|
-| Conservative defaults | Overlay-redraw as baseline | Implemented |
-| Environment detection | TERM, COLORTERM, mux detection | Implemented |
-| Robust fallbacks | Graceful degradation chain | Implemented |
-| Capability probing | Bounded timeout probing (bd-1rvd) | Planned |
-| Color downgrade | Truecolor → 256 → 16 → mono | Implemented |
+| Mitigation | Implementation | Status | Proof |
+|------------|----------------|--------|-------|
+| Conservative defaults | Overlay-redraw baseline when sync output is absent | Implemented | `crates/ftui-core/src/terminal_capabilities.rs` (`dumb_terminal_disables_all_features`) |
+| Environment detection | TERM, COLORTERM, mux detection | Implemented | `crates/ftui-demo-showcase/tests/capability_sim_e2e.rs` (`degradation_sync_output_disabled_in_all_muxes`) |
+| Robust fallbacks | Graceful inline strategy selection | Implemented | `crates/ftui-core/src/inline_mode.rs` (`strategy_selection_uses_hybrid_without_sync`) |
+| Capability probing | Bayesian capability log-odds probe (`caps_probe.rs`, `bd-1rvd`) | Implemented | `crates/ftui-core/src/caps_probe.rs` (`weights_are_unchanged`); `docs/compat-matrix.md`; ledger `V64` |
+| Color downgrade | Truecolor → 256 → 16 → mono | Implemented | `crates/ftui-style/src/color.rs` (`sequential_downgrade_truecolor_to_mono`); ledger `V50` |
 
 ### Test Suites
 
@@ -181,12 +183,12 @@ Unsafe Rust can introduce:
 
 ### Mitigations
 
-| Mitigation | Implementation | Status |
-|------------|----------------|--------|
-| Forbid unsafe by default | `#![forbid(unsafe_code)]` in all crates | Implemented |
-| Isolated SIMD crate | `ftui-simd` for any optimizations | Planned |
-| Required benchmarks | Performance claims must have benches | Policy |
-| Code review | Any unsafe requires justification | Policy |
+| Mitigation | Implementation | Status | Proof |
+|------------|----------------|--------|-------|
+| Forbid unsafe by default | `#![forbid(unsafe_code)]` across all 20 workspace crates | Implemented | `docs/claims-ledger.md` (`V33`); `scripts/check_readme_claims.py` |
+| Isolated SIMD crate | Safe `std::simd` kernels in `ftui-simd` (`#![forbid(unsafe_code)]`) | Implemented | `crates/ftui-simd/src/lib.rs` (`first_mismatch_simd_equals_scalar`, `all_ascii_simd_equals_scalar`); ledger `N10` |
+| Required benchmarks | Criterion benchmark bindings checked in `tests/baseline.json` | Implemented | `scripts/check_baseline_benches.py` (`make baseline-benches`); `docs/perf/simd_kernels_2026-09-18.md` |
+| Static claims & lint gates | `cargo clippy -- -D warnings` and `make gates` | Implemented | `scripts/check_readme_claims.py` (`make claims`) |
 
 ### Test Suites
 
@@ -199,11 +201,10 @@ Unsafe Rust can introduce:
 
 ### Policy
 
-Any performance optimization requiring unsafe:
-1. Must be isolated in `ftui-simd` crate
-2. Must have benchmark proving benefit
-3. Must have tests proving correctness
-4. Must be reviewed for safety
+All workspace crates forbid `unsafe_code`:
+1. SIMD kernels in `ftui-simd` use safe `std::simd` (`#![forbid(unsafe_code)]`)
+2. Must have benchmark proving benefit (`docs/perf/simd_kernels_2026-09-18.md`)
+3. Must have property tests proving parity against scalar twins
 
 ---
 
@@ -218,13 +219,13 @@ Inefficient ANSI output causes:
 
 ### Mitigations
 
-| Mitigation | Implementation | Status |
-|------------|----------------|--------|
-| Run grouping | Group adjacent changes (bd-2yu) | Planned |
-| Style-run coalescing | Minimize SGR switches | Planned |
-| Output-length benchmarks | CI enforces budgets | Planned |
-| Buffered writes | Single flush per frame | Implemented |
-| CountingWriter | Track output bytes (bd-3aqs) | Implemented |
+| Mitigation | Implementation | Status | Proof |
+|------------|----------------|--------|-------|
+| Run grouping | Group adjacent cell changes into `ChangeRun` spans (`bd-2yu`) | Implemented | `crates/ftui-render/tests/proptest_diff_invariants.rs` (`certified_diff_matches_full_diff_and_respects_span_bound`) |
+| Style-run coalescing | Track active SGR/link state in `Presenter` to avoid redundant escapes | Implemented | `crates/ftui-render/tests/no_flicker_proof.rs` (`certified_and_dirty_diff_match_full_diff_and_wrap_sync_brackets`) |
+| Output-length benchmarks | Criterion presenter and diff benchmarks bound to `tests/baseline.json` | Implemented | `crates/ftui-render/benches/presenter_bench.rs`; `scripts/check_baseline_benches.py` |
+| Buffered writes | Single buffered flush per frame wrapped in DEC 2026 sync brackets | Implemented | `crates/ftui-harness/tests/sync_bracket_completeness_proof.rs` (`theorem1_sync_brackets_wrap_all_content`) |
+| CountingWriter | Track emitted output bytes per frame (`bd-3aqs`) | Implemented | `crates/ftui-render/src/counting_writer.rs` |
 
 ### Test Suites
 
@@ -253,13 +254,13 @@ User code or libraries writing directly to stdout:
 
 ### Mitigations
 
-| Mitigation | Implementation | Status |
-|------------|----------------|--------|
-| One-writer rule | `TerminalSession`/`TerminalWriter` ownership | Implemented |
-| LogSink routing | In-process logs through ftui | Designed |
-| PTY capture | Subprocess output through PTY | Designed |
-| Stdio capture | Best-effort capture (feature-gated) | Planned |
-| Documentation | Clear undefined behavior warnings | Implemented |
+| Mitigation | Implementation | Status | Proof |
+|------------|----------------|--------|-------|
+| One-writer rule | `TerminalSession`/`TerminalWriter` ownership + `terminal_output_lock()` | Implemented | `crates/ftui/tests/one_writer_pty.rs` (`a_recovered_task_panic_is_reported_after_the_teardown_not_over_the_ui`); ledger `V03` |
+| LogSink routing | In-process logs routed through sanitized `LogSink` / `Cmd::log` | Implemented | `crates/ftui-runtime/src/program.rs` (`cmd_log_dispatches_to_writer_modes`); `crates/ftui-runtime/src/log_sink.rs` (`log_sink_sanitizes_multiple_escapes`) |
+| PTY capture | Subprocess output routed through `ProcessSubscription::pty(true)` | Implemented | `crates/ftui-runtime/src/process_subscription.rs` (`pty_child_delivers_carriage_return_progress_and_echo`) |
+| Stdio capture | Best-effort fd redirection (`crates/ftui-runtime/src/stdio_capture.rs`, feature `stdio-capture`) | Experimental | `crates/ftui-runtime/src/stdio_capture.rs` |
+| Documentation | Explicit one-writer contract and routing patterns | Implemented | `docs/one-writer-rule.md`; `docs/adr/ADR-005-one-writer-rule.md` |
 
 ### Test Suites
 
@@ -296,9 +297,9 @@ When you discover a new failure mode:
    Describe the failure mode and its consequences.
 
    ### Mitigations
-   | Mitigation | Implementation | Status |
-   |------------|----------------|--------|
-   | Description | Code/ADR reference | Status |
+   | Mitigation | Implementation | Status | Proof |
+   |------------|----------------|--------|-------|
+   | Description | Code/ADR reference | Implemented / Experimental / Not implemented | Test or path |
 
    ### Test Suites
    - List specific test files and what they verify
@@ -329,9 +330,9 @@ Review this register when:
 
 ### Quarterly Review Checklist
 
-- [ ] All "Planned" mitigations still on roadmap
+- [ ] All non-implemented mitigations still linked to open beads
 - [ ] All linked beads still open or properly closed
-- [ ] Test suites still running in CI
+- [ ] Test suites still running in DSR verification
 - [ ] No new failure modes discovered but undocumented
 
 ---

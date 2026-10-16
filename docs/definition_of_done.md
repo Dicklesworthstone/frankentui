@@ -8,7 +8,7 @@ This document defines the strict criteria for marking a task, feature, or bug fi
 
 ## 1. Correctness & Safety
 
-- [ ] **No Unsafe Code:** The contribution contains `zero` usage of `unsafe` blocks, unless strictly required for FFI (and wrapped in a safe abstraction).
+- [ ] **No Unsafe Code:** Every workspace crate enforces `#![forbid(unsafe_code)]`; `unsafe` blocks are forbidden everywhere in production code (including FFI).
 - [ ] **One-Writer Rule:** All terminal output is routed through `TerminalWriter`. No direct `println!`, `eprintln!`, or raw byte writes to stdout/stderr.
 - [ ] **RAII Cleanup:** If the feature interacts with terminal state (raw mode, alt-screen, mouse capture), it MUST use `TerminalSession` or equivalent RAII guards to guarantee restoration on exit/panic.
 - [ ] **Panic Safety:** The code must not panic on user input or external state (e.g., window size 0). Use `Result` for recoverable errors.

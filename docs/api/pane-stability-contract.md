@@ -136,12 +136,10 @@ Until `1.0`, the pane surface follows a **soft-stability** policy:
 1. **Additive by default.** New variants, fields, and constructors are added
    without a major bump. Match on FrankenTUI enums non-exhaustively where the
    variant set is expected to grow.
-2. **Breaking changes are signalled, never silent.** A breaking change to a
-   Tier-1 type requires, in order of preference:
-   - a `#[deprecated]` shim kept for at least one minor release where feasible;
-   - a `CHANGELOG.md` entry under a `### Pane API` heading;
+2. **Breaking changes are signalled, never silent.** Per project policy (`AGENTS.md`), FrankenTUI does not add backwards-compatibility wrapper shims or deprecated aliases; callers in-tree are updated directly. A breaking change to a Tier-1 type requires:
+   - a `CHANGELOG.md` entry under a `### Pane API` heading describing the replacement API;
    - a bump of the relevant schema-version constant in §3 if the serialized
-     shape changed.
+     shape changed, with migration notes in [`docs/migration/flex-to-pane-and-versioning.md`](../migration/flex-to-pane-and-versioning.md).
 3. **Schema versions are monotonic.** They only ever increase, and a bump is a
    hard signal that persisted artifacts need migration (§5).
 4. **The `advanced` tier is exempt.** It can change in any minor release with
@@ -207,8 +205,7 @@ The curated web surface is `ftui_web::pane`:
 | `ftui_web::pane::pointer` | `PanePointerCaptureAdapter`, `PanePointerCaptureConfig`, dispatch/lifecycle/log types | `PaneTerminalAdapter` (ftui-runtime) |
 | `ftui_web::pane::keyboard` | `PaneWebKeyboardController`, `key_to_pane_command`, `pane_accessibility_tree`, ARIA node types | `ftui::pane::keyboard` |
 
-These re-exports carry the same pre-1.0 deprecation policy as §4: renames go
-through a deprecated alias for one minor release. The raw
+These re-exports follow the same pre-1.0 versioning policy as §4 (direct updates + `CHANGELOG.md` notes, no compatibility shims). The raw
 `ftui_web::pane_pointer_capture` / `ftui_web::pane_keyboard` module paths
 remain valid but the curated module is the documented entry point.
 

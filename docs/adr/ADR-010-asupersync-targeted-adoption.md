@@ -1,6 +1,6 @@
 # ADR-010: Targeted Asupersync Adoption For Runtime Shell And Doctor
 
-Status: PROPOSED
+Status: ACCEPTED (2026-10-16 — scope: effect-executor lane via `ftui-runtime/asupersync-executor`; `doctor_frankentui` orchestration unchanged)
 Date: 2026-03-12
 
 ## Context

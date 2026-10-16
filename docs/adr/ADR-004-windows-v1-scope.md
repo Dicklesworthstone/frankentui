@@ -1,6 +1,6 @@
 # ADR-004: Windows v1 Scope
 
-Status: PROPOSED
+Status: PROPOSED (Windows native validation tracked by bd-g00-root-epic-ewths.36 / G31)
 
 ## Context
 Windows terminal behavior differs from Unix in ways that affect terminal UI libraries:
