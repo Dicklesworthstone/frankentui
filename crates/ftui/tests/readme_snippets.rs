@@ -738,6 +738,40 @@ fn readme_frame_arena_snippet() {
     assert_in_readme(&["frame_arena_alloc", "frame_arena_reset"]);
 }
 
+#[test]
+fn readme_keybinding_snippet() {
+    use ftui::core::event::{KeyCode, KeyEvent};
+    use std::time::Instant;
+
+    // README-SNIPPET: keybinding_system
+    let mut map = KeyMap::new();
+    let editor = map.context("editor");
+    map.bind(Chord::parse("g g").unwrap(), "scroll_to_top");
+    map.bind_in(
+        Chord::parse("Ctrl+x Ctrl+s").unwrap(),
+        "save",
+        Priority::Mode,
+        Some(editor),
+    );
+    // README-SNIPPET-END: keybinding_system
+
+    let mut disp = KeyDispatcher::new(map);
+    let t0 = Instant::now();
+    let g = KeyEvent::new(KeyCode::Char('g'));
+    assert!(matches!(
+        disp.feed(&g, t0).as_slice(),
+        [Dispatch::Pending { .. }]
+    ));
+    assert!(matches!(
+        disp.feed(&g, t0 + Duration::from_millis(120)).as_slice(),
+        [Dispatch::Action {
+            action: "scroll_to_top",
+            ..
+        }]
+    ));
+    assert_in_readme(&["keybinding_system"]);
+}
+
 /// Every version `README.md`, `docs/getting-started.md`, or `docs/telemetry.md`
 /// quotes (or names via `target X.Y.Z`) for a workspace crate must be this
 /// workspace's version.

@@ -1342,8 +1342,11 @@ fn build_help_overlay_hints(
         .with_desc_style(desc_style)
         .with_category_style(category_style);
     for global in &globals {
-        hints =
-            hints.global_entry_categorized(global.entry.key, global.entry.action, global.category.clone());
+        hints = hints.global_entry_categorized(
+            global.entry.key,
+            global.entry.action,
+            global.category.clone(),
+        );
     }
     if let Some(help) = keymap_help {
         for entry in help.entries() {

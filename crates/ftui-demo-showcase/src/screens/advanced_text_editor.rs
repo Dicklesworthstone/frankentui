@@ -1974,11 +1974,7 @@ impl Screen for AdvancedTextEditor {
     fn tick(&mut self, _tick_count: u64) {
         for dispatch in self.key_dispatcher.tick(std::time::Instant::now()) {
             if let Dispatch::Expired { prefix } = dispatch {
-                crate::test_logging::emit_key_dispatch_jsonl(
-                    "expired",
-                    &prefix.to_string(),
-                    "",
-                );
+                crate::test_logging::emit_key_dispatch_jsonl("expired", &prefix.to_string(), "");
             }
         }
     }

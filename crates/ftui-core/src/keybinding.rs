@@ -2816,6 +2816,22 @@ mod keymap_tests {
         assert!(report.is_empty(), "{report}");
     }
 
+    #[test]
+    fn spec_defaults_match_code() {
+        const SPEC: &str = include_str!("../../../docs/spec/keybinding-policy.md");
+        assert_eq!(DEFAULT_CHORD_TIMEOUT_MS, 1000);
+        assert_eq!(DEFAULT_ESC_SEQ_TIMEOUT_MS, 250);
+        assert!(
+            SPEC.contains("chord_timeout_ms = 1000") || SPEC.contains("chord_timeout_ms: 1000"),
+            "keybinding-policy.md must document the 1000 ms default chord timeout"
+        );
+        assert!(
+            SPEC.lines()
+                .any(|line| line.contains("250") && (line.contains("Esc") || line.contains("esc"))),
+            "keybinding-policy.md must document the 250 ms Esc sequence timeout"
+        );
+    }
+
     fn arb_code() -> impl Strategy<Value = KeyCode> {
         prop_oneof![
             prop::sample::select(vec![

@@ -45,8 +45,8 @@ The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
-As of 2026-10-14 the distribution across 152 rows is 5 pending-code,
-0 pending-doc, 59 retracted and 88 proven. Regenerate this sentence from
+As of 2026-10-16 the distribution across 156 rows is 4 pending-code,
+0 pending-doc, 59 retracted and 93 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -80,6 +80,7 @@ README says, not something adjacent. The proven set:
 - S17 (gestures): defaults pinned by `gesture::default_config_values`.
 - S25 (e-graph): proven in the other direction — the section now states the
   measured truth, that it runs nowhere on the layout path.
+- V62 (Keybinding system): `KeyMap`, `Chord`, `KeyDispatcher`, `Priority::{Global, Mode, Widget}`, `ContextId`, `KeyMap::conflicts()`, TOML/JSON `serde` round-trip, `pane_keymap`, `Help::from_keymap` / `KeybindingHints::from_keymap`, and showcase global + screen chords (`g g`, `Ctrl+x Ctrl+s`) proven by unit, simulator, snapshot, snippet, and PTY E2E tests.
 - C26, V47, N01, N02, N03, N04, N05 (G29 locale context, bidi integration, seven demo
   languages, CLDR v45.0 number/date formatting, plural rules).
 - C01 (`frame.render_widget` / `render_stateful_widget` / `area`), C12
@@ -299,7 +300,7 @@ complete `.5.2`.
 | V59 | Cost models (cache / M-G-1 / batching) | README.md :: Cost models (cache / M-G-1 / batching) | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V60 | Gesture recognizer | README.md :: Gesture recognizer | status | CODE | bd-g00-root-epic-ewths.24 | test:ftui-core::gesture::default_config_values; test:ftui-runtime::program::tests::long_press_fires_without_a_tick_rate | proven | 2026-10-14 |
 | V61 | Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | README.md :: Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | status | DOC | bd-g00-root-epic-ewths.27 | test:ftui-core::input_parser::tests::sos_pm_apc_introducers_stay_alt_keys; test:ftui-core::input_parser::tests::mouse_legacy_1015_when_enabled | retracted | 2026-10-14 |
-| V62 | Keybinding system | README.md :: Keybinding system | status | CODE | bd-g00-root-epic-ewths.20 | bead:bd-g00-root-epic-ewths.20 | pending-code | - |
+| V62 | Keybinding system | README.md :: Keybinding system | status | CODE | bd-g00-root-epic-ewths.20 | test:ftui::readme_snippets::readme_keybinding_snippet; test:ftui-core::keybinding::keymap_tests::chord_completes_within_timeout; test:ftui-core::keybinding::keymap_tests::widget_beats_mode_beats_global; test:ftui-core::keybinding::keymap_tests::active_context_beats_contextless_even_at_lower_priority; test:ftui-core::keybinding::keymap_tests::conflicts_reports_shadowed_prefix_and_duplicate; test:ftui-core::keybinding::keymap_tests::keymap_round_trips_through_toml_and_json; test:ftui-core::keybinding::keymap_tests::spec_defaults_match_code; test:ftui-demo-showcase::screens::log_search::tests::g_g_scrolls_to_top_single_g_does_not; test:ftui-demo-showcase::screens::advanced_text_editor::tests::ctrl_x_ctrl_s_sets_saved_status; path:tests/e2e/scripts/test_keybinding_chords.sh | proven | 2026-10-16 |
 | V63 | Animation system | README.md :: Animation system | status | DOC | bd-g00-root-epic-ewths.5 | test:ftui-core::animation::spring::tests::tick_at_rest_records_at_rest_true; test:ftui-core::animation::stagger::tests::linear_equal_spacing; test:ftui-core::animation_test::pulse_phase_wraps_properly | proven | 2026-10-14 |
 | V64 | Bayesian capability detection | README.md :: Bayesian capability detection | status | CODE | bd-g00-root-epic-ewths.19 | test:ftui-core::caps_probe::weights_are_unchanged | proven | 2026-09-18 |
 | V65 | 46 demo screens, gallery table | README.md :: 46 demo screens, gallery table | status | DOC | bd-g00-root-epic-ewths.5 | test:ftui-demo-showcase::app::tests::all_screens_count | retracted | 2026-09-19 |

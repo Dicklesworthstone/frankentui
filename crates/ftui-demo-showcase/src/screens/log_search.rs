@@ -33,9 +33,7 @@ use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
 };
 use ftui_core::geometry::Rect;
-use ftui_core::keybinding::{
-    Chord, Dispatch, KeyDispatcher, KeyMap, KeyMapConfig, SequenceConfig,
-};
+use ftui_core::keybinding::{Chord, Dispatch, KeyDispatcher, KeyMap, KeyMapConfig, SequenceConfig};
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
@@ -1363,11 +1361,7 @@ impl Screen for LogSearch {
 
         for dispatch in self.key_dispatcher.tick(std::time::Instant::now()) {
             if let Dispatch::Expired { prefix } = dispatch {
-                crate::test_logging::emit_key_dispatch_jsonl(
-                    "expired",
-                    &prefix.to_string(),
-                    "",
-                );
+                crate::test_logging::emit_key_dispatch_jsonl("expired", &prefix.to_string(), "");
             }
         }
 

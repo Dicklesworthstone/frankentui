@@ -1300,7 +1300,7 @@ MouseMove(x,y)  ─┤─ armed ─→ DragStart
 MouseMove(x,y)  ─┤          DragMove
 MouseUp(x,y)    ─┤─ drag ──→ DragEnd
                   │
-Key(a)          ─┤          KeyChord (multi-key sequences)
+Key(a)          ─┤          Chord (multi-key sequences)
 Key(Ctrl+x)     ─┘          ModifiedKey
 ```
 
@@ -1308,7 +1308,7 @@ Key(Ctrl+x)     ─┘          ModifiedKey
 
 **Multi-click timing:** double/triple clicks use a configurable interval window (`multi_click_timeout`, default: 300 ms; `click_tolerance` 1 cell) with a `click_count` counter that resets on timeout or position change. A stationary press becomes a `LongPress` after `long_press_threshold` (default: 500 ms).
 
-**Chord recognition:** multi-key sequences like `g g` (vim-style) use a `KeySequence` buffer with configurable timeout, enabling complex keybinding schemes without blocking single-key shortcuts.
+**Chord recognition:** multi-key sequences like `g g` (vim-style) use `Chord` and `KeyDispatcher` with a configurable chord timeout (default: 1,000 ms), enabling complex keybinding schemes without blocking single-key shortcuts.
 
 **Where it runs:** opt in with `ProgramConfig::default().with_gestures(GestureConfig::default())` and implement `Model::on_gesture(&mut self, SemanticEvent) -> Cmd<Msg>`. The runtime feeds every input event through the recognizer, then hands the raw event to the ordinary `update()` call (raw events are never swallowed), then delivers each recognized gesture to `on_gesture`. Long presses are checked on every loop iteration and the loop wakes at the long-press deadline, so they fire without a `Cmd::tick` rate. Mouse gestures need mouse capture enabled.
 
@@ -1329,13 +1329,25 @@ The `InputParser` in `ftui-core` handles the full complexity of terminal input e
 
 The `Keybinding` module supports:
 
-- **Declarative binding maps** with priority levels (global, mode, widget)
-- **Chord sequences** (`g g`, `Ctrl+x Ctrl+s`) with configurable timeout
-- **Context-sensitive activation**: bindings active only in specific modes/focus states
-- **Conflict detection**: warns when bindings shadow each other
-- **Serialization**: load/save binding maps for user customization (`ftui-core` feature `serde`, `ftui` feature `serde`): `KeyMap<A>` serializes as a file with chords as text, contexts by name and `chord_timeout_ms`, so `toml::from_str::<KeyMap<Msg>>(&text)` reads a hand-edited keymap and a bad chord is reported with its binding index
+- **Declarative binding maps** (`KeyMap`, `Binding`) with priority levels (`Priority::{Global, Mode, Widget}`)
+- **Chord sequences** (`Chord`: `g g`, `Ctrl+x Ctrl+s`) with configurable timeout (1,000 ms default, clamped to 200..=5,000 ms)
+- **Context-sensitive activation** (`ContextId`): bindings active only in specific modes/focus states
+- **Conflict detection** (`KeyMap::conflicts()`): warns when bindings shadow, duplicate, or prefix-collide with each other
+- **Serialization** (`KeyMap::to_toml` / `from_toml` and `to_json` / `from_json` under `ftui-core` / `ftui` feature `serde`): `KeyMap<A>` serializes as a file with chords as text, contexts by name and `chord_timeout_ms`, so `toml::from_str::<KeyMap<Msg>>(&text)` reads a hand-edited keymap and a bad chord is reported with its binding index
 
-**Where it runs:** `ftui_core::keybinding::{KeyCombo, Chord, KeyMap, KeyDispatcher}` (also in `ftui::prelude`). `KeyMap::bind(Chord::parse("g g")?, Msg::GoTop)` and `bind_in(chord, action, Priority::Widget, Some(ctx))` declare bindings; `KeyMap::conflicts()` returns the shadow/prefix/duplicate report with one warning line per item; `KeyDispatcher::feed(&key_event, now)` and `tick(now)` return `Dispatch::{Action, Pending, Expired, Unbound, Esc}`. Resolution order: an active-context binding beats a context-free one, then higher priority, then the most recent binding. A key that is both bound alone and a chord prefix (`g` with `g g`) waits for the chord timeout (1 s default, 200 ms to 5 s) or a non-extending key, then fires; single-key shortcuts are never swallowed. `Esc` and `Esc Esc` go through the same 250 ms `SequenceDetector` window the rest of the runtime uses; a key typed inside that window resolves the lone `Esc` first, in the same `feed` call, then is dispatched itself (`ActionMapper::map` likewise returns the Esc's action, then the key's). The pane keyboard controller (`ftui_runtime::pane_keymap`) is routed through a `KeyMap`: `pane_keymap()` builds it from one binding table, `PaneKeyboardController::handle_key` resolves keys against it (`with_keymap` swaps in a host map), and `pane_keyboard_hints()` is generated from the same table, so hints and behaviour cannot drift. The showcase's global keys still match keys directly.
+```rust
+let mut map = KeyMap::new();
+let editor = map.context("editor");
+map.bind(Chord::parse("g g").unwrap(), "scroll_to_top");
+map.bind_in(
+    Chord::parse("Ctrl+x Ctrl+s").unwrap(),
+    "save",
+    Priority::Mode,
+    Some(editor),
+);
+```
+
+**Where it runs:** `ftui_core::keybinding::{KeyCombo, Chord, KeyMap, KeyDispatcher, Priority, ContextId}` (also in `ftui::prelude`). `KeyMap::bind(Chord::parse("g g")?, Msg::GoTop)` and `bind_in(chord, action, Priority::Widget, Some(ctx))` declare bindings; `KeyMap::conflicts()` returns the shadow/prefix/duplicate report with one warning line per item; `KeyDispatcher::feed(&key_event, now)` and `tick(now)` return `Dispatch::{Action, Pending, Expired, Unbound, Esc}`. Resolution order: an active-context binding beats a context-free one, then higher priority, then the most recent binding. A key that is both bound alone and a chord prefix (`g` with `g g`) waits for the chord timeout (1,000 ms default, 200 ms to 5,000 ms) or a non-extending key, then fires; single-key shortcuts are never swallowed. `Esc` and `Esc Esc` go through the same 250 ms `SequenceDetector` window the rest of the runtime uses; a key typed inside that window resolves the lone `Esc` first, in the same `feed` call, then is dispatched itself (`ActionMapper::map` likewise returns the Esc's action, then the key's). The pane keyboard controller (`ftui_runtime::pane_keymap`) is routed through a `KeyMap`: `pane_keymap()` builds it from one binding table, `PaneKeyboardController::handle_key` resolves keys against it (`with_keymap` swaps in a host map), and `pane_keyboard_hints()` is generated from the same table, so hints and behaviour cannot drift. The showcase's global keys (`?`, `q`, `Ctrl+C`, `Tab`/`Shift+Tab`, `/`, `Ctrl+K`, ...) and screen chords (`g g` in `LogSearch`, `Ctrl+x Ctrl+s` in `AdvancedTextEditor`) also dispatch through `KeyMap` and `KeyDispatcher`, and `Help::from_keymap` / `KeybindingHints::from_keymap` render directly from `KeyMap::entries_for_help` (in `LogSearch`, scrolling to the top uses the `g g` chord rather than a single `g`).
 
 ### Damped Spring Dynamics (Animation System)
 

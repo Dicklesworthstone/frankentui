@@ -389,20 +389,19 @@ mod file_storage {
             let mut result = HashMap::new();
             for (key, entry) in state_file.entries {
                 use base64::Engine;
-                let data = match base64::engine::general_purpose::STANDARD
-                    .decode(&entry.data_base64)
-                {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::warn!(
-                            target: crate::telemetry_schema::TARGET_RUNTIME,
-                            key = %key,
-                            error = %e,
-                            "failed to decode state entry, skipping"
-                        );
-                        continue;
-                    }
-                };
+                let data =
+                    match base64::engine::general_purpose::STANDARD.decode(&entry.data_base64) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            tracing::warn!(
+                                target: crate::telemetry_schema::TARGET_RUNTIME,
+                                key = %key,
+                                error = %e,
+                                "failed to decode state entry, skipping"
+                            );
+                            continue;
+                        }
+                    };
                 result.insert(
                     key.clone(),
                     StoredEntry {
