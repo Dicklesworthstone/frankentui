@@ -1172,37 +1172,45 @@ actively samples between forced intervals.
 
 ### E-Process: Anytime-Valid Testing
 
-Several statistical thresholds use **e-processes** (wealth-based sequential tests):
+Several monitors accumulate multiplicative **e-values** (sequential test wealth processes):
 
 ```
-E-process (exponential / sub-Gaussian form, as implemented):
-    E_t = E_{t-1} × exp(λ·r_t − λ²/2)      where r_t is a standardized residual
+Sub-Gaussian exponential form (ftui_render::budget::EProcessState, conformal_alert):
+    E_t = E_{t-1} × exp(λ_t · r_t − λ_t² · σ₀² / 2)
 
-Key guarantee:
-    P(∃t: E_t ≥ 1/α) ≤ α   under null hypothesis
+Bernoulli wealth form (experimental ftui_runtime::eprocess_throttle, voi_sampling):
+    W_t = W_{t-1} × (1 + λ_t · (X_t − μ₀))
 
-This holds at ANY stopping time, with no peeking penalty.
+Ville's inequality (when E[e_t | F_{t-1}] ≤ 1 with predictable λ_t and no lower-floor bias):
+    P(∃t: E_t ≥ 1/α | H₀) ≤ α   at any stopping time
 ```
 
-**λ is fixed on the render path.** `ftui_render::budget`'s `EProcessState` reads
-`λ` straight from its config, so the production e-process is a fixed-betting
-test, not an adaptive one. GRAPA — adapting `λ` by
-`λ ← clamp(λ + η · z/(1 + λ·z))`, with `grapa_eta` defaulting to 0.1 — is
-implemented only in the experimental `conformal_alert`. An earlier version of
-this block wrote the multiplicative-wealth form `W_t = W_{t-1}(1 + λ_t(X_t − μ₀))`
-and attributed `λ_t` to GRAPA, which described neither implementation.
+**Production vs. formal supermartingale distinction:**
+- **Render-path budget gate (`ftui_render::budget::EProcessState`) is a heuristic plug-in accumulator:**
+  It uses a fixed `λ = 0.5` from `EProcessConfig`, standardizes residuals by an EMA of mean absolute
+  deviation (`σ̂_MAD ≈ 0.8σ` for Gaussian noise, floored at `sigma_floor_ms = 1.0`), and clamps `E_t`
+  to `[0.01, 1000.0]`. Because `σ̂_MAD` underestimates true `σ` and the `0.01` floor prevents arbitrarily
+  small wealth, `E_t` drifts slightly upward under stationary jitter and Ville's inequality does **not**
+  formally hold (`alpha = 0.05` is a fail-safe sensitivity knob that errs toward earlier degradation,
+  not a guaranteed false-positive bound).
+- **Adaptive $\lambda_t$ (GRAPA) lives in two experimental modules with matching objectives:**
+  - `ftui_runtime::eprocess_throttle` adapts $\lambda_t$ on the Bernoulli wealth process via
+    $\lambda_{t+1} = \mathrm{clamp}(\lambda_t + \eta \frac{X_t - \mu_0}{1 + \lambda_t(X_t - \mu_0)})$.
+  - `ftui_runtime::conformal_alert` adapts $\lambda_t$ on the sub-Gaussian exponential process via
+    the matching log-wealth gradient $\lambda_{t+1} = \mathrm{clamp}(\lambda_t + \eta ((z_t - \mu_0) - \lambda_t \sigma_0^2), \epsilon, 1 - \epsilon)$.
 
 **Applications in FrankenTUI:**
-- Budget degradation decisions (`ftui_render::budget`'s `EProcessState`, on the render path)
-- Flake detection in tests (experimental)
-- Allocation budget alerts (experimental)
+- Budget degradation gate (`ftui_render::budget::EProcessState`, heuristic fixed-$\lambda$ plug-in on the render path)
+- VOI boundary-proximity weighting (`ftui_runtime::voi_sampling`, clamped `[1e-12, 1e12]` Bernoulli wealth)
+- Flake detection in tests (experimental `flake_detector`)
+- Allocation / throttle alerts (experimental `eprocess_throttle`)
 - Conformal *alert* threshold calibration (experimental `conformal_alert`)
 
 Not the Mondrian conformal frame-time gate described below, which is the
 conformal path that is on by default: it calibrates from residual quantiles
 and carries no e-process.
 
-**Where it runs:** `ftui-render::budget` (`EProcessState` fixed-$\lambda$ test on the default frame-budget path); `ftui-runtime::eprocess_throttle` and `ftui-runtime::conformal_alert` are experimental and not constructed by `Program` or `TerminalWriter`.
+**Where it runs:** `ftui-render::budget` (`EProcessState` fixed-$\lambda$ heuristic gate on the default frame-budget path); `ftui-runtime::eprocess_throttle` and `ftui-runtime::conformal_alert` are experimental and not constructed by `Program` or `TerminalWriter`.
 
 ### Conformal Alerting
 
@@ -1215,23 +1223,23 @@ quarantined cluster wired to itself, not to the runtime. The conformal path that
 is on by default is the Mondrian frame-time gate above, which has no e-process
 layer.
 
-Budget and performance alerts in that module use **distribution-free conformal prediction**:
+Budget and performance alerts in that module combine **exchangeable conformal prediction** with a sequential sub-Gaussian e-process:
 
 ```
 Nonconformity score:
     R_t = |observed_t - predicted_t|
 
-Threshold (finite-sample guarantee):
-    q = quantile_{(1-α)(n+1)/n}(R_1, ..., R_n)
+Threshold (finite-sample guarantee when (1-α)(n+1) ≤ n):
+    q = quantile_{⌈(1-α)(n+1)⌉ / n}(R_1, ..., R_n)
 
-Coverage guarantee:
-    P(R_{n+1} ≤ q) ≥ 1 - α   for any distribution!
+Exchangeable coverage guarantee:
+    P(R_{n+1} ≤ q) ≥ 1 - α   for exchangeable (R_1, ..., R_{n+1})
 
-E-process layer (anytime-valid):
-    e_t = exp(λ × (z_t - μ₀) - λ²σ²/2)
+Sub-Gaussian e-process layer (with predictable λ_t updated by ∂ℓ_t/∂λ = (z_t - μ₀) - λ_t σ₀²):
+    e_t = exp(λ_t × (z_t - μ₀) - λ_t² σ₀² / 2)
 ```
 
-**Why conformal?** No distributional assumptions required. Works for any data pattern.
+**Scope & assumptions:** The conformal quantile requires exchangeability of calibration and test residuals (non-stationary drift requires recalibration or sliding windows); the combined OR trigger (`conformal_alert || eprocess_alert`) with empirical $(\hat{\mu}, \hat{\sigma})$ standardization and post-alert resets is a hybrid detector rather than a single-threshold α-test.
 
 ### Mondrian Conformal Frame-Time Risk Gating
 
@@ -1806,23 +1814,25 @@ Reject H₀ when E_t ≥ 1/α, valid at ANY stopping time.
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-When many monitors fire simultaneously (budget alerts, degradation triggers, capability decisions), testing each at a fixed alpha inflates false discoveries. Alpha-Investing treats significance as a **spendable resource**:
+When many monitors fire sequentially (budget alerts, degradation triggers, capability decisions), testing each at a fixed alpha inflates expected false discoveries. `ftui_runtime::alpha_investing` implements a **multiplicative alpha-spending rule with partial refund**:
 
 ```
-Wealth process:
-  W₀ = initial_wealth          (e.g. 0.5)
+Wealth process (as implemented in AlphaInvestor):
+  W₀ = initial_wealth                                  (default 0.5)
 
-Per-test:
-  αᵢ = min(W, α_max)           -- spend from wealth
-  W ← W - αᵢ                    -- deduct cost
-  if test i rejects:
-    W ← W + reward              -- earn back on discovery
+Per-test (while W ≥ min_wealth):
+  αᵢ = clamp(investment_fraction × W, 0, W)            -- default investment_fraction = 0.1
+  W ← W - αᵢ                                           -- deduct αᵢ upfront
+  if pᵢ ≤ αᵢ (rejected):
+    W ← W + reward_fraction × αᵢ                       -- partial refund (default ψ = 0.5)
 
-FDR guarantee:
-  E[FDP] ≤ initial_wealth / (initial_wealth + reward_total)
+Guarantees under conditionally super-uniform null p-values (P(pᵢ ≤ αᵢ | Fᵢ₋₁) ≤ αᵢ):
+  Total alpha spent:         Σ αᵢ ≤ W₀ / (1 - ψ)
+  Expected false discoveries: E[V] ≤ W₀ / (1 - ψ · α_max) ≤ W₀ / (1 - ψ)
+  Stabilized modified FDR:    mFDR_η = E[V] / (E[R] + η) ≤ W₀ / (η · (1 - ψ · α_max))
 ```
 
-**Result:** the wealth process lets dozens of simultaneous statistical monitors run without false-alarm inflation.
+*(Note: Foster & Stine (2008) charge $\alpha_i / (1 - \alpha_i)$, grant an additive payout $\omega$ on rejection, and control the stabilized $\mathrm{mFDR}_\eta = E[V]/(E[R]+\eta)$ with $\eta > 0$; `AlphaInvestor::discovery_rate()` reports the raw rejection rate $R / m$, not $\mathrm{FDP} = V / \max(R, 1)$.)*
 
 **Where it runs: nowhere.** Nothing in any crate's `src/` imports `ftui_runtime::alpha_investing`, so the one monitor that *is* on by default — the Mondrian conformal frame-time gate — does not spend from a shared alpha budget. BOCPD would have been the second, but it is opt-in as of 2026-09-23 (`bd-h8l3d`). One monitor, not dozens, which is why this has not bitten; the accounting exists for a future where it would.
 
@@ -1832,28 +1842,31 @@ FDR guarantee:
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-The `rough_path` module implements **rough-path signatures** for sequential trace feature extraction, a technique from stochastic analysis:
+The `rough_path` module implements **truncated rough-path signatures** for piecewise-linear sequential traces:
 
 ```
 Given a d-dimensional path X: [0,T] → ℝᵈ, the signature is:
 
 S(X)^{i₁,...,iₖ} = ∫₀<t₁<...<tₖ<T dX^{i₁}_{t₁} ⊗ ... ⊗ dX^{iₖ}_{tₖ}
 
+Piecewise-linear increment Δx_t = x_{t+1} - x_t via Chen's identity:
+  S(X_{[0,t+1]}) = S(X_{[0,t]}) ⊗ exp(Δx_t),   exp(Δx_t) = Σ_{m=0}^K Δx_t^{⊗m} / m!
+
 Truncated at depth K:
-  S_K(X) = (1, S¹(X), S²(X), ..., Sᴷ(X))
+  S_K(X) = (1, S¹(X), S²(X), ..., Sᴷ(X))      with Σ_{k=1}^K d^k terms
 ```
 
-**Properties:**
-- **Parameterization invariance**: `S(X)` is the same regardless of time warping
-- **Universality**: signatures separate paths; different paths always have different signatures
-- **Efficient computation**: Chen's identity enables O(nK²d²) incremental updates
+**Properties & scope:**
+- **Reparametrization & subdivision invariance**: Using the segment tensor exponential $\exp(\Delta x_t)$ in Chen's identity makes $S_K(X)$ invariant under monotone time reparametrization and arbitrary subdivision of linear segments.
+- **Tree-like equivalence vs. finite truncation**: The full infinite signature ($K = \infty$) characterizes continuous bounded-variation paths up to **tree-like equivalence** (Hambly & Lyons, 2010; retraced segments cancel). A **truncated signature at depth $K < \infty$** is a finite-dimensional projection and does not uniquely separate all non-tree-equivalent paths.
+- **Incremental complexity**: Chen's identity updates the depth-$K$ signature in $O(K \cdot d^K)$ time per step ($O(n \cdot K \cdot d^K)$ across $n$ observations).
 
 **Intended applications in FrankenTUI** — none of these are wired; no crate imports `ftui_runtime::rough_path`:
-- **Workload characterization**: frame time series → signature → anomaly detection
+- **Workload characterization**: time-augmented `(t, frame_ms)` series → signature → anomaly detection
 - **Trace comparison**: compare two execution traces without aligning timestamps
 - **Regression detection**: signature distance between baseline and candidate runs
 
-**Where it runs: nowhere.** The signature computation is implemented and unit-tested; nothing feeds it a frame time series.
+**Where it runs: nowhere.** The signature computation is implemented and unit/property-tested; nothing feeds it a frame time series.
 
 ---
 
@@ -2094,8 +2107,8 @@ The visual effects screen is deterministic math, not “random shader noise.” 
 | **Bayesian Height Predictor** | Virtualized list preallocation | $\mu_n=\frac{\kappa_0\mu_0+n\bar{x}}{\kappa_0+n}$ + conformal $q_{1-\alpha}$ | Fewer scroll jumps |
 | **BOCPD** | Resize coalescing (opt-in via `with_bocpd()`) | Run‑length posterior + hazard $H(r)$ | Regime-aware delay selection when enabled |
 | **Run‑Length Posterior** | BOCPD core (opt-in via `with_bocpd()`) | $P(r_t=r\mid x_{1:t})$ recursion | Regime switches without static rate thresholds |
-| **E‑Process** | Budget controller gate (`ftui_render::budget`, fixed $\lambda$) | $E_t=E_{t-1}\exp(\lambda r_t-\lambda^2/2)$ | Safe early exits under continuous monitoring |
-| **GRAPA** | Adaptive e‑process (experimental `conformal_alert` / `eprocess_throttle`) | $\lambda_{t+1}=\mathrm{clamp}(\lambda_t+\eta z_t/(1+\lambda_t z_t))$ | Self‑tuning sensitivity in experimental monitors |
+| **E‑Process** | Budget controller gate (`ftui_render::budget`, fixed $\lambda$, heuristic plug‑in) | $E_t=\mathrm{clamp}(E_{t-1}\exp(\lambda r_t-\lambda^2/2))$ | Early overload gating (empirical variance + `[0.01, 1e6]` clamp) |
+| **GRAPA** | Adaptive e‑process (experimental `conformal_alert` / `eprocess_throttle`) | $\lambda_{t+1}=\mathrm{clamp}(\lambda_t+\eta\partial\ell_t/\partial\lambda)$ | Self‑tuning sensitivity in experimental monitors |
 | **Conformal Prediction** | Risk bounds | $q=\text{Quantile}_{\lceil(1-\alpha)(n+1)\rceil}(R)$ | Stable thresholds without tuning |
 | **Mondrian Conformal** | Frame‑time risk gating | $\hat y^+=\hat y+q_{1-\alpha}(|r|)$ per bucket | Safe budget gating with sparse data |
 | **CUSUM** | Budget change detection | $S_t=\max(0,S_{t-1}+X_t-\mu_0-k)$ | Fast drift detection |
@@ -2226,22 +2239,21 @@ here is how they drifted apart before.
 
 ### E-Process: Anytime-Valid Statistical Testing
 
-Budget decisions and alert thresholds use **e-processes** (sub-Gaussian sequential test martingales):
+Budget decisions and alert thresholds use **e-processes** (sequential test wealth processes):
 
 ```
-Exponential E-Process (as implemented in ftui_render::budget::EProcessState):
-  E_t = E_{t-1} × exp(λ·r_t − λ²/2)
+Sub-Gaussian / Bernoulli E-Process:
+  True conditional supermartingale (fixed known σ₀ or p₀, predictable λ_t, unclamped):
+    P(∃t: E_t ≥ 1/α) ≤ α under H₀ (Ville's inequality)
 
-Guarantee:
-  P(∃t: E_t ≥ 1/α) ≤ α under null hypothesis
-
-Key Property:
-  Valid at ANY stopping time (not just fixed sample sizes)
+  Production heuristic gate (ftui_render::budget::EProcessState):
+    E_t = clamp(E_{t-1} × exp(λ·r_t − λ²/2), 0.01, 1e6)
+    with EMA plug-in variance and sub-threshold decay
 ```
 
-**Where it runs:** `ftui_render::budget::EProcessState` runs on the render path with a fixed $\lambda$ from `BudgetControllerConfig`; adaptive $\lambda_t$ (GRAPA) is implemented only in the quarantined `experimental` modules `conformal_alert` and `eprocess_throttle`.
+**Where it runs:** `ftui_render::budget::EProcessState` runs on the render path with a fixed $\lambda$ from `BudgetControllerConfig` as a practical overload gate; adaptive $\lambda_t$ (matching log-wealth gradient ascent) is implemented only in the quarantined `experimental` modules `conformal_alert` (sub-Gaussian gradient $z_{\text{centered}} - \lambda_t \sigma_0^2$) and `eprocess_throttle` (Bernoulli GRAPA gradient $r_t / (1 + \lambda_t r_t)$).
 
-**Practical benefit:** You can check the e-process after every frame without inflating false positive rates.
+**Practical benefit:** Sequential wealth accumulates overload evidence across frames without fixed sample-size windows.
 
 ### VOI Sampling: Value of Information
 
@@ -2878,8 +2890,14 @@ next_job = argmax { priority(j) : j ∈ ready_queue }
 Effective priority:
   priority_eff(j) = weight(j) / remaining_time(j) + aging_factor × wait_time(j)
 
-Wait time grows linearly, so even low-priority jobs eventually rise above high-priority ones.
-Guaranteed service: every job completes within O(N × max_weight / aging_factor) time.
+Wait time grows linearly, so a waiting job's priority overtakes any single newly
+arriving higher-priority competitor within:
+  τ_overtake = Δ(weight / remaining_time) / aging_factor
+
+Actual service wait still scales with the total work of the N jobs ahead in the
+queue (e.g., (N − 1) × s for N equal jobs of service time s), and live effect
+closures (`Box<dyn FnOnce() + Send>`) execute non-preemptively to completion once
+dispatched.
 ```
 
 ### Queue Telemetry

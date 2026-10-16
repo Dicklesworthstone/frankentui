@@ -43,7 +43,7 @@ use web_time::{Duration, Instant};
 use tracing::{trace, warn};
 
 // ---------------------------------------------------------------------------
-// Budget Controller: PID + Anytime-Valid E-Process
+// Budget Controller: PID + E-Process-Style Gate (Heuristic Plug-In)
 // ---------------------------------------------------------------------------
 
 /// PID controller gains for frame time regulation.
