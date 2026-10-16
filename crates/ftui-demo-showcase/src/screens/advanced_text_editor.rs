@@ -29,6 +29,9 @@ use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
 };
 use ftui_core::geometry::Rect;
+use ftui_core::keybinding::{
+    Chord, Dispatch, KeyCombo, KeyDispatcher, KeyMap, KeyMapConfig, SequenceConfig,
+};
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
@@ -583,35 +586,44 @@ impl DiagnosticSummary {
 // Editor Implementation
 // =============================================================================
 
-#[derive(Debug, Clone, Copy)]
-struct KeyChord {
-    code: KeyCode,
-    modifiers: Modifiers,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorAction {
+    Save,
 }
 
-impl KeyChord {
-    const fn new(code: KeyCode, modifiers: Modifiers) -> Self {
-        Self { code, modifiers }
+impl EditorAction {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Save => "save",
+        }
     }
+}
 
-    fn matches(self, code: KeyCode, modifiers: Modifiers) -> bool {
-        self.code == code && self.modifiers == modifiers
-    }
+fn default_editor_keymap() -> KeyMap<EditorAction> {
+    let mut map = KeyMap::with_config(
+        KeyMapConfig::default().with_esc(SequenceConfig::default().disable_sequences()),
+    );
+    map.bind(
+        Chord::parse("Ctrl+x Ctrl+s").expect("valid editor chord"),
+        EditorAction::Save,
+    );
+    map
 }
 
 #[derive(Debug, Clone, Copy)]
 struct UndoKeybindings {
-    undo: KeyChord,
-    redo_primary: KeyChord,
-    redo_secondary: KeyChord,
+    undo: KeyCombo,
+    redo_primary: KeyCombo,
+    redo_secondary: KeyCombo,
 }
 
 impl Default for UndoKeybindings {
     fn default() -> Self {
         Self {
-            undo: KeyChord::new(KeyCode::Char('z'), Modifiers::CTRL),
-            redo_primary: KeyChord::new(KeyCode::Char('y'), Modifiers::CTRL),
-            redo_secondary: KeyChord::new(KeyCode::Char('Z'), Modifiers::CTRL | Modifiers::SHIFT),
+            undo: KeyCombo::new(KeyCode::Char('z'), Modifiers::CTRL),
+            redo_primary: KeyCombo::new(KeyCode::Char('y'), Modifiers::CTRL),
+            redo_secondary: KeyCombo::new(KeyCode::Char('Z'), Modifiers::CTRL | Modifiers::SHIFT),
         }
     }
 }
@@ -699,6 +711,8 @@ pub struct AdvancedTextEditor {
     undo_panel_visible: bool,
     /// Undo/redo keybindings.
     undo_keys: UndoKeybindings,
+    /// Chord key dispatcher for multi-key editor bindings (`Ctrl+x Ctrl+s`).
+    key_dispatcher: KeyDispatcher<EditorAction>,
     /// Diagnostic log for telemetry (bd-12o8.5).
     diagnostic_log: DiagnosticLog,
     /// Editor panel hit rect for mouse focus.
@@ -781,6 +795,7 @@ and proper Unicode handling throughout.
             status: "INSERT | Esc: Normal (y: Copy, p: Paste) | Ctrl+F: Search".into(),
             undo_panel_visible: false,
             undo_keys: UndoKeybindings::default(),
+            key_dispatcher: KeyDispatcher::new(default_editor_keymap()),
             diagnostic_log,
             layout_editor: Cell::new(Rect::default()),
             layout_undo: Cell::new(Rect::default()),
@@ -1464,19 +1479,60 @@ impl Screen for AdvancedTextEditor {
         }
 
         // Global shortcuts
-        if let Event::Key(KeyEvent {
-            code,
-            modifiers,
-            kind: KeyEventKind::Press,
-            ..
-        }) = event
+        if let Event::Key(
+            key @ KeyEvent {
+                code,
+                modifiers,
+                kind: KeyEventKind::Press,
+                ..
+            },
+        ) = event
         {
-            if self.undo_keys.undo.matches(*code, *modifiers) {
+            let mut chord_handled = false;
+            for dispatch in self.key_dispatcher.feed(key, std::time::Instant::now()) {
+                match dispatch {
+                    Dispatch::Action { action, chord, .. } => {
+                        crate::test_logging::emit_key_dispatch_jsonl(
+                            "dispatched",
+                            &chord.to_string(),
+                            action.as_str(),
+                        );
+                        match action {
+                            EditorAction::Save => {
+                                self.clipboard_message = Some("Saved".into());
+                                self.update_status();
+                            }
+                        }
+                        chord_handled = true;
+                    }
+                    Dispatch::Pending { prefix } => {
+                        crate::test_logging::emit_key_dispatch_jsonl(
+                            "pending",
+                            &prefix.to_string(),
+                            "",
+                        );
+                        chord_handled = true;
+                    }
+                    Dispatch::Expired { prefix } => {
+                        crate::test_logging::emit_key_dispatch_jsonl(
+                            "expired",
+                            &prefix.to_string(),
+                            "",
+                        );
+                    }
+                    Dispatch::Unbound(_) | Dispatch::Esc(_) => {}
+                }
+            }
+            if chord_handled {
+                return Cmd::None;
+            }
+
+            if self.undo_keys.undo.matches(key) {
                 self.perform_undo();
                 return Cmd::None;
             }
-            if self.undo_keys.redo_primary.matches(*code, *modifiers)
-                || self.undo_keys.redo_secondary.matches(*code, *modifiers)
+            if self.undo_keys.redo_primary.matches(key)
+                || self.undo_keys.redo_secondary.matches(key)
             {
                 self.perform_redo();
                 return Cmd::None;
@@ -1913,6 +1969,18 @@ impl Screen for AdvancedTextEditor {
         let changed = self.can_redo();
         self.perform_redo();
         changed
+    }
+
+    fn tick(&mut self, _tick_count: u64) {
+        for dispatch in self.key_dispatcher.tick(std::time::Instant::now()) {
+            if let Dispatch::Expired { prefix } = dispatch {
+                crate::test_logging::emit_key_dispatch_jsonl(
+                    "expired",
+                    &prefix.to_string(),
+                    "",
+                );
+            }
+        }
     }
 
     fn consumes_text_input(&self) -> bool {
@@ -2571,5 +2639,26 @@ mod tests {
         assert!(jsonl.contains("\"total\":10"));
         assert!(jsonl.contains("\"search_opened\":2"));
         assert!(jsonl.contains("\"query_updated\":3"));
+    }
+
+    #[test]
+    fn ctrl_x_ctrl_s_sets_saved_status() {
+        let mut screen = AdvancedTextEditor::new();
+        screen.editor.set_text("hello");
+        assert!(!screen.status.contains("Saved"));
+
+        // First half of chord (Ctrl+X) is buffered as Pending.
+        screen.update(&ctrl_press(KeyCode::Char('x')));
+        assert!(!screen.status.contains("Saved"));
+        assert_eq!(screen.editor.text(), "hello");
+
+        // Second half of chord (Ctrl+S) completes the Save action and updates status.
+        screen.update(&ctrl_press(KeyCode::Char('s')));
+        assert!(
+            screen.status.contains("Saved"),
+            "expected 'Saved' in status: {}",
+            screen.status
+        );
+        assert_eq!(screen.editor.text(), "hello");
     }
 }

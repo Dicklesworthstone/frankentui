@@ -323,11 +323,13 @@ pub fn emit_key_dispatch_jsonl(outcome: &str, chord: &str, action: &str) {
     } else {
         JsonlSink::File(path.to_string())
     };
+    let escaped_action = escape_json(action);
     let line = format!(
-        "{{\"event\":\"key_dispatch\",\"outcome\":\"{}\",\"chord\":\"{}\",\"action\":\"{}\"}}",
+        "{{\"event\":\"key_dispatch\",\"outcome\":\"{}\",\"chord\":\"{}\",\"action\":\"{}\",\"binding\":\"{}\"}}",
         escape_json(outcome),
         escape_json(chord),
-        escape_json(action),
+        escaped_action,
+        escaped_action,
     );
     sink.write_line(&line);
 }

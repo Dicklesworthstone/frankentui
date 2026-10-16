@@ -987,6 +987,12 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hints_match_map() {
+        hints_are_generated_from_the_binding_table();
+        keymap_lookup_agrees_with_binding_table();
+    }
+
     /// A host-supplied map replaces the default bindings.
     #[test]
     fn controller_with_custom_keymap() {

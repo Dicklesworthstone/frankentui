@@ -33,6 +33,9 @@ use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
 };
 use ftui_core::geometry::Rect;
+use ftui_core::keybinding::{
+    Chord, Dispatch, KeyDispatcher, KeyMap, KeyMapConfig, SequenceConfig,
+};
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
@@ -622,6 +625,72 @@ pub enum UiMode {
     Filter,
 }
 
+/// Actions dispatched by the [`LogSearch`] normal-mode keymap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogSearchAction {
+    OpenSearch,
+    OpenFilter,
+    NextMatch,
+    PrevMatch,
+    ClearFilter,
+    TogglePause,
+    ScrollToTop,
+    ScrollToBottom,
+    ScrollUp,
+    ScrollDown,
+    PageUp,
+    PageDown,
+    ClearSearch,
+}
+
+impl LogSearchAction {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenSearch => "open_search",
+            Self::OpenFilter => "open_filter",
+            Self::NextMatch => "next_match",
+            Self::PrevMatch => "prev_match",
+            Self::ClearFilter => "clear_filter",
+            Self::TogglePause => "toggle_pause",
+            Self::ScrollToTop => "scroll_to_top",
+            Self::ScrollToBottom => "scroll_to_bottom",
+            Self::ScrollUp => "scroll_up",
+            Self::ScrollDown => "scroll_down",
+            Self::PageUp => "page_up",
+            Self::PageDown => "page_down",
+            Self::ClearSearch => "clear_search",
+        }
+    }
+}
+
+fn default_log_search_keymap() -> KeyMap<LogSearchAction> {
+    let mut map = KeyMap::with_config(
+        KeyMapConfig::default().with_esc(SequenceConfig::default().disable_sequences()),
+    );
+    for (chord, action) in [
+        ("/", LogSearchAction::OpenSearch),
+        ("f", LogSearchAction::OpenFilter),
+        ("n", LogSearchAction::NextMatch),
+        ("N", LogSearchAction::PrevMatch),
+        ("F", LogSearchAction::ClearFilter),
+        ("Space", LogSearchAction::TogglePause),
+        ("g g", LogSearchAction::ScrollToTop),
+        ("G", LogSearchAction::ScrollToBottom),
+        ("k", LogSearchAction::ScrollUp),
+        ("Up", LogSearchAction::ScrollUp),
+        ("j", LogSearchAction::ScrollDown),
+        ("Down", LogSearchAction::ScrollDown),
+        ("PageUp", LogSearchAction::PageUp),
+        ("PageDown", LogSearchAction::PageDown),
+        ("Esc", LogSearchAction::ClearSearch),
+    ] {
+        let parsed = Chord::parse(chord).expect("valid log_search chord");
+        map.bind(parsed, action);
+    }
+    map
+}
+
 /// Log Search demo screen state.
 pub struct LogSearch {
     viewer: LogViewer,
@@ -635,6 +704,7 @@ pub struct LogSearch {
     tick_count: u64,
     lines_generated: u64,
     paused: bool,
+    key_dispatcher: KeyDispatcher<LogSearchAction>,
     /// Diagnostic log for telemetry (bd-1b5h.9).
     diagnostic_log: Option<DiagnosticLog>,
     /// Telemetry hooks for external observers (bd-1b5h.9).
@@ -687,6 +757,7 @@ impl LogSearch {
             tick_count: 0,
             lines_generated: 50,
             paused: false,
+            key_dispatcher: KeyDispatcher::new(default_log_search_keymap()),
             diagnostic_log,
             telemetry_hooks: None,
             last_log_area: Cell::new(Rect::default()),
@@ -836,8 +907,39 @@ impl LogSearch {
     }
 
     fn handle_normal_key(&mut self, key: &KeyEvent) {
-        match (key.code, key.modifiers) {
-            (KeyCode::Char('/'), Modifiers::NONE) => {
+        let dispatches = self.key_dispatcher.feed(key, std::time::Instant::now());
+        for dispatch in dispatches {
+            match dispatch {
+                Dispatch::Action { action, chord, .. } => {
+                    crate::test_logging::emit_key_dispatch_jsonl(
+                        "dispatched",
+                        &chord.to_string(),
+                        action.as_str(),
+                    );
+                    self.apply_normal_action(action);
+                }
+                Dispatch::Pending { prefix } => {
+                    crate::test_logging::emit_key_dispatch_jsonl(
+                        "pending",
+                        &prefix.to_string(),
+                        "",
+                    );
+                }
+                Dispatch::Expired { prefix } => {
+                    crate::test_logging::emit_key_dispatch_jsonl(
+                        "expired",
+                        &prefix.to_string(),
+                        "",
+                    );
+                }
+                Dispatch::Unbound(_) | Dispatch::Esc(_) => {}
+            }
+        }
+    }
+
+    fn apply_normal_action(&mut self, action: LogSearchAction) {
+        match action {
+            LogSearchAction::OpenSearch => {
                 self.mode = UiMode::Search;
                 self.query = self.last_search.clone();
 
@@ -846,7 +948,7 @@ impl LogSearch {
                     .with_query(&self.query);
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Char('f'), Modifiers::NONE) => {
+            LogSearchAction::OpenFilter => {
                 self.mode = UiMode::Filter;
                 self.query = self.filter_query.clone();
 
@@ -855,7 +957,7 @@ impl LogSearch {
                     .with_query(&self.query);
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Char('n'), Modifiers::NONE) if !self.last_search.is_empty() => {
+            LogSearchAction::NextMatch if !self.last_search.is_empty() => {
                 self.viewer.next_match();
 
                 let (pos, total) = self.viewer.search_info().unwrap_or((0, 0));
@@ -867,9 +969,7 @@ impl LogSearch {
                         .with_query(&self.last_search);
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Char('N'), Modifiers::NONE | Modifiers::SHIFT)
-                if !self.last_search.is_empty() =>
-            {
+            LogSearchAction::PrevMatch if !self.last_search.is_empty() => {
                 self.viewer.prev_match();
 
                 let (pos, total) = self.viewer.search_info().unwrap_or((0, 0));
@@ -881,7 +981,8 @@ impl LogSearch {
                         .with_query(&self.last_search);
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Char('F'), Modifiers::NONE | Modifiers::SHIFT) => {
+            LogSearchAction::NextMatch | LogSearchAction::PrevMatch => {}
+            LogSearchAction::ClearFilter => {
                 self.viewer.set_filter(None);
                 self.filter_active = false;
                 self.filter_query.clear();
@@ -891,7 +992,7 @@ impl LogSearch {
                         .with_filter_active(false);
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Char(' '), Modifiers::NONE) => {
+            LogSearchAction::TogglePause => {
                 self.paused = !self.paused;
 
                 let diag = DiagnosticEntry::new(DiagnosticEventKind::PauseToggle, self.tick_count)
@@ -899,7 +1000,7 @@ impl LogSearch {
                     .with_lines_generated(self.lines_generated);
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Char('g'), Modifiers::NONE) => {
+            LogSearchAction::ScrollToTop => {
                 self.viewer.scroll_to_top();
 
                 let diag =
@@ -907,7 +1008,7 @@ impl LogSearch {
                         .with_direction("top");
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Char('G'), Modifiers::NONE | Modifiers::SHIFT) => {
+            LogSearchAction::ScrollToBottom => {
                 self.viewer.scroll_to_bottom();
 
                 let diag =
@@ -915,7 +1016,7 @@ impl LogSearch {
                         .with_direction("bottom");
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Up, _) | (KeyCode::Char('k'), Modifiers::NONE) => {
+            LogSearchAction::ScrollUp => {
                 self.viewer.scroll_up(1);
 
                 let diag =
@@ -923,7 +1024,7 @@ impl LogSearch {
                         .with_direction("up");
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Down, _) | (KeyCode::Char('j'), Modifiers::NONE) => {
+            LogSearchAction::ScrollDown => {
                 self.viewer.scroll_down(1);
 
                 let diag =
@@ -931,7 +1032,7 @@ impl LogSearch {
                         .with_direction("down");
                 self.record_diagnostic(diag);
             }
-            (KeyCode::PageUp, _) => {
+            LogSearchAction::PageUp => {
                 self.viewer.page_up(&self.viewer_state);
 
                 let diag =
@@ -939,7 +1040,7 @@ impl LogSearch {
                         .with_direction("page_up");
                 self.record_diagnostic(diag);
             }
-            (KeyCode::PageDown, _) => {
+            LogSearchAction::PageDown => {
                 self.viewer.page_down(&self.viewer_state);
 
                 let diag =
@@ -947,7 +1048,7 @@ impl LogSearch {
                         .with_direction("page_down");
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Escape, _) => {
+            LogSearchAction::ClearSearch => {
                 self.viewer.clear_search();
                 self.last_search.clear();
 
@@ -955,7 +1056,6 @@ impl LogSearch {
                     .with_context("cleared via escape");
                 self.record_diagnostic(diag);
             }
-            _ => {}
         }
     }
 
@@ -1260,6 +1360,16 @@ impl Screen for LogSearch {
 
     fn tick(&mut self, tick_count: u64) {
         self.tick_count = tick_count;
+
+        for dispatch in self.key_dispatcher.tick(std::time::Instant::now()) {
+            if let Dispatch::Expired { prefix } = dispatch {
+                crate::test_logging::emit_key_dispatch_jsonl(
+                    "expired",
+                    &prefix.to_string(),
+                    "",
+                );
+            }
+        }
 
         if !self.paused && tick_count.is_multiple_of(LOG_BURST_INTERVAL) {
             for _ in 0..LOG_BURST_SIZE {
@@ -2545,5 +2655,44 @@ mod tests {
             bindings.iter().any(|h| h.key == "Scroll"),
             "missing Scroll keybinding"
         );
+    }
+
+    #[test]
+    fn g_g_scrolls_to_top_single_g_does_not() {
+        let mut screen = LogSearch::new().with_diagnostics();
+        screen.viewer.scroll_to_top();
+        screen.viewer.scroll_down(5);
+        assert_eq!(screen.viewer.scroll_offset(), 5);
+        screen.diagnostic_log_mut().unwrap().clear();
+
+        // Single 'g' enters pending chord state without scrolling to top.
+        screen.update(&key_press(KeyCode::Char('g')));
+        assert_eq!(screen.viewer.scroll_offset(), 5);
+        assert!(
+            screen
+                .diagnostic_log()
+                .unwrap()
+                .entries_of_kind(DiagnosticEventKind::ScrollNavigation)
+                .is_empty()
+        );
+
+        // Pressing 'j' flushes the pending 'g' and immediately scrolls down.
+        screen.update(&key_press(KeyCode::Char('j')));
+        assert_eq!(screen.viewer.scroll_offset(), 6);
+
+        // Two 'g' presses within timeout complete the "g g" chord and jump to top.
+        screen.update(&key_press(KeyCode::Char('g')));
+        assert_eq!(screen.viewer.scroll_offset(), 6);
+        screen.update(&key_press(KeyCode::Char('g')));
+        assert_eq!(screen.viewer.scroll_offset(), 0);
+        let nav = screen
+            .diagnostic_log()
+            .unwrap()
+            .entries_of_kind(DiagnosticEventKind::ScrollNavigation);
+        assert_eq!(nav.last().unwrap().direction.as_deref(), Some("top"));
+
+        // Single 'G' jumps back to bottom.
+        screen.update(&key_press(KeyCode::Char('G')));
+        assert!(screen.viewer.is_at_bottom());
     }
 }
