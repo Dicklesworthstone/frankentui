@@ -1361,7 +1361,7 @@ fn build_help_overlay_hints(
                 hints = hints.global_entry_categorized(
                     entry.key.clone(),
                     entry.desc.clone(),
-                    HelpCategory::Global,
+                    HelpCategory::Navigation,
                 );
             }
         }
