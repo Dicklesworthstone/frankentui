@@ -146,3 +146,8 @@ required-features = ["experimental"]
 [[bench]]
 name = "pane_terminal_bench"
 harness = false
+
+[[bench]]
+name = "render_frame_bench"
+harness = false
+

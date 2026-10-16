@@ -2657,6 +2657,72 @@ PY
             fi
         fi
 
+        # Conformal predictor telemetry validation (bd-g00-root-epic-ewths.15.2)
+        conformal_ok=false
+        if $explain_report_ok; then
+            echo ""
+            echo "--- conformal predictor telemetry validation ---"
+            conformal_res=$(python3 - "$EXPLAIN_REPORT" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    events = [json.loads(line) for line in f if line.strip()]
+bd_events = [e for e in events if e.get("event") == "budget_decision"]
+if not bd_events:
+    print("FAIL expected >= 1 budget_decision events, found 0")
+    sys.exit(1)
+
+hist = {0: 0, 1: 0, 2: 0, 3: 0}
+warmup_rows = 0
+calibrated_rows = 0
+
+for idx, ev in enumerate(bd_events):
+    fl = ev.get("fallback_level")
+    status = ev.get("conformal_status")
+    if fl not in hist:
+        print(f"FAIL row {idx} invalid fallback_level={fl!r}")
+        sys.exit(1)
+    if not isinstance(status, str) or not status:
+        print(f"FAIL row {idx} invalid conformal_status={status!r}")
+        sys.exit(1)
+    hist[fl] += 1
+    if status == "calibrated":
+        calibrated_rows += 1
+    else:
+        warmup_rows += 1
+        # During warm-up / uncalibrated state, conformal must never be the cause
+        # of a degradation decision (only the controller may degrade).
+        if ev.get("decision") == "degrade" and ev.get("decision_controller") != "degrade":
+            print(
+                f"FAIL row {idx} uncalibrated conformal triggered degrade: "
+                f"status={status} decision={ev.get('decision')} controller={ev.get('decision_controller')}"
+            )
+            sys.exit(1)
+
+# After ConformalConfig::default().min_samples (20) frames in the showcase run,
+# calibrated predictions (fallback_level in {0, 1, 2}) must be reached.
+if len(bd_events) > 20 and calibrated_rows == 0:
+    print(f"FAIL expected calibrated_rows > 0 after 20 frames (total={len(bd_events)}, hist={hist})")
+    sys.exit(1)
+if len(bd_events) > 20 and (hist[0] + hist[1] + hist[2]) == 0:
+    print(f"FAIL expected fallback_level < 3 after 20 frames (hist={hist})")
+    sys.exit(1)
+
+dist_str = f"level0={hist[0]},level1={hist[1]},level2={hist[2]},level3={hist[3]}"
+print(f"OK total={len(bd_events)} warmup={warmup_rows} calibrated={calibrated_rows} {dist_str}")
+PY
+)
+            if [ $? -eq 0 ]; then
+                conformal_ok=true
+                echo "conformal telemetry: $conformal_res"
+                jsonl_assert "conformal_fallback_distribution" "pass" "$conformal_res"
+                jsonl_assert "conformal_warmup_harmless" "pass" "$conformal_res"
+            else
+                echo "conformal telemetry: FAILED ($conformal_res)"
+                jsonl_assert "conformal_fallback_distribution" "fail" "$conformal_res"
+                jsonl_assert "conformal_warmup_harmless" "fail" "$conformal_res"
+            fi
+        fi
+
         explain_exit_ok=true
         if [ "$explain_exit" -ne 0 ]; then
             explain_exit_ok=false
@@ -2668,6 +2734,7 @@ PY
         if ! $explain_parse_ok; then explain_success=false; fi
         if ! $explain_schema_ok; then explain_success=false; fi
         if ! $width_cache_ok; then explain_success=false; fi
+        if ! $conformal_ok; then explain_success=false; fi
 
         echo "Outcome: $explain_outcome"
         echo "Summary JSONL: $EXPLAIN_JSONL"

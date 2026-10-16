@@ -489,8 +489,18 @@ impl ConformalPredictor {
     fn quantile_for(&self, key: BucketKey) -> QuantileDecision {
         let min_samples = self.config.min_samples;
 
-        let exact = self.collect_exact(key);
-        if exact.len() >= min_samples {
+        if let Some(state) = self.buckets.get(&key)
+            && state.residuals.len() >= min_samples
+        {
+            let len = state.residuals.len();
+            if len <= 256 {
+                let mut buf = [0.0f64; 256];
+                let (a, b) = state.residuals.as_slices();
+                buf[..a.len()].copy_from_slice(a);
+                buf[a.len()..len].copy_from_slice(b);
+                return QuantileDecision::from_slice(self.config.alpha, &mut buf[..len], 0);
+            }
+            let exact: Vec<f64> = state.residuals.iter().copied().collect();
             return QuantileDecision::new(self.config.alpha, exact, 0);
         }
 
@@ -516,13 +526,6 @@ impl ConformalPredictor {
             sample_count: 0,
             fallback_level: 3,
         }
-    }
-
-    fn collect_exact(&self, key: BucketKey) -> Vec<f64> {
-        self.buckets
-            .get(&key)
-            .map(|state| state.residuals.iter().copied().collect())
-            .unwrap_or_default()
     }
 
     fn collect_mode_diff(&self, mode: ModeBucket, diff: DiffBucket) -> Vec<f64> {
@@ -564,15 +567,28 @@ struct QuantileDecision {
 }
 
 impl QuantileDecision {
-    fn new(alpha: f64, mut residuals: Vec<f64>, fallback_level: u8) -> Self {
-        let quantile = conformal_quantile(alpha, &mut residuals);
+    fn from_slice(alpha: f64, residuals: &mut [f64], fallback_level: u8) -> Self {
+        let sample_count = residuals.len();
+        let required_rank = conformal_rank(alpha, sample_count);
+        let quantile = conformal_quantile(alpha, residuals);
+        let heuristic_residual = quantile.unwrap_or_else(|| {
+            residuals
+                .iter()
+                .copied()
+                .max_by(f64::total_cmp)
+                .unwrap_or(0.0)
+        });
         Self {
             quantile,
-            required_rank: conformal_rank(alpha, residuals.len()),
-            heuristic_residual: residuals.last().copied().unwrap_or(0.0),
-            sample_count: residuals.len(),
+            required_rank,
+            heuristic_residual,
+            sample_count,
             fallback_level,
         }
+    }
+
+    fn new(alpha: f64, mut residuals: Vec<f64>, fallback_level: u8) -> Self {
+        Self::from_slice(alpha, &mut residuals, fallback_level)
     }
 }
 
@@ -594,9 +610,12 @@ fn add_up(a: f64, b: f64) -> f64 {
 }
 
 fn conformal_quantile(alpha: f64, residuals: &mut [f64]) -> Option<f64> {
-    residuals.sort_by(f64::total_cmp);
     let rank = conformal_rank(alpha, residuals.len());
-    residuals.get(rank - 1).copied()
+    if rank == 0 || rank > residuals.len() {
+        return None;
+    }
+    let (_, &mut q, _) = residuals.select_nth_unstable_by(rank - 1, f64::total_cmp);
+    Some(q)
 }
 
 /// Exact ceil((n+1)*(1-alpha)) for the represented, validated binary64 alpha.
@@ -2514,5 +2533,88 @@ mod tests {
             "README documents q_default = 10 ms, found {} us",
             config.q_default
         );
+    }
+
+    mod property_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn proptest_coverage_at_least_one_minus_alpha_on_stationary_residuals(
+                y_hat in 0.0f64..10_000.0,
+                residuals in prop::collection::vec(-500.0f64..50_000.0, 25..60),
+                alpha in prop::sample::select(vec![0.05f64, 0.10, 0.20, 0.25]),
+            ) {
+                let key = test_key(80, 24);
+                let defaults = ConformalConfig::default();
+                let min_samples = defaults.min_samples;
+                let n_total = residuals.len();
+                prop_assume!(n_total > min_samples);
+
+                // 1. Exchangeable leave-one-out coverage check over the generated
+                // residual pool: for any finite exchangeable multiset of size
+                // N = n + 1 where n >= min_samples and rank <= n, the empirical
+                // coverage across all N held-out positions must be >= 1 - alpha.
+                let mut covered = 0usize;
+                for held_out_idx in 0..n_total {
+                    let mut predictor = ConformalPredictor::new(ConformalConfig {
+                        alpha,
+                        min_samples,
+                        window_size: defaults.window_size,
+                        q_default: defaults.q_default,
+                    })
+                    .expect("valid config");
+
+                    for (idx, &r) in residuals.iter().enumerate() {
+                        if idx != held_out_idx {
+                            let obs = (y_hat + r).max(0.0);
+                            predictor.observe(key, y_hat, obs);
+                        }
+                    }
+
+                    let prediction = predictor.predict(key, y_hat, 16_666.0);
+                    prop_assert_eq!(prediction.status, ConformalStatus::Calibrated);
+                    prop_assert_eq!(prediction.fallback_level, 0);
+                    let upper = prediction.upper_us.expect("calibrated upper bound");
+                    let held_out_obs = (y_hat + residuals[held_out_idx]).max(0.0);
+                    if held_out_obs <= upper {
+                        covered += 1;
+                    }
+                }
+
+                let coverage = covered as f64 / n_total as f64;
+                prop_assert!(
+                    coverage + 1e-12 >= 1.0 - alpha,
+                    "empirical coverage {coverage:.4} ({covered}/{n_total}) < 1 - alpha ({:.4})",
+                    1.0 - alpha
+                );
+
+                // 2. Rolling stream check: before min_samples, status is Warmup
+                // and fallback_level is 3; at and after min_samples, status is
+                // Calibrated and fallback_level is 0.
+                let mut rolling = ConformalPredictor::new(ConformalConfig {
+                    alpha,
+                    min_samples,
+                    window_size: defaults.window_size,
+                    q_default: defaults.q_default,
+                })
+                .expect("valid config");
+
+                for (step, &r) in residuals.iter().enumerate() {
+                    let pred = rolling.predict(key, y_hat, 16_666.0);
+                    if step < min_samples {
+                        prop_assert_eq!(pred.status, ConformalStatus::Warmup);
+                        prop_assert_eq!(pred.fallback_level, 3);
+                        prop_assert!(!rolling.is_calibrated(&pred));
+                    } else {
+                        prop_assert_eq!(pred.status, ConformalStatus::Calibrated);
+                        prop_assert_eq!(pred.fallback_level, 0);
+                        prop_assert!(rolling.is_calibrated(&pred));
+                    }
+                    rolling.observe(key, y_hat, (y_hat + r).max(0.0));
+                }
+            }
+        }
     }
 }

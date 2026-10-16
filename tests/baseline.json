@@ -222,5 +222,19 @@
     "p99_ns": 130,
     "p999_ns": 200,
     "threshold_pct": 10
+  },
+
+  "runtime_render_frame_headless_80x24": {
+    "description": "Headless Program::step_headless_frame on 80x24 with default conformal frame-time risk gating",
+    "criterion_name": "runtime/render_frame_headless_80x24/conformal_on",
+    "bench_file": "render_frame_bench",
+    "crate": "ftui-runtime",
+    "slo_metric": "render_frame_p99_us",
+    "p50_ns": 38000,
+    "p95_ns": 55000,
+    "p99_ns": 65000,
+    "p999_ns": 100000,
+    "threshold_pct": 10
   }
 }
+

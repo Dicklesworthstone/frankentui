@@ -5307,6 +5307,15 @@ impl BackendEventSource for HeadlessEventSource {
     }
 }
 
+impl<M: Model, P: BackendPresenter<Error = io::Error>> Program<M, HeadlessEventSource, P> {
+    /// Step a single headless frame through the full budget, conformal, render,
+    /// present, and evidence pipeline.
+    pub fn step_headless_frame(&mut self) -> io::Result<()> {
+        self.dirty = true;
+        self.render_frame()
+    }
+}
+
 // =============================================================================
 // Program
 // =============================================================================
@@ -15692,6 +15701,199 @@ mod tests {
             program.budget.degradation(),
             DegradationLevel::SimpleBorders,
             "calibrated conformal risk gate must honor the controller degradation_floor"
+        );
+    }
+
+    #[test]
+    fn without_conformal_opts_out() {
+        let evidence_path = temp_evidence_path("without_conformal_opt_out");
+        let config = ProgramConfig::default()
+            .without_conformal()
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+        assert!(config.conformal_config.is_none());
+
+        let mut program = headless_program_with_config(TestModel { value: 0 }, config);
+        assert!(
+            program.conformal_predictor.is_none(),
+            "without_conformal() must leave conformal_predictor as None"
+        );
+        program
+            .step_headless_frame()
+            .expect("render without conformal");
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence written");
+        let row: serde_json::Value = contents
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("valid JSON"))
+            .find(|r: &serde_json::Value| r["event"] == "budget_decision")
+            .expect("budget_decision row");
+        assert!(row["conformal_status"].is_null());
+        assert!(row["fallback_level"].is_null());
+        assert!(row["upper_us"].is_null());
+    }
+
+    #[test]
+    fn headless_program_warms_up_then_degrades_then_recovers() {
+        use ftui_render::budget::DegradationLevel;
+
+        let evidence_path = temp_evidence_path("conformal_warmup_degrade_recover");
+        let defaults = ProgramConfig::default()
+            .conformal_config
+            .expect("conformal on by default");
+        let min_samples = defaults.min_samples;
+        assert_eq!(min_samples, 20);
+
+        // Use the default alpha (0.05) and min_samples (20) with a window_size
+        // of 24 so that after warm-up and a single slow residual spike, 24 fast
+        // frames evict the spike from the calibration window and allow recovery.
+        let window_size = 24;
+        let budget_total = Duration::from_secs(5);
+        let config = ProgramConfig::default()
+            .with_budget(FrameBudgetConfig::with_total(budget_total))
+            .with_conformal_config(ConformalConfig {
+                alpha: defaults.alpha,
+                min_samples,
+                window_size,
+                q_default: 10_000_000.0,
+            })
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+        let mut program = headless_program_with_config(TestModel { value: 0 }, config);
+
+        // Phase 1: Warm-up (frames 1..=min_samples, where pre-render n_b = 0..19).
+        // On the last warm-up frame (frame 20, pre-render n_b = 19), we inject a
+        // single slow residual into the bucket after render (or via baseline_us)
+        // so that as soon as warm-up completes (frame 21, pre-render n_b = 20),
+        // the 95% conformal quantile exceeds the 5s budget while the PID/e-process
+        // controller itself remains at Hold.
+        for frame in 1..=min_samples {
+            program.step_headless_frame().expect("warmup frame");
+            assert_eq!(
+                program.budget.degradation(),
+                DegradationLevel::Full,
+                "frame {frame}: must never degrade during warm-up (n_b < {min_samples})"
+            );
+        }
+
+        // Inject a single slow observation into the active bucket (replace the
+        // 20th sample with a 20s residual against the 5s budget) while keeping
+        // the budget controller's own frame-time history fast.
+        let active_key = BucketKey::from_context(
+            program.presenter.screen_mode(),
+            program
+                .presenter
+                .last_diff_strategy()
+                .unwrap_or(DiffStrategy::Full),
+            program.width,
+            program.presenter.render_height_hint().max(1),
+        );
+        if let Some(predictor) = program.conformal_predictor.as_mut() {
+            predictor.observe(active_key, 100.0, 20_000_000.0);
+        }
+
+        // Phase 2: Post-warmup calibrated conformal risk gate triggers degradation
+        // on the very next frame (n_b >= min_samples, fallback_level == 0,
+        // status == "calibrated", risk == true).
+        program
+            .step_headless_frame()
+            .expect("first calibrated risky frame");
+        assert_eq!(
+            program.budget.degradation(),
+            DegradationLevel::SimpleBorders,
+            "calibrated conformal risk gate must degrade Full -> SimpleBorders"
+        );
+
+        // Phase 3: Recovery. Run fast frames until the slow residual ages out of
+        // the sliding window (window_size = 24) and the budget controller's
+        // underload e-process upgrades SimpleBorders -> Full.
+        let mut recovered_at = None;
+        for step in 0..80 {
+            program.budget.record_frame_time(Duration::from_micros(50));
+            program.step_headless_frame().expect("recovery frame");
+            if program.budget.degradation() == DegradationLevel::Full {
+                recovered_at = Some(step);
+                break;
+            }
+        }
+        assert!(
+            recovered_at.is_some(),
+            "program must recover to DegradationLevel::Full once fast frames evict the spike and pass the upgrade gate"
+        );
+
+        // Verify the JSONL evidence trail records all three phases.
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file");
+        let rows: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("valid JSON"))
+            .filter(|r: &serde_json::Value| r["event"] == "budget_decision")
+            .collect();
+        assert!(rows.len() > min_samples + window_size);
+
+        // All warm-up rows (first min_samples frames) have status == "warmup",
+        // fallback_level == 3, and degradation_after == "Full".
+        for (idx, row) in rows.iter().take(min_samples).enumerate() {
+            assert_eq!(row["conformal_status"], "warmup", "warmup row {idx}: {row}");
+            assert_eq!(row["fallback_level"], 3, "warmup row {idx}: {row}");
+            assert_eq!(row["degradation_after"], "Full", "warmup row {idx}: {row}");
+        }
+
+        // The first post-warmup frame is calibrated at fallback_level == 0 and degrades.
+        let degrade_row = &rows[min_samples];
+        assert_eq!(degrade_row["conformal_status"], "calibrated");
+        assert_eq!(degrade_row["fallback_level"], 0);
+        assert_eq!(degrade_row["risk"], true);
+        assert_eq!(degrade_row["decision"], "degrade");
+        assert_eq!(degrade_row["decision_controller"], "stay");
+        assert_eq!(degrade_row["degradation_before"], "Full");
+        assert_eq!(degrade_row["degradation_after"], "SimpleBorders");
+
+        // A later calibrated row upgrades back to Full once risk clears.
+        assert!(
+            rows.iter().skip(min_samples + 1).any(|r| {
+                r["conformal_status"] == "calibrated"
+                    && r["fallback_level"] == 0
+                    && r["risk"] == false
+                    && r["decision"] == "upgrade"
+                    && r["degradation_after"] == "Full"
+            }),
+            "evidence must record calibrated upgrade back to Full"
+        );
+    }
+
+    #[test]
+    fn simulator_has_no_conformal_predictor() {
+        use crate::simulator::ProgramSimulator;
+        use ftui_render::budget::DegradationLevel;
+
+        struct DegradationCheckModel {
+            observed: Arc<std::sync::Mutex<Vec<DegradationLevel>>>,
+        }
+
+        impl Model for DegradationCheckModel {
+            type Message = TestMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                self.observed.lock().unwrap().push(frame.buffer.degradation);
+                frame.buffer.set_raw(0, 0, Cell::from_char('S'));
+            }
+        }
+
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut sim = ProgramSimulator::new(DegradationCheckModel {
+            observed: Arc::clone(&observed),
+        });
+        sim.init();
+        for _ in 0..40 {
+            sim.capture_frame(80, 24);
+        }
+        let levels = observed.lock().unwrap();
+        assert_eq!(levels.len(), 40);
+        assert!(
+            levels.iter().all(|&lvl| lvl == DegradationLevel::Full),
+            "ProgramSimulator must stay strictly deterministic at DegradationLevel::Full with no conformal gating"
         );
     }
 
