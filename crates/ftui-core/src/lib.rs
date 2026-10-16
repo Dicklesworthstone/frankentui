@@ -48,6 +48,7 @@ pub mod session_teardown;
 pub mod terminal_capabilities;
 #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 pub mod terminal_session;
+pub mod voi;
 pub use session_teardown::with_panic_cleanup_suppressed;
 
 /// Tracing target for input parser protocol events (DCS, APC, XTWINOPS, SGR-Pixels).

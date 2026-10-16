@@ -235,6 +235,19 @@
     "p99_ns": 65000,
     "p999_ns": 100000,
     "threshold_pct": 10
+  },
+
+  "virtualized_scroll_to_100k": {
+    "description": "Virtualized::scroll_to + offset_of_item on 100k variable-height items with Fenwick prefix tree",
+    "criterion_name": "virtualized/scroll_to/variable_fenwick/100000",
+    "bench_file": "virtualized_bench",
+    "crate": "ftui-widgets",
+    "slo_metric": "virtualized_scroll_to_100k_p99_ns",
+    "p50_ns": 25,
+    "p95_ns": 100,
+    "p99_ns": 1000,
+    "p999_ns": 5000,
+    "threshold_pct": 15
   }
 }
 

@@ -7681,11 +7681,39 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         if auto_bounds.is_some()
             && let Some(state) = self.inline_auto_remeasure.as_mut()
         {
+            let (alpha, beta) = state.sampler.posterior_params();
             let decision = state.sampler.decide(Instant::now());
+            let decision_str = if decision.should_sample {
+                "sample"
+            } else {
+                "skip"
+            };
+            debug!(
+                target: crate::telemetry_schema::TARGET_VOI,
+                source = "inline_auto",
+                widget_id = 0u64,
+                index = 0usize,
+                alpha = alpha,
+                beta = beta,
+                voi = decision.voi_gain,
+                sample_cost = decision.cost,
+                decision = decision_str,
+                "voi_sample decision"
+            );
             // The VOI decision is an evidence event like diff and budget
             // decisions: without this line the sampler's reasoning was only
             // visible through the in-process telemetry snapshot.
             if let Some(ref sink) = self.evidence_sink {
+                let sample_line = format!(
+                    r#"{{"schema_version":"ftui-evidence-v1","event":"{}","source":"inline_auto","widget_id":0,"index":0,"alpha":{:.6},"beta":{:.6},"voi":{:.6},"sample_cost":{:.6},"decision":"{}"}}"#,
+                    crate::telemetry_schema::evidence::VOI_SAMPLE,
+                    alpha,
+                    beta,
+                    decision.voi_gain,
+                    decision.cost,
+                    decision_str,
+                );
+                let _ = sink.write_jsonl(&sample_line);
                 let _ = sink.write_jsonl(&decision.to_jsonl());
             }
             if decision.should_sample {
@@ -8022,6 +8050,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         .entered();
         self.model.view(&mut frame);
         self.widget_signals = frame.take_widget_signals();
+        let remeasure_requests = frame.take_remeasure_requests();
         frame.finish_a11y();
         let a11y_order = frame.take_a11y_order();
         tracing::Span::current().record("duration_us", view_start.elapsed().as_micros() as u64);
@@ -8031,7 +8060,38 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         // `frame` is not used past this point, which releases its borrow of
         // the builder so the tree can be built.
         self.a11y_pending = a11y_builder.map(|builder| (builder.build(), a11y_order));
+        self.process_remeasure_requests(remeasure_requests);
         output
+    }
+
+    fn process_remeasure_requests(&self, requests: Vec<ftui_render::frame::RemeasureRequest>) {
+        for req in requests {
+            debug!(
+                target: crate::telemetry_schema::TARGET_VOI,
+                source = "virtualized_list",
+                widget_id = req.widget_id,
+                index = req.index,
+                alpha = req.alpha,
+                beta = req.beta,
+                voi = req.voi,
+                sample_cost = req.cost,
+                decision = "sample",
+                "voi_sample decision"
+            );
+            if let Some(ref sink) = self.evidence_sink {
+                let line = format!(
+                    r#"{{"schema_version":"ftui-evidence-v1","event":"{}","source":"virtualized_list","widget_id":{},"index":{},"alpha":{:.6},"beta":{:.6},"voi":{:.6},"sample_cost":{:.6},"decision":"sample"}}"#,
+                    crate::telemetry_schema::evidence::VOI_SAMPLE,
+                    req.widget_id,
+                    req.index,
+                    req.alpha,
+                    req.beta,
+                    req.voi,
+                    req.cost,
+                );
+                let _ = sink.write_jsonl(&line);
+            }
+        }
     }
 
     /// Diff the accessibility tree collected by the last `render_buffer`
@@ -14825,6 +14885,123 @@ mod tests {
     #[test]
     fn voi_sample_written_for_inline_auto() {
         headless_inline_auto_exports_voi_decision_evidence();
+    }
+
+    #[test]
+    fn inline_auto_remeasure_emits_voi_sample_evidence() {
+        struct TallModel;
+
+        #[derive(Debug)]
+        enum TallMsg {
+            Noop,
+        }
+
+        impl From<Event> for TallMsg {
+            fn from(_: Event) -> Self {
+                TallMsg::Noop
+            }
+        }
+
+        impl Model for TallModel {
+            type Message = TallMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('V'));
+            }
+        }
+
+        let evidence_path = temp_evidence_path("voi_sample_inline_auto");
+        let config = ProgramConfig::inline_auto(1, 6)
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+
+        let mut program = headless_program_with_config(TallModel, config);
+        program.dirty = true;
+        program.render_frame().expect("render inline-auto frame");
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
+        let voi_sample_line = contents
+            .lines()
+            .find(|line| line.contains(r#""event":"voi_sample""#))
+            .expect("voi_sample line emitted for inline_auto");
+        let parsed: serde_json::Value =
+            serde_json::from_str(voi_sample_line).expect("valid voi_sample json");
+        assert_eq!(parsed["source"].as_str(), Some("inline_auto"));
+        assert!(parsed["alpha"].is_number());
+        assert!(parsed["beta"].is_number());
+        assert!(parsed["voi"].is_number());
+        assert!(parsed["sample_cost"].is_number());
+        assert!(matches!(
+            parsed["decision"].as_str(),
+            Some("sample" | "skip")
+        ));
+    }
+
+    #[test]
+    fn virtualized_list_remeasure_request_emits_voi_sample_evidence() {
+        struct RemeasureModel;
+
+        #[derive(Debug)]
+        enum RemeasureMsg {}
+
+        impl From<Event> for RemeasureMsg {
+            fn from(_: Event) -> Self {
+                unreachable!()
+            }
+        }
+
+        impl Model for RemeasureModel {
+            type Message = RemeasureMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('L'));
+                frame.push_remeasure_request(ftui_render::frame::RemeasureRequest {
+                    widget_id: 42,
+                    index: 3,
+                    voi: 0.027_778,
+                    cost: 0.01,
+                    alpha: 1.0,
+                    beta: 1.0,
+                });
+            }
+        }
+
+        let evidence_path = temp_evidence_path("voi_sample_virtualized_list");
+        let config = ProgramConfig::default()
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+
+        let mut program = headless_program_with_config(RemeasureModel, config);
+        program.dirty = true;
+        program.render_frame().expect("render frame");
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
+        let voi_sample_line = contents
+            .lines()
+            .find(|line| line.contains(r#""event":"voi_sample""#))
+            .expect("voi_sample line emitted for virtualized_list");
+        let parsed: serde_json::Value =
+            serde_json::from_str(voi_sample_line).expect("valid voi_sample json");
+        assert_eq!(parsed["source"].as_str(), Some("virtualized_list"));
+        assert_eq!(parsed["widget_id"].as_u64(), Some(42));
+        assert_eq!(parsed["index"].as_u64(), Some(3));
+        assert!((parsed["alpha"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+        assert!((parsed["beta"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+        assert!(parsed["voi"].as_f64().unwrap() > 0.02);
+        assert!((parsed["sample_cost"].as_f64().unwrap() - 0.01).abs() < 1e-6);
+        assert_eq!(parsed["decision"].as_str(), Some("sample"));
+    }
+
+    #[test]
+    fn voi_sample_line_is_valid_json_with_registered_fields() {
+        virtualized_list_remeasure_request_emits_voi_sample_evidence();
+        inline_auto_remeasure_emits_voi_sample_evidence();
     }
 
     #[test]

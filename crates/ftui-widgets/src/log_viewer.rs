@@ -43,8 +43,9 @@ use ftui_text::{
     Line, Span, Text as FtuiText, WrapMode, WrapOptions, display_width, wrap_with_options,
 };
 
-use crate::virtualized::Virtualized;
+use crate::virtualized::{RenderItem, Virtualized, VirtualizedList, VirtualizedListState};
 use crate::{StatefulWidget, clear_text_area, draw_text_span, draw_text_span_with_link};
+use std::cell::Cell;
 
 type Text = FtuiText<'static>;
 
@@ -180,6 +181,8 @@ pub struct LogViewer {
     link_retention_lines: Option<usize>,
     /// Line wrapping mode.
     wrap_mode: LogWrapMode,
+    /// Width used for wrapped line height measurements into the Fenwick index.
+    last_wrap_width: Cell<u16>,
     /// Default style for lines.
     style: Style,
     /// Highlight style for selected/focused line.
@@ -199,7 +202,7 @@ pub struct LogViewer {
 }
 
 /// Separate state for StatefulWidget pattern.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LogViewerState {
     /// Viewport height from last render (for page up/down).
     pub last_viewport_height: u16,
@@ -207,6 +210,27 @@ pub struct LogViewerState {
     pub last_visible_lines: usize,
     /// Selected line index (for copy/selection features).
     pub selected_line: Option<usize>,
+    /// Variable-height Fenwick state for rendered lines.
+    pub list_state: VirtualizedListState,
+}
+
+impl Default for LogViewerState {
+    fn default() -> Self {
+        Self {
+            last_viewport_height: 0,
+            last_visible_lines: 0,
+            selected_line: None,
+            list_state: VirtualizedListState::variable(1),
+        }
+    }
+}
+
+impl LogViewerState {
+    /// Return the Fenwick row offset of display item `idx`.
+    #[must_use]
+    pub fn offset_of_item(&self, idx: usize) -> u32 {
+        self.list_state.offset_of_item(idx)
+    }
 }
 
 impl LogViewer {
@@ -222,6 +246,7 @@ impl LogViewer {
             max_lines,
             link_retention_lines: None,
             wrap_mode: LogWrapMode::NoWrap,
+            last_wrap_width: Cell::new(40),
             style: Style::default(),
             highlight_style: None,
             search_highlight_style: None,
@@ -236,8 +261,56 @@ impl LogViewer {
     /// Set the wrap mode.
     #[must_use]
     pub fn wrap_mode(mut self, mode: LogWrapMode) -> Self {
-        self.wrap_mode = mode;
+        self.set_wrap_mode(mode);
         self
+    }
+
+    /// Return the current wrap mode.
+    #[must_use]
+    pub const fn current_wrap_mode(&self) -> LogWrapMode {
+        self.wrap_mode
+    }
+
+    /// Update the wrap mode in place and re-measure heights when wrapping is enabled.
+    pub fn set_wrap_mode(&mut self, mode: LogWrapMode) {
+        self.wrap_mode = mode;
+        if matches!(mode, LogWrapMode::NoWrap) {
+            let virt = std::mem::replace(&mut self.virt, Virtualized::new(0));
+            self.virt = virt.with_fixed_height(1);
+        } else {
+            let virt = std::mem::replace(&mut self.virt, Virtualized::new(0));
+            self.virt = virt.with_variable_heights(1);
+            let w = self.last_wrap_width.get().max(1);
+            self.measure_heights(w);
+        }
+    }
+
+    /// Measure wrapped heights of all stored lines at `width` into the Fenwick index.
+    pub fn measure_heights(&mut self, width: u16) {
+        let w = width.max(1);
+        self.last_wrap_width.set(w);
+        if matches!(self.wrap_mode, LogWrapMode::NoWrap) {
+            return;
+        }
+        if matches!(
+            self.virt.item_height(),
+            crate::virtualized::ItemHeight::Fixed(_)
+        ) {
+            let virt = std::mem::replace(&mut self.virt, Virtualized::new(0));
+            self.virt = virt.with_variable_heights(1);
+        }
+        for idx in 0..self.virt.len() {
+            if let Some(line) = self.virt.get(idx) {
+                let h = self.wrapped_rows(line, w);
+                self.virt.observe_height(idx, h);
+            }
+        }
+    }
+
+    /// Return the Fenwick row offset of line `idx` (sum of heights of lines `< idx`).
+    #[must_use]
+    pub fn offset_of_item(&self, idx: usize) -> u32 {
+        self.virt.offset_of_item(idx)
     }
 
     /// Keep hyperlink metadata only on the newest `lines` retained records.
@@ -371,6 +444,14 @@ impl LogViewer {
             }
 
             self.virt.push(item);
+            if !matches!(self.wrap_mode, LogWrapMode::NoWrap) {
+                let idx = self.virt.len().saturating_sub(1);
+                let w = self.last_wrap_width.get().max(1);
+                if let Some(added) = self.virt.get(idx) {
+                    let h = self.wrapped_rows(added, w);
+                    self.virt.observe_height(idx, h);
+                }
+            }
 
             // Only one record crosses the metadata boundary per appended line.
             if let Some(lines) = self.link_retention_lines
@@ -1086,6 +1167,36 @@ impl LogViewer {
     }
 }
 
+struct LogLineRenderItem<'a> {
+    viewer: &'a LogViewer,
+    text: &'a Text,
+    line_idx: usize,
+    height: u16,
+    is_selected: bool,
+    initial_skip_rows: u16,
+}
+
+impl RenderItem for LogLineRenderItem<'_> {
+    fn render(&self, area: Rect, frame: &mut Frame, _selected: bool, skip_rows: u16) {
+        let total_skip = self.initial_skip_rows.saturating_add(skip_rows);
+        let _ = self.viewer.render_line(
+            self.text,
+            self.line_idx,
+            area.x,
+            area.y,
+            area.width,
+            area.bottom(),
+            frame,
+            self.is_selected,
+            total_skip,
+        );
+    }
+
+    fn height(&self) -> u16 {
+        self.height.max(1)
+    }
+}
+
 impl StatefulWidget for LogViewer {
     type State = LogViewerState;
 
@@ -1094,6 +1205,7 @@ impl StatefulWidget for LogViewer {
             return;
         }
 
+        self.last_wrap_width.set(area.width.max(1));
         clear_text_area(frame, area, self.style);
 
         // Keep Virtualized's visible_count in sync even in filtered mode.
@@ -1105,11 +1217,14 @@ impl StatefulWidget for LogViewer {
         let total_lines = self.virt.len();
         if total_lines == 0 {
             state.last_visible_lines = 0;
+            state.list_state.resize_heights(0);
             return;
         }
 
         // Use filtered indices if a filter is active
         let render_indices: Option<&[usize]> = self.filtered_indices.as_deref();
+        let display_total = render_indices.map_or(total_lines, <[usize]>::len);
+        state.list_state.resize_heights(display_total);
 
         // Calculate visible range using Virtualized's scroll state
         let visible_count = area.height as usize;
@@ -1144,14 +1259,15 @@ impl StatefulWidget for LogViewer {
         // top of the oldest one if it overflows.
         let mut skip_first_rows = 0u16;
         if anchored_to_bottom && !matches!(self.wrap_mode, LogWrapMode::NoWrap) {
-            let display_total = render_indices.map_or(total_lines, <[usize]>::len);
             let mut rows = 0u32;
             let mut start = display_total;
             while start > 0 && rows < u32::from(area.height) {
                 start -= 1;
                 let line_idx = render_indices.map_or(start, |indices| indices[start]);
                 if let Some(text) = self.virt.get(line_idx) {
-                    rows += u32::from(self.wrapped_rows(text, area.width));
+                    let h = self.wrapped_rows(text, area.width);
+                    state.list_state.measure(start, h);
+                    rows += u32::from(h);
                 }
             }
             start_idx = start;
@@ -1163,6 +1279,7 @@ impl StatefulWidget for LogViewer {
         let mut y = area.y;
         let mut lines_rendered = 0;
         let mut last_rendered_index = None;
+        let mut window_items = Vec::with_capacity(end_idx.saturating_sub(start_idx));
 
         for display_idx in start_idx..end_idx {
             if y >= area.bottom() {
@@ -1187,21 +1304,34 @@ impl StatefulWidget for LogViewer {
             } else {
                 0
             };
-            let lines_used = self.render_line(
-                line,
+            let raw_h = self.wrapped_rows(line, area.width);
+            state.list_state.measure(display_idx, raw_h);
+            let lines_used = raw_h
+                .saturating_sub(skip_rows)
+                .max(1)
+                .min(area.bottom().saturating_sub(y));
+
+            window_items.push(LogLineRenderItem {
+                viewer: self,
+                text: line,
                 line_idx,
-                area.x,
-                y,
-                area.width,
-                area.bottom(),
-                frame,
+                height: lines_used,
                 is_selected,
-                skip_rows,
-            );
+                initial_skip_rows: skip_rows,
+            });
 
             y = y.saturating_add(lines_used);
             lines_rendered += 1;
             last_rendered_index = Some(display_idx);
+        }
+
+        if !window_items.is_empty() {
+            let mut window_state = VirtualizedListState::variable(1);
+            VirtualizedList::new(&window_items)
+                .variable_heights()
+                .style(self.style)
+                .show_scrollbar(false)
+                .render(area, frame, &mut window_state);
         }
 
         state.last_visible_lines = lines_rendered;
@@ -2766,5 +2896,28 @@ mod tests {
 
         let ranges = search_ascii_case_insensitive_ranges(&haystack, "hello");
         assert_eq!(ranges, vec![(500, 505)]);
+    }
+
+    #[test]
+    fn wrapped_lines_have_variable_heights_in_fenwick_index() {
+        let mut log = LogViewer::new(100).wrap_mode(LogWrapMode::CharWrap);
+        log.push("a".repeat(10));
+        log.push("b".repeat(100));
+        log.push("c".repeat(250));
+        log.measure_heights(40);
+
+        assert_eq!(log.offset_of_item(0), 0);
+        assert_eq!(log.offset_of_item(1), 1);
+        assert_eq!(log.offset_of_item(2), 4);
+        assert_eq!(log.offset_of_item(3), 11);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 20, &mut pool);
+        let mut state = LogViewerState::default();
+        log.render(Rect::new(0, 0, 40, 20), &mut frame, &mut state);
+        assert_eq!(state.offset_of_item(0), 0);
+        assert_eq!(state.offset_of_item(1), 1);
+        assert_eq!(state.offset_of_item(2), 4);
+        assert_eq!(state.offset_of_item(3), 11);
     }
 }

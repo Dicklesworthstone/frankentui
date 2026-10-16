@@ -2723,6 +2723,60 @@ PY
             fi
         fi
 
+        # VOI remeasure telemetry validation (bd-g00-root-epic-ewths.14.5)
+        voi_ok=false
+        VOI_REPORT="$LOG_DIR/18_voi_evidence_${TIMESTAMP}.jsonl"
+        VSEARCH_SCREEN_ID="$(e2e_demo_screen "$DEMO_BIN" virtualized_search)"
+        voi_cmd="exec env FTUI_DEMO_EVIDENCE_JSONL=\"$VOI_REPORT\" FTUI_DEMO_SCREEN_MODE=inline-auto FTUI_DEMO_EXIT_AFTER_MS=1800 FTUI_DEMO_SCREEN=\"$VSEARCH_SCREEN_ID\" \"$DEMO_BIN\""
+        echo ""
+        echo "--- VOI sample telemetry validation (virtualized_search + inline_auto) ---"
+        if PTY_SEND="jjj" PTY_SEND_DELAY_MS=200 run_in_pty "$voi_cmd" 8 > "$LOG_DIR/18_voi_run.log" 2>&1 && [ -s "$VOI_REPORT" ]; then
+            if python3 "$LIB_DIR/validate_jsonl.py" "$VOI_REPORT" \
+                --schema "$LIB_DIR/e2e_evidence_schema.json" --strict; then
+                voi_res=$(python3 - "$VOI_REPORT" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    events = [json.loads(line) for line in f if line.strip()]
+voi_events = [e for e in events if e.get("event") == "voi_sample"]
+vlist_events = [e for e in voi_events if e.get("source") == "virtualized_list"]
+inline_events = [e for e in voi_events if e.get("source") == "inline_auto"]
+required_fields = {"source", "widget_id", "index", "alpha", "beta", "voi", "sample_cost", "decision"}
+missing = [e for e in voi_events if not required_fields.issubset(e.keys())]
+if not vlist_events:
+    print(f"FAIL expected >= 1 virtualized_list voi_sample, found 0 (total={len(voi_events)})")
+    sys.exit(1)
+if not inline_events:
+    print(f"FAIL expected >= 1 inline_auto voi_sample, found 0 (total={len(voi_events)})")
+    sys.exit(1)
+if missing:
+    print(f"FAIL {len(missing)} voi_sample rows missing required fields")
+    sys.exit(1)
+print(f"OK total={len(voi_events)} virtualized_list={len(vlist_events)} inline_auto={len(inline_events)}")
+PY
+)
+                if [ $? -eq 0 ]; then
+                    voi_ok=true
+                    echo "voi_sample telemetry: $voi_res"
+                    jsonl_assert "voi_sample_present_virtualized_list" "pass" "$voi_res"
+                    jsonl_assert "voi_sample_present_inline_auto" "pass" "$voi_res"
+                    jsonl_assert "voi_sample_fields" "pass" "$voi_res"
+                else
+                    echo "voi_sample telemetry: FAILED ($voi_res)"
+                    jsonl_assert "voi_sample_present_virtualized_list" "fail" "$voi_res"
+                    jsonl_assert "voi_sample_present_inline_auto" "fail" "$voi_res"
+                    jsonl_assert "voi_sample_fields" "fail" "$voi_res"
+                fi
+            else
+                echo "voi_sample schema: FAILED"
+                jsonl_assert "voi_sample_fields" "fail" "schema validation failed"
+            fi
+        else
+            echo "voi_sample run failed or produced empty report: $VOI_REPORT"
+            jsonl_assert "voi_sample_present_virtualized_list" "fail" "missing report"
+            jsonl_assert "voi_sample_present_inline_auto" "fail" "missing report"
+            jsonl_assert "voi_sample_fields" "fail" "missing report"
+        fi
+
         explain_exit_ok=true
         if [ "$explain_exit" -ne 0 ]; then
             explain_exit_ok=false
@@ -2735,6 +2789,7 @@ PY
         if ! $explain_schema_ok; then explain_success=false; fi
         if ! $width_cache_ok; then explain_success=false; fi
         if ! $conformal_ok; then explain_success=false; fi
+        if ! $voi_ok; then explain_success=false; fi
 
         echo "Outcome: $explain_outcome"
         echo "Summary JSONL: $EXPLAIN_JSONL"

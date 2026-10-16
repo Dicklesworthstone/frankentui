@@ -672,7 +672,7 @@ Written per frame by `Program::emit_budget_evidence` when the evidence sink is e
 Required fields:
 - `frame_idx` (u64), `decision`, `decision_controller`, `decision_controller_reason`
 - `degradation_before`, `degradation_after`
-- `frame_time_us`, `budget_us`, `pid_output`, `pid_p`, `pid_i`, `pid_d`, `e_value`
+- `frame_time_us`, `budget_us`, `pid_output`, `pid_p`, `pid_i`, `pid_d`, `e_value`, `eprocess_lambda`
 - `frames_observed`, `frames_since_change`, `in_warmup`
 - `runtime_mode`, `runtime_mode_before`, `pressure_class`, `work_disposition`, `governor_reason`, `governor_transition`, `strict_semantics_preserved`
 - `queue_in_flight`, `queue_max_depth`, `queue_dropped_delta`, `resize_coalescing_active`, `resize_detector`
@@ -719,6 +719,16 @@ Written by `VoiSampler::observe` after an inline-auto height measurement sample 
 Required fields:
 - `idx`, `sample_idx` (u64), `violated` (bool)
 - `posterior_mean`, `posterior_variance`, `alpha`, `beta`, `e_value`, `e_threshold` (f64)
+
+#### Event: `voi_sample`
+
+Written by `Program` when evaluating a Value-of-Information height remeasurement sample (`source = "virtualized_list"` or `"inline_auto"`).
+
+Required fields:
+- `source` (`"virtualized_list"` | `"inline_auto"`)
+- `widget_id` (u64), `index` (usize)
+- `alpha`, `beta`, `voi`, `sample_cost` (f64)
+- `decision` (`"sample"` | `"skip"`)
 
 #### Event: `widget_refresh`
 

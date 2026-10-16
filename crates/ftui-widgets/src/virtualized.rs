@@ -8,9 +8,13 @@
 //! # Core Types
 //!
 //! - [`Virtualized<T>`] - Generic container with visible range calculation
+//! - [`VirtualizedList`] / [`VirtualizedListState`] - Stateful virtualized list widget
 //! - [`VirtualizedStorage`] - Owned vs external storage abstraction
-//! - [`ItemHeight`] - Fixed vs variable height support
-//! - [`HeightCache`] - LRU cache for measured item heights
+//! - [`ItemHeight`] - Three height strategies:
+//!   - [`ItemHeight::Fixed`] — constant height per item (`O(1)` scroll indexing)
+//!   - [`ItemHeight::Fenwick`] — default for [`Virtualized::with_variable_heights`] and [`VirtualizedList::variable_heights`] (`O(log n)` prefix-sum offsets via [`crate::fenwick::FenwickHeightTracker`], optional per-category Bayesian height prediction via [`crate::height_predictor::HeightPredictor`], and Beta-VOI remeasurement via [`RemeasurePolicy`])
+//!   - [`ItemHeight::Variable`] — legacy [`HeightCache`] LRU cache with linear scan
+//! - [`RemeasurePolicy`] - Beta-posterior Value-of-Information policy scheduling remeasurement checks and emitting `voi_sample` evidence (`source: "virtualized_list"`)
 //!
 //! # Example
 //!
@@ -38,9 +42,114 @@ use std::time::Duration;
 use crate::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 use crate::{StatefulWidget, clear_text_area};
 use ftui_core::geometry::Rect;
+pub use ftui_core::voi::{BetaPosterior, beta_voi};
 use ftui_render::cell::Cell;
-use ftui_render::frame::Frame;
+use ftui_render::frame::{Frame, RemeasureRequest};
 use ftui_style::Style;
+
+/// Outcome of a [`RemeasurePolicy`] evaluation when a remeasurement sample is warranted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RemeasureDecision {
+    /// Expected variance reduction (Value of Information) at decision time.
+    pub voi: f64,
+    /// Configured sample cost threshold.
+    pub cost: f64,
+}
+
+/// Value-of-Information policy deciding when to remeasure a previously measured
+/// item in a variable-height virtualized list.
+///
+/// The list defaults (`alpha = 1.0`, `beta = 9.0`, `sample_cost = 0.08`,
+/// `min_interval_frames = 6`) are tuned for virtualized row height drift and
+/// are distinct from the runtime's inline auto-height sampler defaults.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemeasurePolicy {
+    /// Beta posterior over the item height violation probability.
+    pub posterior: BetaPosterior,
+    /// Normalized cost threshold for taking one remeasurement sample.
+    pub sample_cost: f64,
+    /// Minimum frames between consecutive VOI remeasurement samples.
+    pub min_interval_frames: u32,
+    /// Frame index at which a sample was last taken (`u64::MAX` before any sample).
+    pub last_sample_frame: u64,
+}
+
+impl Default for RemeasurePolicy {
+    fn default() -> Self {
+        Self {
+            posterior: BetaPosterior::new(1.0, 9.0),
+            sample_cost: 0.08,
+            min_interval_frames: 6,
+            last_sample_frame: u64::MAX,
+        }
+    }
+}
+
+impl RemeasurePolicy {
+    /// Create a policy with explicit posterior, sample cost, and minimum frame interval.
+    #[must_use]
+    pub const fn new(posterior: BetaPosterior, sample_cost: f64, min_interval_frames: u32) -> Self {
+        Self {
+            posterior,
+            sample_cost,
+            min_interval_frames,
+            last_sample_frame: u64::MAX,
+        }
+    }
+
+    /// Evaluate whether to take a remeasurement sample at `frame_idx` under the
+    /// current posterior, respecting `min_interval_frames`.
+    pub fn should_sample(&mut self, frame_idx: u64) -> Option<RemeasureDecision> {
+        if self.last_sample_frame != u64::MAX
+            && frame_idx.saturating_sub(self.last_sample_frame)
+                < u64::from(self.min_interval_frames)
+        {
+            return None;
+        }
+        let voi = self.posterior.voi();
+        if voi >= self.sample_cost {
+            self.last_sample_frame = frame_idx;
+            Some(RemeasureDecision {
+                voi,
+                cost: self.sample_cost,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Evaluate whether to remeasure at `frame_idx` and fold `violation_observed`
+    /// into the Beta posterior (`alpha` increments on violation, `beta` on confirmation).
+    pub fn should_remeasure(
+        &mut self,
+        frame_idx: u64,
+        violation_observed: bool,
+    ) -> Option<RemeasureDecision> {
+        let cooldown_ok = self.last_sample_frame == u64::MAX
+            || frame_idx.saturating_sub(self.last_sample_frame)
+                >= u64::from(self.min_interval_frames);
+        let decision = self.should_sample(frame_idx).or_else(|| {
+            if violation_observed && cooldown_ok {
+                self.last_sample_frame = frame_idx;
+                Some(RemeasureDecision {
+                    voi: self.posterior.voi(),
+                    cost: self.sample_cost,
+                })
+            } else {
+                None
+            }
+        });
+        self.observe(violation_observed);
+        decision
+    }
+
+    /// Update the Beta posterior with a Bernoulli observation (`violation_observed = true`
+    /// increments `alpha`, `false` increments `beta`).
+    #[inline]
+    pub fn observe(&mut self, violation_observed: bool) {
+        self.posterior.observe(violation_observed);
+    }
+}
 
 /// A virtualized content container that tracks scroll state and computes visible ranges.
 ///
@@ -66,6 +175,8 @@ pub struct Virtualized<T> {
     follow_mode: bool,
     /// Scroll velocity for momentum scrolling.
     scroll_velocity: f32,
+    /// Optional VOI policy for periodic remeasurement of measured items.
+    remeasure_policy: Option<RemeasurePolicy>,
 }
 
 /// Storage strategy for virtualized items.
@@ -126,6 +237,7 @@ impl<T> Virtualized<T> {
             item_height: ItemHeight::Fixed(1),
             follow_mode: false,
             scroll_velocity: 0.0,
+            remeasure_policy: None,
         }
     }
 
@@ -143,6 +255,35 @@ impl<T> Virtualized<T> {
             item_height: ItemHeight::Fixed(1),
             follow_mode: false,
             scroll_velocity: 0.0,
+            remeasure_policy: None,
+        }
+    }
+
+    /// Attach a Value-of-Information remeasurement policy.
+    #[must_use]
+    pub fn with_remeasure_policy(mut self, policy: RemeasurePolicy) -> Self {
+        self.remeasure_policy = Some(policy);
+        self
+    }
+
+    /// Borrow the attached VOI remeasurement policy, if any.
+    #[must_use]
+    pub fn remeasure_policy(&self) -> Option<&RemeasurePolicy> {
+        self.remeasure_policy.as_ref()
+    }
+
+    /// Mutably borrow the attached VOI remeasurement policy, if any.
+    pub fn remeasure_policy_mut(&mut self) -> Option<&mut RemeasurePolicy> {
+        self.remeasure_policy.as_mut()
+    }
+
+    /// Clear the measured state of item `idx` so its height reverts to the
+    /// unmeasured fill prediction until measured again.
+    pub fn invalidate(&mut self, idx: usize) {
+        match &mut self.item_height {
+            ItemHeight::Fixed(_) => {}
+            ItemHeight::Variable(cache) => cache.invalidate(idx),
+            ItemHeight::VariableFenwick(tracker) => tracker.invalidate(idx),
         }
     }
 
@@ -183,6 +324,12 @@ impl<T> Virtualized<T> {
         self
     }
 
+    /// Alias for [`Self::with_height_prediction`].
+    #[must_use]
+    pub fn with_height_predictor(self, config: PredictorConfig) -> Self {
+        self.with_height_prediction(config)
+    }
+
     /// Record the measured height of item `idx`.
     ///
     /// A no-op for the fixed-height strategy. With a predictor attached this
@@ -199,6 +346,45 @@ impl<T> Virtualized<T> {
             ItemHeight::Fixed(_) => {}
             ItemHeight::Variable(cache) => cache.set(idx, height),
             ItemHeight::VariableFenwick(tracker) => tracker.set_in_category(idx, height, category),
+        }
+    }
+
+    /// Return the row offset of item `idx` (sum of heights of items `< idx`).
+    #[must_use]
+    pub fn offset_of_item(&self, idx: usize) -> u32 {
+        let clamped = idx.min(self.len());
+        match &self.item_height {
+            ItemHeight::Fixed(h) => (clamped as u64)
+                .saturating_mul(u64::from(*h))
+                .min(u64::from(u32::MAX)) as u32,
+            ItemHeight::Variable(cache) => (0..clamped)
+                .fold(0u64, |acc, i| acc + u64::from(cache.get(i)))
+                .min(u64::from(u32::MAX)) as u32,
+            ItemHeight::VariableFenwick(tracker) => tracker.offset_of_item(clamped),
+        }
+    }
+
+    /// Find the item index containing `offset` rows from the top.
+    #[must_use]
+    pub fn find_item_at_offset(&self, offset: u32) -> usize {
+        let len = self.len();
+        match &self.item_height {
+            ItemHeight::Fixed(h) => {
+                let h = u32::from((*h).max(1));
+                ((offset / h) as usize).min(len)
+            }
+            ItemHeight::Variable(cache) => {
+                let mut acc = 0u64;
+                for i in 0..len {
+                    let next = acc + u64::from(cache.get(i).max(1));
+                    if u64::from(offset) < next {
+                        return i;
+                    }
+                    acc = next;
+                }
+                len
+            }
+            ItemHeight::VariableFenwick(tracker) => tracker.find_item_at_offset(offset),
         }
     }
 
@@ -442,6 +628,9 @@ impl<T> Virtualized<T> {
 
     /// Scroll to specific item index.
     pub fn scroll_to(&mut self, idx: usize) {
+        if let ItemHeight::VariableFenwick(tracker) = &mut self.item_height {
+            tracker.refresh_category_predictions();
+        }
         self.scroll_offset = idx.min(self.len().saturating_sub(1));
         self.follow_mode = false;
     }
@@ -764,6 +953,17 @@ impl HeightCache {
         self.cache.clear();
         self.base_offset = 0;
     }
+
+    /// Clear the cached height for `idx`, reverting it to `default_height`.
+    pub fn invalidate(&mut self, idx: usize) {
+        if idx < self.base_offset {
+            return;
+        }
+        let local = idx - self.base_offset;
+        if let Some(slot) = self.cache.get_mut(local) {
+            *slot = None;
+        }
+    }
 }
 
 // ============================================================================
@@ -806,9 +1006,18 @@ pub struct VariableHeightsFenwick {
     unmeasured: usize,
     /// Optional Bayesian model for the heights of unmeasured slots.
     predictor: Option<HeightPredictor>,
-    /// Height every unmeasured slot currently holds: the predictor's point
-    /// prediction when one is attached, otherwise `default_height`.
+    /// Height every unmeasured category-0 slot currently holds: the predictor's
+    /// point prediction when one is attached, otherwise `default_height`.
     fill_height: u16,
+    /// Per-slot category IDs (0 = default category).
+    categories: Vec<u16>,
+    /// Per-category fill heights for unmeasured slots.
+    cat_fill_heights: Vec<u16>,
+    /// Length at which `categories` was last synced from owned `RenderItem`s.
+    categories_synced_len: usize,
+    /// Whether any measurement since the last VOI tick violated the predictor's
+    /// conformal interval or changed a previously measured height.
+    last_violation: bool,
 }
 
 impl Default for VariableHeightsFenwick {
@@ -830,6 +1039,10 @@ impl VariableHeightsFenwick {
             unmeasured: capacity,
             predictor: None,
             fill_height: default_height,
+            categories: vec![0; capacity],
+            cat_fill_heights: vec![default_height],
+            categories_synced_len: 0,
+            last_violation: false,
         }
     }
 
@@ -844,6 +1057,10 @@ impl VariableHeightsFenwick {
             unmeasured: 0,
             predictor: None,
             fill_height: default_height,
+            categories: vec![0; heights.len()],
+            cat_fill_heights: vec![default_height],
+            categories_synced_len: 0,
+            last_violation: false,
         }
     }
 
@@ -881,6 +1098,54 @@ impl VariableHeightsFenwick {
             self.measured[idx / 64] |= 1_u64 << (idx % 64);
             self.unmeasured -= 1;
         }
+    }
+
+    #[inline]
+    fn fill_height_for_category(&self, category: usize) -> u16 {
+        self.cat_fill_heights
+            .get(category)
+            .copied()
+            .unwrap_or(self.fill_height)
+    }
+
+    /// Assign category IDs to tracked slots and update unmeasured slot heights
+    /// to match their category's current fill height.
+    pub fn set_categories(&mut self, categories: impl IntoIterator<Item = usize>) {
+        self.categories.clear();
+        self.categories.extend(
+            categories
+                .into_iter()
+                .take(self.len)
+                .map(|c| u16::try_from(c).unwrap_or(u16::MAX)),
+        );
+        self.categories.resize(self.len, 0);
+        self.categories_synced_len = self.len;
+        for idx in 0..self.len {
+            if !self.is_measured(idx) {
+                let cat = self.categories[idx] as usize;
+                let h = self.fill_height_for_category(cat);
+                if self.get(idx) != h {
+                    self.set_tracked_height(idx, h);
+                }
+            }
+        }
+    }
+
+    /// Clear the measured bit for `idx` and reset its tracked height to the
+    /// current fill height (default or predicted for its category).
+    pub fn invalidate(&mut self, idx: usize) {
+        if idx < self.len && self.is_measured(idx) {
+            self.measured[idx / 64] &= !(1_u64 << (idx % 64));
+            self.unmeasured += 1;
+            let cat = self.categories.get(idx).copied().unwrap_or(0) as usize;
+            self.set_tracked_height(idx, self.fill_height_for_category(cat));
+        }
+    }
+
+    /// Take and clear the pending violation flag accumulated from recent measurements.
+    #[inline]
+    pub fn take_last_violation(&mut self) -> bool {
+        std::mem::replace(&mut self.last_violation, false)
     }
 
     fn set_tracked_height(&mut self, idx: usize, height: u16) {
@@ -945,6 +1210,10 @@ impl VariableHeightsFenwick {
     pub fn with_predictor(mut self, config: PredictorConfig) -> Self {
         let predictor = HeightPredictor::new(config);
         self.fill_height = predictor.predict(0).predicted.max(1);
+        self.cat_fill_heights.fill(self.fill_height);
+        if self.cat_fill_heights.is_empty() {
+            self.cat_fill_heights.push(self.fill_height);
+        }
         self.predictor = Some(predictor);
         self.refill_unmeasured();
         self
@@ -975,13 +1244,15 @@ impl VariableHeightsFenwick {
         idx < self.len && self.measured[idx / 64] & (1_u64 << (idx % 64)) != 0
     }
 
-    /// Rewrite every unmeasured slot with the current fill height.
+    /// Rewrite every unmeasured slot with its category's current fill height.
     /// Returns the number of slots rewritten.
     fn refill_unmeasured(&mut self) -> usize {
         let mut rewritten = 0;
         for idx in 0..self.len {
             if !self.is_measured(idx) {
-                self.set_tracked_height(idx, self.fill_height);
+                let cat = self.categories.get(idx).copied().unwrap_or(0) as usize;
+                let h = self.fill_height_for_category(cat);
+                self.set_tracked_height(idx, h);
                 rewritten += 1;
             }
         }
@@ -1025,20 +1296,73 @@ impl VariableHeightsFenwick {
         self.set_in_category(idx, height, 0);
     }
 
-    /// Measure an item and train its category's predictor. Unclassified,
-    /// unmeasured slots retain the default category's prediction.
+    /// Refresh unmeasured slot heights from the predictor's current per-category
+    /// point predictions in a single O(n) pass.
+    pub fn refresh_category_predictions(&mut self) {
+        let Some(predictor) = self.predictor.as_ref() else {
+            return;
+        };
+        if self.unmeasured == 0 || self.categories_synced_len == 0 {
+            return;
+        }
+        let cat_count = predictor.category_count().max(1);
+        if self.cat_fill_heights.len() < cat_count {
+            self.cat_fill_heights.resize(cat_count, self.fill_height);
+        }
+        let mut any_changed = false;
+        for cat in 0..cat_count {
+            let next = predictor.predict(cat).predicted.max(1);
+            if cat == 0 {
+                self.fill_height = next;
+            }
+            if self.cat_fill_heights[cat] != next {
+                self.cat_fill_heights[cat] = next;
+                any_changed = true;
+            }
+        }
+        if !any_changed {
+            return;
+        }
+        for idx in 0..self.len {
+            if !self.is_measured(idx) {
+                let cat = self.categories.get(idx).copied().unwrap_or(0) as usize;
+                let h = self.fill_height_for_category(cat);
+                self.set_tracked_height(idx, h);
+            }
+        }
+    }
+
+    /// Measure an item and train its category's predictor. Unmeasured slots in
+    /// the same category track that category's rounded posterior prediction.
     pub fn set_in_category(&mut self, idx: usize, height: u16, category: usize) {
         if idx >= self.len {
             // Need to resize
             self.resize(idx.checked_add(1).expect("height index exceeds usize"));
         }
+        let cat_u16 = u16::try_from(category).unwrap_or(u16::MAX);
+        self.categories[idx] = cat_u16;
+        let was_measured = self.is_measured(idx);
+        let old_height = self.get(idx);
         self.set_tracked_height(idx, height);
         self.mark_measured(idx);
+        if was_measured && old_height != height {
+            self.last_violation = true;
+        }
         if let Some(predictor) = self.predictor.as_mut() {
-            predictor.observe(category, height);
-            let next = predictor.predict(0).predicted.max(1);
-            if next != self.fill_height {
+            let within_bounds = predictor.observe(category, height);
+            if !within_bounds {
+                self.last_violation = true;
+            }
+            let next = predictor.predict(category).predicted.max(1);
+            if self.cat_fill_heights.len() <= category {
+                self.cat_fill_heights.resize(category + 1, self.fill_height);
+            }
+            if category == 0 {
                 self.fill_height = next;
+            }
+            if self.categories_synced_len == 0 && category == 0 && self.cat_fill_heights[0] != next
+            {
+                self.cat_fill_heights[0] = next;
                 self.refill_unmeasured();
             }
         }
@@ -1124,8 +1448,21 @@ impl VariableHeightsFenwick {
         if new_len == self.len {
             return;
         }
-        self.tree = Self::build_height_tree((0..new_len).map(|idx| self.get(idx)));
+        assert!(
+            u64::try_from(new_len).is_ok_and(|n| n <= u64::MAX / u64::from(u16::MAX)),
+            "too many items for exact height aggregates"
+        );
         if new_len > self.len {
+            self.tree.reserve(new_len + 1 - self.tree.len());
+            let fill = u64::from(self.fill_height);
+            for node in (self.len + 1)..=new_len {
+                let mut sum = fill;
+                let tz = node.trailing_zeros();
+                for k in 0..tz {
+                    sum += self.tree[node - (1usize << k)];
+                }
+                self.tree.push(sum);
+            }
             self.unmeasured += new_len - self.len;
             self.measured.resize(new_len.div_ceil(64), 0);
         } else {
@@ -1133,12 +1470,14 @@ impl VariableHeightsFenwick {
                 .filter(|&idx| !self.is_measured(idx))
                 .count();
             self.unmeasured -= dropped_unmeasured;
+            self.tree.truncate(new_len + 1);
             self.measured.truncate(new_len.div_ceil(64));
             if !new_len.is_multiple_of(64) {
                 *self.measured.last_mut().expect("partial word exists") &=
                     (1_u64 << (new_len % 64)) - 1;
             }
         }
+        self.categories.resize(new_len, 0);
         self.len = new_len;
     }
 
@@ -1153,14 +1492,16 @@ impl VariableHeightsFenwick {
             self.clear();
             return;
         }
-        let kept: Vec<(u16, bool)> = (n..self.len)
-            .map(|idx| (self.get(idx), self.is_measured(idx)))
+        let kept: Vec<(u16, bool, u16)> = (n..self.len)
+            .map(|idx| (self.get(idx), self.is_measured(idx), self.categories[idx]))
             .collect();
-        self.tree = Self::build_height_tree(kept.iter().map(|&(height, _)| height));
+        self.tree = Self::build_height_tree(kept.iter().map(|&(height, _, _)| height));
         self.len = kept.len();
         self.measured = vec![0; self.len.div_ceil(64)];
+        self.categories = kept.iter().map(|&(_, _, cat)| cat).collect();
+        self.categories_synced_len = self.categories_synced_len.saturating_sub(n);
         self.unmeasured = self.len;
-        for (idx, (_, measured)) in kept.into_iter().enumerate() {
+        for (idx, (_, measured, _)) in kept.into_iter().enumerate() {
             if measured {
                 self.mark_measured(idx);
             }
@@ -1172,7 +1513,10 @@ impl VariableHeightsFenwick {
         self.tree = vec![0];
         self.len = 0;
         self.measured.clear();
+        self.categories.clear();
+        self.categories_synced_len = 0;
         self.unmeasured = 0;
+        self.last_violation = false;
     }
 
     /// Rebuild from a fresh set of heights; all of them count as measured and
@@ -1181,12 +1525,16 @@ impl VariableHeightsFenwick {
         self.tree = Self::build_height_tree(heights.iter().copied());
         self.len = heights.len();
         self.measured = Self::all_measured_bits(heights.len());
+        self.categories.resize(heights.len(), 0);
         self.unmeasured = 0;
         if let Some(predictor) = self.predictor.as_mut() {
             for &height in heights {
                 predictor.observe(0, height);
             }
             self.fill_height = predictor.predict(0).predicted.max(1);
+            if !self.cat_fill_heights.is_empty() {
+                self.cat_fill_heights[0] = self.fill_height;
+            }
         }
     }
 }
@@ -1223,10 +1571,22 @@ pub trait RenderItem {
 }
 
 impl<T: RenderItem> Virtualized<T> {
+    /// Synchronize owned item categories into the Fenwick height tracker so
+    /// unmeasured items use their category's predicted height.
+    pub fn sync_item_categories(&mut self) {
+        if let (VirtualizedStorage::Owned(items), ItemHeight::VariableFenwick(tracker)) =
+            (&self.storage, &mut self.item_height)
+            && tracker.categories_synced_len != items.len()
+        {
+            tracker.set_categories(items.iter().map(RenderItem::category));
+        }
+    }
+
     /// Measure an owned item using its [`RenderItem::category`]. External
     /// storage has no item to inspect and uses category zero; use
     /// [`Self::observe_height_in_category`] to supply an external category.
     pub fn measure(&mut self, idx: usize, height: u16) {
+        self.sync_item_categories();
         let category = self.get(idx).map_or(0, RenderItem::category);
         self.observe_height_in_category(idx, height, category);
     }
@@ -1266,6 +1626,10 @@ pub struct VirtualizedListState {
     /// Row heights measured while rendering in [`ListHeightMode::Variable`]
     /// (`None` until the first variable-height render).
     heights: Option<VariableHeightsFenwick>,
+    /// Optional VOI policy deciding when to remeasure visible rows.
+    remeasure_policy: Option<RemeasurePolicy>,
+    /// Monotone counter of variable-height render passes on this state.
+    render_frame_idx: u64,
 }
 
 impl Default for VirtualizedListState {
@@ -1288,6 +1652,8 @@ impl VirtualizedListState {
             scrollbar_drag_anchor: None,
             persistence_id: None,
             heights: None,
+            remeasure_policy: None,
+            render_frame_idx: 0,
         }
     }
 
@@ -1311,6 +1677,58 @@ impl VirtualizedListState {
                 .with_predictor(config),
         );
         self
+    }
+
+    /// Attach a Value-of-Information remeasurement policy.
+    #[must_use]
+    pub fn with_remeasure_policy(mut self, policy: RemeasurePolicy) -> Self {
+        self.remeasure_policy = Some(policy);
+        self
+    }
+
+    /// Borrow the attached VOI remeasurement policy, if any.
+    #[must_use]
+    pub fn remeasure_policy(&self) -> Option<&RemeasurePolicy> {
+        self.remeasure_policy.as_ref()
+    }
+
+    /// Mutably borrow the attached VOI remeasurement policy, if any.
+    pub fn remeasure_policy_mut(&mut self) -> Option<&mut RemeasurePolicy> {
+        self.remeasure_policy.as_mut()
+    }
+
+    /// Clear the measured bit for item `idx` so its height reverts to the
+    /// unmeasured fill prediction until measured again.
+    pub fn invalidate(&mut self, idx: usize) {
+        if let Some(heights) = self.heights.as_mut() {
+            heights.invalidate(idx);
+        }
+    }
+
+    /// Advance the VOI remeasurement policy by one render tick. When sampling is
+    /// triggered, invalidates the topmost visible item (`scroll_offset`) so the
+    /// next render remeasures it and returns the [`RemeasureRequest`] for the frame.
+    pub fn remeasure_tick(&mut self, frame_idx: u64, widget_id: u64) -> Option<RemeasureRequest> {
+        let violation_observed = self
+            .heights
+            .as_mut()
+            .is_some_and(VariableHeightsFenwick::take_last_violation);
+        let policy = self.remeasure_policy.as_mut()?;
+        let alpha = policy.posterior.alpha;
+        let beta = policy.posterior.beta;
+        let decision = policy.should_remeasure(frame_idx, violation_observed)?;
+        let index = self.scroll_offset;
+        if let Some(heights) = self.heights.as_mut() {
+            heights.invalidate(index);
+        }
+        Some(RemeasureRequest {
+            widget_id,
+            index,
+            voi: decision.voi,
+            cost: decision.cost,
+            alpha,
+            beta,
+        })
     }
 
     /// Point prediction for a category, or the configured default height.
@@ -1344,11 +1762,43 @@ impl VirtualizedListState {
 
     /// Record an off-screen measurement together with its item category.
     pub fn measure_in_category(&mut self, idx: usize, height: u16, category: usize) {
-        if let Some(heights) = self.heights.as_mut()
-            && idx < heights.len()
-        {
+        if let Some(heights) = self.heights.as_mut() {
+            if idx >= heights.len() {
+                heights.resize(idx + 1);
+            }
             heights.set_in_category(idx, height.max(1), category);
         }
+    }
+
+    /// Resize the variable-height Fenwick tracker to `len` items.
+    pub fn resize_heights(&mut self, len: usize) {
+        if let Some(heights) = self.heights.as_mut()
+            && heights.len() != len
+        {
+            heights.resize(len);
+        }
+    }
+
+    /// Return the row offset of item `idx` (sum of heights of items `< idx`).
+    #[must_use]
+    pub fn offset_of_item(&self, idx: usize) -> u32 {
+        self.heights
+            .as_ref()
+            .map_or(idx as u32, |h| h.offset_of_item(idx))
+    }
+
+    /// Find the item index containing `offset` rows from the top.
+    #[must_use]
+    pub fn find_item_at_offset(&self, offset: u32) -> usize {
+        self.heights
+            .as_ref()
+            .map_or(offset as usize, |h| h.find_item_at_offset(offset))
+    }
+
+    /// Currently selected item index, if any.
+    #[must_use]
+    pub fn selected(&self) -> Option<usize> {
+        self.selected
     }
 
     /// The variable-height tracker (after the first variable-height render).
@@ -2030,6 +2480,9 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
         if heights.len() != total_items {
             heights.resize(total_items);
         }
+        if heights.categories_synced_len != total_items {
+            heights.set_categories(self.items.iter().map(RenderItem::category));
+        }
 
         let measure = |heights: &mut VariableHeightsFenwick, idx: usize| {
             let height = self.items[idx].height().max(1);
@@ -2062,6 +2515,15 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
                 state.scroll_offset = selected;
             } else {
                 measure_screenful(heights, state.scroll_offset);
+                let mut sel_rows = 0u16;
+                for idx in (0..=selected).rev() {
+                    if sel_rows >= viewport {
+                        break;
+                    }
+                    measure(heights, idx);
+                    sel_rows = sel_rows.saturating_add(heights.get(idx));
+                }
+                heights.refresh_category_predictions();
                 let top = heights.offset_of_item_exact(state.scroll_offset);
                 let bottom = heights.offset_of_item_exact(selected + 1);
                 if bottom.saturating_sub(top) > u64::from(viewport) {
@@ -2082,6 +2544,7 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
             measure(heights, idx);
             tail_rows = tail_rows.saturating_add(heights.get(idx));
         }
+        heights.refresh_category_predictions();
         let total_height = heights.total_height_exact();
         let max_start = if total_height > u64::from(viewport) {
             first_item_from_offset(heights, total_height - u64::from(viewport))
@@ -2091,6 +2554,7 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
         state.scroll_offset = state.scroll_offset.min(max_start);
 
         let visible = measure_screenful(heights, state.scroll_offset).min(total_items);
+        heights.refresh_category_predictions();
         state.visible_count = visible;
 
         let total_height = heights.total_height_exact();
@@ -2137,6 +2601,16 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
                 scrollbar = scrollbar.hit_id(id);
             }
             scrollbar.render(scrollbar_area, frame, &mut scrollbar_state);
+        }
+
+        let widget_id = self.hit_id.map_or_else(
+            || ftui_a11y::node::A11yNodeInfo::stable_id_for(ftui_a11y::node::A11yRole::List, area),
+            |id| u64::from(id.id()),
+        );
+        let frame_idx = state.render_frame_idx;
+        state.render_frame_idx = state.render_frame_idx.wrapping_add(1);
+        if let Some(req) = state.remeasure_tick(frame_idx, widget_id) {
+            frame.push_remeasure_request(req);
         }
     }
 }
@@ -5148,5 +5622,299 @@ mod tests {
         assert_eq!(state.scroll_offset(), 4);
         StatefulWidget::render(&list, area, &mut frame, &mut state);
         assert_eq!(state.scroll_offset(), 4, "render keeps the offset");
+    }
+
+    #[test]
+    fn remeasure_policy_samples_when_voi_exceeds_cost() {
+        let mut high_voi = RemeasurePolicy::new(BetaPosterior::new(1.0, 1.0), 0.01, 2);
+        let decision = high_voi.should_sample(0);
+        assert!(
+            decision.is_some(),
+            "Beta(1,1) VOI (~0.0278) should exceed cost 0.01"
+        );
+
+        let mut low_voi = RemeasurePolicy::new(BetaPosterior::new(1.0, 200.0), 0.08, 2);
+        assert!(
+            low_voi.should_sample(0).is_none(),
+            "Beta(1,200) VOI should fall below cost 0.08"
+        );
+    }
+
+    #[test]
+    fn remeasure_policy_respects_min_interval() {
+        let mut policy = RemeasurePolicy::new(BetaPosterior::new(1.0, 1.0), 0.001, 4);
+        assert!(policy.should_sample(0).is_some(), "frame 0 should sample");
+        assert!(
+            policy.should_sample(1).is_none(),
+            "frame 1 within min_interval_frames=4 must be skipped"
+        );
+        assert!(
+            policy.should_sample(3).is_none(),
+            "frame 3 within min_interval_frames=4 must be skipped"
+        );
+        assert!(
+            policy.should_sample(4).is_some(),
+            "frame 4 at min_interval_frames=4 should sample"
+        );
+    }
+
+    #[test]
+    fn invalidate_clears_measured_bit() {
+        let mut fenwick = VariableHeightsFenwick::new(1, 4);
+        fenwick.set(2, 5);
+        assert!(fenwick.is_measured(2));
+        assert_eq!(fenwick.get(2), 5);
+        assert_eq!(fenwick.unmeasured_count(), 3);
+
+        fenwick.invalidate(2);
+        assert!(!fenwick.is_measured(2));
+        assert_eq!(fenwick.get(2), 1);
+        assert_eq!(fenwick.unmeasured_count(), 4);
+    }
+
+    #[test]
+    fn variable_heights_defaults_to_fenwick() {
+        let v: Virtualized<String> = Virtualized::new(16).with_variable_heights(2);
+        assert!(matches!(v.item_height(), ItemHeight::VariableFenwick(_)));
+    }
+
+    #[test]
+    fn offset_of_item_is_prefix_sum() {
+        let heights = [2u16, 5, 1, 4, 3, 6];
+        let fenwick = VariableHeightsFenwick::from_heights(&heights, 1);
+        let mut prefix = 0u32;
+        for (i, &h) in heights.iter().enumerate() {
+            assert_eq!(fenwick.offset_of_item(i), prefix);
+            prefix += u32::from(h);
+        }
+        assert_eq!(fenwick.total_height(), prefix);
+    }
+
+    #[test]
+    fn find_item_at_offset_round_trips() {
+        let heights = [3u16, 1, 4, 2, 5];
+        let fenwick = VariableHeightsFenwick::from_heights(&heights, 1);
+        for (i, &h) in heights.iter().enumerate() {
+            let start = fenwick.offset_of_item(i);
+            for off in start..start + u32::from(h) {
+                assert_eq!(fenwick.find_item_at_offset(off), i);
+            }
+        }
+    }
+
+    #[test]
+    fn variable_list_renders_multi_line_items_at_correct_rows() {
+        #[derive(Clone, Copy)]
+        struct MultiRow(u16, char);
+        impl RenderItem for MultiRow {
+            fn render(&self, area: Rect, frame: &mut Frame, _selected: bool, _skip: u16) {
+                for y in area.y..area.bottom() {
+                    frame.buffer.set(area.x, y, Cell::from_char(self.1));
+                }
+            }
+            fn height(&self) -> u16 {
+                self.0
+            }
+        }
+        let items = [MultiRow(2, 'A'), MultiRow(3, 'B'), MultiRow(1, 'C')];
+        let list = VirtualizedList::new(&items)
+            .variable_heights()
+            .show_scrollbar(false);
+        let mut state = VirtualizedListState::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(4, 6, &mut pool);
+        StatefulWidget::render(&list, Rect::new(0, 0, 4, 6), &mut frame, &mut state);
+        let col: String = (0..6)
+            .map(|y| frame.buffer.get(0, y).unwrap().content.as_char().unwrap())
+            .collect();
+        assert_eq!(col, "AABBBC");
+    }
+
+    #[test]
+    fn category_default_is_zero() {
+        assert_eq!(String::from("default").category(), 0);
+    }
+
+    #[test]
+    fn measured_bitset_tracks_set_and_rebuild() {
+        let mut fenwick = VariableHeightsFenwick::new(1, 10);
+        assert_eq!(fenwick.unmeasured_count(), 10);
+        fenwick.set(3, 4);
+        assert!(fenwick.is_measured(3));
+        assert!(!fenwick.is_measured(2));
+        assert_eq!(fenwick.unmeasured_count(), 9);
+        fenwick.rebuild(&[2; 10]);
+        assert_eq!(fenwick.unmeasured_count(), 0);
+        assert!(fenwick.is_measured(2));
+    }
+
+    mod scroll_stability_proptests {
+        use super::*;
+        use proptest::prelude::{ProptestConfig, any, prop_assert, proptest};
+
+        #[derive(Clone, Copy, Debug)]
+        struct CorpusRow {
+            height: u16,
+            category: usize,
+        }
+
+        impl RenderItem for CorpusRow {
+            fn render(&self, _area: Rect, _frame: &mut Frame, _selected: bool, _skip_rows: u16) {}
+
+            fn height(&self) -> u16 {
+                self.height
+            }
+
+            fn category(&self) -> usize {
+                self.category
+            }
+        }
+
+        fn generate_long_tail_corpus(n: usize, seed: u64) -> (Vec<CorpusRow>, Vec<usize>) {
+            let mut state = seed ^ 0x9E37_79B9_7F4A_7C15;
+            let mut next_u64 = || -> u64 {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                state
+            };
+
+            let mut rows = Vec::with_capacity(n);
+            for _ in 0..n {
+                let bucket = (next_u64() >> 32) % 100;
+                let (height, category) = if bucket < 80 {
+                    (1u16, 0usize)
+                } else if bucket < 95 {
+                    let r = next_u64();
+                    let h = 2 + (((r >> 32) % 2) + ((r >> 48) % 2)) as u16; // 2..=4 centered at 3
+                    (h, 1usize)
+                } else {
+                    let r = next_u64();
+                    let tier = ((r >> 48) % 3) as usize;
+                    let jitter = (((r & 0xFF) % 3) + (((r >> 8) & 0xFF) % 3)) as u16; // 0..=4 centered at 2
+                    let h = match tier {
+                        0 => 6 + jitter,  // 6..=10 (in 5..=30)
+                        1 => 15 + jitter, // 15..=19 (in 5..=30)
+                        _ => 25 + jitter, // 25..=29 (in 5..=30)
+                    };
+                    (h, 2 + tier)
+                };
+                rows.push(CorpusRow { height, category });
+            }
+
+            let mut perm: Vec<usize> = (0..n).collect();
+            for idx in (1..n).rev() {
+                let swap_idx = (next_u64() as usize) % (idx + 1);
+                perm.swap(idx, swap_idx);
+            }
+
+            // Ensure the initial 10% training prefix observes at least 4 samples
+            // of each category so cold-start categories are calibrated before scroll_to.
+            let train_count = (n / 10).max(1);
+            let mut swap_pos = 0usize;
+            for target_cat in 1..=4usize {
+                let mut seen = perm[..train_count]
+                    .iter()
+                    .filter(|&&idx| rows[idx].category == target_cat)
+                    .count();
+                for pos in train_count..n {
+                    if seen >= 4 || swap_pos >= train_count {
+                        break;
+                    }
+                    if rows[perm[pos]].category == target_cat {
+                        while swap_pos < train_count && rows[perm[swap_pos]].category != 0 {
+                            swap_pos += 1;
+                        }
+                        if swap_pos < train_count {
+                            perm.swap(swap_pos, pos);
+                            seen += 1;
+                            swap_pos += 1;
+                        }
+                    }
+                }
+            }
+
+            (rows, perm)
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+            #[test]
+            fn scroll_to_index_is_stable_under_late_measurements(
+                n in 500usize..5000,
+                seed in any::<u64>(),
+                target_frac in 0usize..10_000,
+            ) {
+                let min_target = n / 4;
+                let i = min_target + (target_frac % (n - min_target).max(1));
+                let (rows, perm) = generate_long_tail_corpus(n, seed);
+                let total_true_sum: u64 = rows.iter().map(|r| u64::from(r.height)).sum();
+                let mean_height = ((total_true_sum as f64) / (n as f64)).round().max(1.0) as u16;
+                let true_offset: u32 = rows[..i].iter().map(|r| u32::from(r.height)).sum();
+
+                let mut pred_list: Virtualized<CorpusRow> = Virtualized::new(n)
+                    .with_variable_heights(1)
+                    .with_height_predictor(PredictorConfig::default());
+                let mut base_list: Virtualized<CorpusRow> = Virtualized::new(n)
+                    .with_variable_heights(mean_height);
+
+                for &row in &rows {
+                    pred_list.push(row);
+                    base_list.push(row);
+                }
+
+                let train_count = (n / 10).max(1);
+                for &idx in &perm[..train_count] {
+                    let h = rows[idx].height;
+                    pred_list.measure(idx, h);
+                    base_list.observe_height(idx, h);
+                }
+
+                pred_list.scroll_to(i);
+                base_list.scroll_to(i);
+
+                let mut prev_pred_offset = pred_list.offset_of_item(i);
+                let mut prev_base_offset = base_list.offset_of_item(i);
+                let mut jump_predictor = 0u64;
+                let mut jump_mean_baseline = 0u64;
+
+                for chunk in perm[train_count..].chunks(50) {
+                    for &idx in chunk {
+                        let h = rows[idx].height;
+                        pred_list.measure(idx, h);
+                        base_list.observe_height(idx, h);
+                    }
+                    let next_pred_offset = pred_list.offset_of_item(i);
+                    let next_base_offset = base_list.offset_of_item(i);
+                    jump_predictor += u64::from(next_pred_offset.abs_diff(prev_pred_offset));
+                    jump_mean_baseline += u64::from(next_base_offset.abs_diff(prev_base_offset));
+                    prev_pred_offset = next_pred_offset;
+                    prev_base_offset = next_base_offset;
+                }
+
+                let final_offset = pred_list.offset_of_item(i);
+                let cat = rows[i].category;
+                let (lower, upper) = match pred_list.item_height() {
+                    ItemHeight::VariableFenwick(t) => t
+                        .predictor()
+                        .map_or((1, 1), |p| {
+                            let b = p.predict(cat);
+                            (b.lower, b.upper)
+                        }),
+                    _ => (1, 1),
+                };
+                let bound_width = u32::from(upper.saturating_sub(lower));
+
+                prop_assert!(
+                    final_offset.abs_diff(true_offset) <= bound_width,
+                    "seed={seed} n={n} i={i} final_offset={final_offset} true_offset={true_offset} bounds=[{lower}, {upper}]"
+                );
+                prop_assert!(
+                    jump_predictor <= jump_mean_baseline,
+                    "seed={seed} n={n} i={i} jump_predictor={jump_predictor} > jump_mean_baseline={jump_mean_baseline} bounds=[{lower}, {upper}]"
+                );
+            }
+        }
     }
 }

@@ -225,6 +225,8 @@ pub mod evidence {
     pub const VOI_DECISION: &str = "voi_decision";
     /// Value of information observation.
     pub const VOI_OBSERVE: &str = "voi_observe";
+    /// Value of information sample event (inline_auto or virtualized_list).
+    pub const VOI_SAMPLE: &str = "voi_sample";
     /// Widget tree refresh notification.
     pub const WIDGET_REFRESH: &str = "widget_refresh";
     /// Grapheme width cache statistics.
@@ -409,6 +411,7 @@ pub const ALL_EVIDENCE_EVENTS: &[&str] = &[
     evidence::TASK_EXECUTOR_PANIC,
     evidence::VOI_DECISION,
     evidence::VOI_OBSERVE,
+    evidence::VOI_SAMPLE,
     evidence::WIDGET_REFRESH,
     evidence::WIDTH_CACHE_STATS,
 ];

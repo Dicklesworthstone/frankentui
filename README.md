@@ -1023,9 +1023,11 @@ Conformal interval:
 
 Variance is tracked online with Welford’s algorithm, and `q` is the empirical quantile of |residuals|.
 
-Where it runs: `Virtualized::with_variable_heights(default)` selects the Fenwick tracker as the variable-height strategy (`with_variable_heights_fenwick` takes an explicit capacity; `ItemHeight::Variable(HeightCache)` is the legacy linear-scan mode), and the tracker follows `push`, `trim_front`, `clear` and `set_external_len`. `with_height_prediction(PredictorConfig)` attaches the model to that tracker: unmeasured rows hold the posterior mean instead of a constant default, each `observe_height(idx, h)` trains it, and when the rounded prediction moves the unmeasured rows are refilled so total height and offsets track what has been measured. The `VirtualizedList` widget renders variable heights with `.variable_heights()`: each row is as tall as `RenderItem::height` says, rows are measured into the state's Fenwick tracker as they render (`VirtualizedListState::measure` for off‑screen changes), and the selection adjustment, bottom clamp and scrollbar work in rows with O(log n) offset queries. Scrolling is item‑aligned. `VirtualizedListState::with_predictor` gives the widget's tracker the same model, per `RenderItem::category`.
-
-**One demo screen uses variable heights.** The widget gallery's Advanced section (`widget_gallery.rs`) renders its `VirtualizedList` with `.variable_heights()`; items with a note are two rows tall, so the list scrolls by rows while holding fewer items than the viewport has rows. Wiring it in found two bugs that the widget's own tests had missed: `handle_mouse` counted items while the scrollbar was drawn in rows, so a list like that one could not be scrolled at all, and the bottom clamp treated an unmeasured tail as default height, so scrolling to the end stopped short. `Virtualized` itself still defaults to `ItemHeight::Fixed(1)`. `LogViewer`, its main consumer, takes that default and handles wrapped lines itself, and `with_variable_heights` and `with_variable_heights_fenwick` are called from tests and benches only. Two reachability bugs lived there undetected (`79f87122`, `794b0482`), because the tests set a viewport, read a range and assert, and never performed the sequence that breaks it — render at one offset, *then* scroll to the bottom (`bd-wleec`).
+Where it runs (`crates/ftui-widgets/src/virtualized.rs`, `crates/ftui-widgets/src/height_predictor.rs`, `crates/ftui-widgets/src/fenwick.rs`):
+- **Widget (`VirtualizedList`):** Opt in with `VirtualizedList::new(&items).variable_heights()` and `VirtualizedListState::variable(default_height).with_predictor(PredictorConfig::default()).with_remeasure_policy(RemeasurePolicy::default())`. Each item supplies its rendered height (`RenderItem::height`) and category (`RenderItem::category`); as visible items render, their heights are recorded in the state's `FenwickHeightTracker` (or updated explicitly via `VirtualizedListState::measure`), unmeasured items pre-allocate their category's posterior mean (`HeightPredictor`), and `RemeasurePolicy` schedules Beta-VOI remeasurement checks that emit `voi_sample` evidence (`source: "virtualized_list"`) via `Frame::request_remeasure`.
+- **Container (`Virtualized<T>`):** `Virtualized::with_variable_heights(default_height)` selects `FenwickHeightTracker` as the default variable-height tracker (`with_variable_heights_fenwick` takes an explicit capacity; `ItemHeight::Variable(HeightCache)` is the legacy linear-scan cache), following `push`, `trim_front`, `clear`, and `set_external_len`. Attach the predictor with `.with_height_prediction(PredictorConfig)` (`measure(idx, height, category)` updates both the Fenwick tree and category posterior) and VOI remeasurement with `.with_remeasure_policy(RemeasurePolicy::default())`.
+- **Measured scroll-jump improvement:** On a 100k-row 4-category heavy-tail corpus ([`docs/perf/virtualized_scroll_jump_2026-09.md`](docs/perf/virtualized_scroll_jump_2026-09.md), measured 2026-10-16), `Virtualized::scroll_to` runs in **16.63 ns** (`virtualized_scroll_to_100k`), and cumulative scroll correction across 50 viewport jumps dropped from **48,250 cells** with a fixed default of `1` (**27,896 cells** with global mean `2`) to **2,497 cells** with per-category Bayesian height prediction (a **94.8%** reduction vs default `1` and **91.0%** vs global mean `2`).
+- **Demo screens:** Three showcase screens use Fenwick variable-height virtualization in production: `widget_gallery` (`.variable_heights()`), `virtualized_search` (`VirtualizedList::new(&items).variable_heights()` with `VirtualizedListState::variable(1).with_predictor(PredictorConfig::default()).with_remeasure_policy(..)` and multi-line previews toggled by `p`), and `log_search` (`LogViewer` switches its `Virtualized` storage to Fenwick variable heights when line wrapping is toggled with `w`, tracking wrapped visual rows per log line).
 
 ### BOCPD: Online Change-Point Detection
 
@@ -1128,7 +1130,7 @@ Interpretation:
 
 ### Value-of-Information (VOI) Sampling
 
-Inline-auto height remeasurement uses **VOI analysis** to decide when to take another height measurement:
+Inline-auto height remeasurement and variable-height virtualized list remeasurement use **VOI analysis** to decide when to take another height measurement:
 
 ```
 Beta posterior over violation probability:
@@ -1156,19 +1158,18 @@ Decision:
 height measurement runs whenever the runtime has no height estimate, independently
 of this sampling decision.
 
-**Inline-auto defaults (`InlineAutoRemeasureConfig::default()`):**
+**VOI configuration defaults across the three consumers:**
 
-- `prior_alpha=1.0, prior_beta=9.0` (expect 10% violation rate)
-- `max_interval_ms=1000` (force sampling at the next decision after one second)
-- `min_interval_ms=100` (prevent over-sampling)
-- `sample_cost=0.08`, `value_scale=1.0`, `boundary_weight=1.0`
+| Config | Where | `prior_alpha` / `prior_beta` | `sample_cost` | Interval gating |
+|---|---|---|---|---|
+| `InlineAutoRemeasureConfig::default()` | `crates/ftui-runtime/src/program.rs:4623` | `1.0` / `9.0` (10% violation prior) | `0.08` | `min_interval_ms = 100`, `max_interval_ms = 1000`, `max_interval_events = 0` |
+| `VoiConfig::default()` | `crates/ftui-runtime/src/voi_sampling.rs:220` | `1.0` / `1.0` (uniform prior) | `0.01` | `min_interval_ms = 0`, `max_interval_ms = 250`, `max_interval_events = 20` |
+| `RemeasurePolicy::default()` | `crates/ftui-widgets/src/virtualized.rs:73` | `1.0` / `9.0` (`BetaPosterior::new(1.0, 9.0)`) | `0.08` | `min_interval_frames = 6` |
 
-These defaults rely on forced intervals: since `n ≥ 10` and `boundary_score ≤ 1`,
-the VOI score is at most `1/242 ≈ 0.00413`, below `sample_cost`. The cost comparison
-therefore requests no extra samples with this configuration. Standalone `VoiConfig::default()`
-uses a more permissive prior (`prior_alpha=1.0, prior_beta=1.0`, `max_interval_ms=250`,
-`min_interval_ms=0`, `sample_cost=0.01`, `value_scale=1.0`, `boundary_weight=1.0`) that
-actively samples between forced intervals.
+`InlineAutoRemeasureConfig::default()` relies on forced intervals: since `n ≥ 10` and `boundary_score ≤ 1`,
+the VOI score is at most `1/242 ≈ 0.00413`, below `sample_cost = 0.08`. Standalone `VoiConfig::default()`
+uses a permissive `Beta(1, 1)` prior and `sample_cost = 0.01` that actively samples between forced intervals.
+In variable-height lists (`RemeasurePolicy`), observing an interval violation updates `BetaPosterior` and triggers a sample once `min_interval_frames` has elapsed (or whenever `beta_voi(α, β) ≥ sample_cost`). Both the inline-auto sampler and `VirtualizedList` emit structured `voi_sample` JSONL evidence records carrying `source: "inline_auto" | "virtualized_list"`, `widget_id`, `index`, `alpha`, `beta`, `voi`, `sample_cost`, and `decision: "sample" | "skip"`.
 
 ### E-Process: Anytime-Valid Testing
 
@@ -2683,7 +2684,7 @@ FrankenTUI ships 80+ direct `Widget` and `StatefulWidget` implementations across
 | `Modal` | Dialog/overlay system | Stack‑based, focus capture |
 | `JsonView` | JSON tree viewer | Collapse/expand nodes |
 | `FilePicker` | File browser | Directory navigation |
-| `VirtualizedList` | Large lists | Fixed or variable row heights (`variable_heights()`, Fenwick-tracked, O(log n) scroll); the `Virtualized` primitive adds Bayesian height prediction |
+| `VirtualizedList` | Large lists | Fixed or variable row heights (`variable_heights()`, Fenwick-tracked, O(log n) scroll, per-category Bayesian height prediction via `with_predictor`, Beta-VOI remeasurement via `with_remeasure_policy`); shared with `Virtualized<T>` |
 | `Toast` | Notifications | Timed, dismissable |
 | `Spinner` | Activity indicator | Multiple styles |
 | `Scrollbar` | Scroll position | Proportional thumb |

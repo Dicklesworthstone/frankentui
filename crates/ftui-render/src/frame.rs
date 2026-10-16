@@ -371,6 +371,23 @@ impl WidgetSignal {
     }
 }
 
+/// Value-of-Information remeasure request emitted by a virtualized widget during rendering.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RemeasureRequest {
+    /// Stable widget identifier (or 0 when unset).
+    pub widget_id: u64,
+    /// Item index selected for remeasurement.
+    pub index: usize,
+    /// Value of Information (expected variance reduction) at decision time.
+    pub voi: f64,
+    /// Configured sample cost threshold.
+    pub cost: f64,
+    /// Posterior alpha parameter at decision time.
+    pub alpha: f64,
+    /// Posterior beta parameter at decision time.
+    pub beta: f64,
+}
+
 /// Widget render budget policy for a single frame.
 #[derive(Debug, Clone)]
 pub struct WidgetBudget {
@@ -477,6 +494,9 @@ pub struct Frame<'a> {
     /// Collected per-widget scheduling signals for this frame.
     pub widget_signals: Vec<WidgetSignal>,
 
+    /// Collected VOI remeasure requests for this frame.
+    remeasure_requests: Vec<RemeasureRequest>,
+
     /// Cursor position (if app wants to show cursor).
     ///
     /// Coordinates are relative to buffer (0-indexed).
@@ -542,6 +562,7 @@ impl<'a> Frame<'a> {
             hit_owner_stack: Vec::new(),
             widget_budget: WidgetBudget::default(),
             widget_signals: Vec::new(),
+            remeasure_requests: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
@@ -567,6 +588,7 @@ impl<'a> Frame<'a> {
             hit_owner_stack: Vec::new(),
             widget_budget: WidgetBudget::default(),
             widget_signals: Vec::new(),
+            remeasure_requests: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
@@ -598,6 +620,7 @@ impl<'a> Frame<'a> {
             hit_owner_stack: Vec::new(),
             widget_budget: WidgetBudget::default(),
             widget_signals: Vec::new(),
+            remeasure_requests: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
@@ -634,6 +657,7 @@ impl<'a> Frame<'a> {
             hit_owner_stack: Vec::new(),
             widget_budget: WidgetBudget::default(),
             widget_signals: Vec::new(),
+            remeasure_requests: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
@@ -713,6 +737,23 @@ impl<'a> Frame<'a> {
         std::mem::take(&mut self.widget_signals)
     }
 
+    /// Push a VOI remeasure request emitted during widget rendering.
+    pub fn push_remeasure_request(&mut self, req: RemeasureRequest) {
+        self.remeasure_requests.push(req);
+    }
+
+    /// Borrow the collected VOI remeasure requests.
+    #[inline]
+    pub fn remeasure_requests(&self) -> &[RemeasureRequest] {
+        &self.remeasure_requests
+    }
+
+    /// Take the collected VOI remeasure requests, leaving an empty list.
+    #[inline]
+    pub fn take_remeasure_requests(&mut self) -> Vec<RemeasureRequest> {
+        std::mem::take(&mut self.remeasure_requests)
+    }
+
     /// Intern a string in the grapheme pool.
     ///
     /// Returns a `GraphemeId` that can be used to create a `Cell`.
@@ -760,6 +801,7 @@ impl<'a> Frame<'a> {
         }
         self.cursor_position = None;
         self.widget_signals.clear();
+        self.remeasure_requests.clear();
     }
 
     /// Set cursor position.

@@ -632,6 +632,7 @@ pub enum LogSearchAction {
     PrevMatch,
     ClearFilter,
     TogglePause,
+    ToggleWrap,
     ScrollToTop,
     ScrollToBottom,
     ScrollUp,
@@ -651,6 +652,7 @@ impl LogSearchAction {
             Self::PrevMatch => "prev_match",
             Self::ClearFilter => "clear_filter",
             Self::TogglePause => "toggle_pause",
+            Self::ToggleWrap => "toggle_wrap",
             Self::ScrollToTop => "scroll_to_top",
             Self::ScrollToBottom => "scroll_to_bottom",
             Self::ScrollUp => "scroll_up",
@@ -673,6 +675,7 @@ fn default_log_search_keymap() -> KeyMap<LogSearchAction> {
         ("N", LogSearchAction::PrevMatch),
         ("F", LogSearchAction::ClearFilter),
         ("Space", LogSearchAction::TogglePause),
+        ("w", LogSearchAction::ToggleWrap),
         ("g g", LogSearchAction::ScrollToTop),
         ("G", LogSearchAction::ScrollToBottom),
         ("k", LogSearchAction::ScrollUp),
@@ -998,6 +1001,21 @@ impl LogSearch {
                     .with_lines_generated(self.lines_generated);
                 self.record_diagnostic(diag);
             }
+            LogSearchAction::ToggleWrap => {
+                let next_mode = match self.viewer.current_wrap_mode() {
+                    LogWrapMode::NoWrap => LogWrapMode::CharWrap,
+                    _ => LogWrapMode::NoWrap,
+                };
+                self.viewer.set_wrap_mode(next_mode);
+
+                let diag = DiagnosticEntry::new(DiagnosticEventKind::ModeChange, self.tick_count)
+                    .with_context(if next_mode == LogWrapMode::NoWrap {
+                        "wrap:off"
+                    } else {
+                        "wrap:on"
+                    });
+                self.record_diagnostic(diag);
+            }
             LogSearchAction::ScrollToTop => {
                 self.viewer.scroll_to_top();
 
@@ -1209,6 +1227,10 @@ impl LogSearch {
 
         if self.paused {
             segments.push("PAUSED".into());
+        }
+
+        if self.viewer.current_wrap_mode() != LogWrapMode::NoWrap {
+            segments.push("WRAP".into());
         }
 
         if let Some((current, total)) = self.viewer.search_info() {

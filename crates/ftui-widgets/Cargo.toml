@@ -63,3 +63,7 @@ harness = false
 [[bench]]
 name = "succinct_bench"
 harness = false
+
+[[bench]]
+name = "virtualized_bench"
+harness = false

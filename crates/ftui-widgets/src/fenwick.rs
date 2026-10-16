@@ -848,4 +848,81 @@ mod tests {
         assert_eq!(most_significant_bit(100), 64);
         assert_eq!(most_significant_bit(1000), 512);
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        #[derive(Debug, Clone)]
+        enum FenwickOp {
+            Set(usize, u32),
+            Update(usize, i32),
+            Resize(usize),
+            Rebuild(Vec<u32>),
+        }
+
+        fn op_strategy() -> impl Strategy<Value = FenwickOp> {
+            prop_oneof![
+                (0usize..128, 0u32..500).prop_map(|(i, v)| FenwickOp::Set(i, v)),
+                (0usize..128, 0i32..250).prop_map(|(i, d)| FenwickOp::Update(i, d)),
+                (1usize..128).prop_map(FenwickOp::Resize),
+                proptest::collection::vec(0u32..500, 1..64).prop_map(FenwickOp::Rebuild),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+
+            #[test]
+            fn fenwick_prefix_matches_naive_after_random_mutations(
+                initial in proptest::collection::vec(0u32..500, 1..64),
+                ops in proptest::collection::vec(op_strategy(), 1..40),
+                target in 0u32..10_000,
+            ) {
+                let mut naive = initial.clone();
+                let mut ft = FenwickTree::from_values(&initial);
+
+                for op in ops {
+                    match op {
+                        FenwickOp::Set(idx, val) => {
+                            if !naive.is_empty() {
+                                let i = idx % naive.len();
+                                naive[i] = val;
+                                ft.set(i, val);
+                            }
+                        }
+                        FenwickOp::Update(idx, delta) => {
+                            if !naive.is_empty() {
+                                let i = idx % naive.len();
+                                naive[i] = naive[i].wrapping_add(delta as u32);
+                                ft.update(i, delta);
+                            }
+                        }
+                        FenwickOp::Resize(new_len) => {
+                            naive.resize(new_len, 0);
+                            ft.resize(new_len);
+                        }
+                        FenwickOp::Rebuild(vals) => {
+                            naive.resize(vals.len(), 0);
+                            ft.resize(vals.len());
+                            naive.copy_from_slice(&vals);
+                            ft.rebuild(&vals);
+                        }
+                    }
+                }
+
+                prop_assert_eq!(ft.len(), naive.len());
+                let mut running = 0u32;
+                let mut expected_find_prefix = None;
+                for (k, &v) in naive.iter().enumerate() {
+                    running = running.wrapping_add(v);
+                    prop_assert_eq!(ft.prefix(k), running, "prefix mismatch at k={}", k);
+                    if running <= target {
+                        expected_find_prefix = Some(k);
+                    }
+                }
+                prop_assert_eq!(ft.find_prefix(target), expected_find_prefix);
+            }
+        }
+    }
 }

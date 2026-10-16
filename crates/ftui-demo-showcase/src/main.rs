@@ -177,8 +177,11 @@ fn main() -> ExitCode {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(true);
 
+    let inline_auto_remeasure = matches!(screen_mode, ScreenMode::InlineAuto { .. })
+        .then(ftui_runtime::InlineAutoRemeasureConfig::default);
     let config = ProgramConfig {
         screen_mode,
+        inline_auto_remeasure,
         mouse_capture_policy: mouse_policy,
         budget,
         focus_reporting: enable_focus,

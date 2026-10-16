@@ -490,6 +490,12 @@ impl VoiSampler {
         expected_variance_after(self.alpha, self.beta)
     }
 
+    /// Expected variance reduction (Value of Information) from one sample.
+    #[must_use]
+    pub fn value_of_information(&self) -> f64 {
+        ftui_core::voi::beta_voi(self.alpha, self.beta)
+    }
+
     /// Most recent decision, if any.
     #[must_use]
     pub fn last_decision(&self) -> Option<&VoiDecision> {
@@ -532,8 +538,7 @@ impl VoiSampler {
         let blocked = blocked_by_events || blocked_by_time;
 
         let variance = beta_variance(self.alpha, self.beta);
-        let expected_after = expected_variance_after(self.alpha, self.beta);
-        let voi_gain = (variance - expected_after).max(0.0);
+        let voi_gain = ftui_core::voi::beta_voi(self.alpha, self.beta);
 
         let boundary_score = boundary_score(self.e_value, self.e_threshold);
         let score = voi_gain
@@ -783,23 +788,15 @@ impl VoiSampler {
 }
 
 fn beta_mean(alpha: f64, beta: f64) -> f64 {
-    alpha / (alpha + beta)
+    ftui_core::voi::beta_mean(alpha, beta)
 }
 
 fn beta_variance(alpha: f64, beta: f64) -> f64 {
-    let sum = alpha + beta;
-    if sum <= 0.0 {
-        return 0.0;
-    }
-    let var = (alpha * beta) / (sum * sum * (sum + 1.0));
-    var.min(VAR_MAX)
+    ftui_core::voi::beta_variance(alpha, beta).min(VAR_MAX)
 }
 
 fn expected_variance_after(alpha: f64, beta: f64) -> f64 {
-    let p = beta_mean(alpha, beta);
-    let var_success = beta_variance(alpha + 1.0, beta);
-    let var_failure = beta_variance(alpha, beta + 1.0);
-    p * var_success + (1.0 - p) * var_failure
+    ftui_core::voi::expected_variance_after(alpha, beta)
 }
 
 fn boundary_score(e_value: f64, threshold: f64) -> f64 {
