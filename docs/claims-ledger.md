@@ -45,8 +45,8 @@ The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
-As of 2026-10-16 the distribution across 156 rows is 4 pending-code,
-0 pending-doc, 59 retracted and 93 proven. Regenerate this sentence from
+As of 2026-10-16 the distribution across 157 rows is 4 pending-code,
+0 pending-doc, 58 retracted and 95 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -359,6 +359,7 @@ complete `.5.2`.
 | N07 | Explicit raw log passthrough (`write_log_raw`, `LogSink::raw`, `Cmd::log_raw`) is opt-in only and traced | README.md :: Untrusted Output Sanitization (ADR-006) | api | CODE | bd-g00-root-epic-ewths.33 | test:ftui-harness::pty_terminal_lifecycle::pty_log_raw_requires_explicit_opt_in_and_restores_termios; test:ftui-harness::pty_terminal_lifecycle::raw_log_emits_mode_and_byte_count_trace | proven | 2026-10-14 |
 | N08 | Inline mode never emits screen-clearing or alt-screen sequences (`2J`, `3J`, `?1049h`, `ESC c`) | README.md :: Untrusted Output Sanitization (ADR-006) | status | CODE | bd-g00-root-epic-ewths.33 | test:ftui-harness::proptest_flicker_invariants::inline_never_clears_screen; test:ftui-harness::pty_terminal_lifecycle::alt_screen_mode_is_the_only_path_to_1049h | proven | 2026-10-14 |
 | N09 | ADR-006 untrusted-output policy accepted with SGR-only semi-trusted mode (`write_log_sgr_only`) | docs/adr/ADR-006-untrusted-output-policy.md :: Status: ACCEPTED (2026-10-14) | status | DOC | bd-g00-root-epic-ewths.33.3 | path:docs/adr/ADR-006-untrusted-output-policy.md; test:ftui-runtime::log_sink::tests::sgr_sink_assembles_split_escapes_and_utf8_before_filtering | proven | 2026-10-14 |
+| N10 | Portable-SIMD ASCII detection and width fast-path in `ftui-simd` (`all_ascii`, `ascii_width`) wired behind opt-in `simd` feature; scalar `u128` cell comparison retained | README.md :: Portable-SIMD ASCII detection and row compare (opt-in `simd` feature) | algorithm | CODE | bd-g00-root-epic-ewths.38.2 | test:ftui-simd::first_mismatch_simd_equals_scalar; test:ftui-simd::rows_equal_simd_equals_scalar; test:ftui-simd::all_ascii_simd_equals_scalar; test:ftui-simd::lane_boundary_cases; test:ftui-simd::mismatched_lengths_return_shorter_len_or_first_diff; test:ftui-core::grapheme_width_identical_with_simd; path:docs/perf/simd_kernels_2026-09-18.md | proven | 2026-10-16 |
 
 ## Historical decision details
 

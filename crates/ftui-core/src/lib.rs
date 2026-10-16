@@ -1444,5 +1444,40 @@ pub mod text_width {
                 );
             }
         }
+
+        #[test]
+        fn grapheme_width_identical_with_simd() {
+            // Verify grapheme_width and display_width parity across CORPUS,
+            // multi-chunk ASCII strings, and mixed ASCII + Unicode strings.
+            for &grapheme in CORPUS {
+                assert_eq!(
+                    grapheme_width(grapheme),
+                    grapheme_width_uncached(grapheme),
+                    "grapheme_width parity for {grapheme:?}"
+                );
+            }
+
+            for len in [0_usize, 1, 31, 63, 64, 65, 127, 128, 129, 512, 2048] {
+                let ascii_run: String = (0..len)
+                    .map(|i| char::from(b' ' + (i % 95) as u8))
+                    .collect();
+                assert_eq!(ascii_width(&ascii_run), ascii_width_scalar(&ascii_run));
+                assert_eq!(display_width(&ascii_run), len);
+                let by_graphemes: usize = ascii_run.graphemes(true).map(grapheme_width).sum();
+                assert_eq!(display_width(&ascii_run), by_graphemes);
+            }
+
+            for &grapheme in CORPUS {
+                let mixed = format!("{}{}{}", "a".repeat(64), grapheme, "z".repeat(65));
+                assert_eq!(ascii_width(&mixed), None);
+                assert_eq!(ascii_width(&mixed), ascii_width_scalar(&mixed));
+                let expected = 64 + grapheme_width_uncached(grapheme) + 65;
+                assert_eq!(
+                    display_width(&mixed),
+                    expected,
+                    "mixed display_width for {grapheme:?}"
+                );
+            }
+        }
     }
 }
