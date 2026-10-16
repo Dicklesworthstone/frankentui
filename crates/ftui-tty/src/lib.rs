@@ -35,7 +35,7 @@ use ftui_core::input_parser::InputParser;
 use ftui_core::session_teardown::seq::{
     ALT_SCREEN_ENTER, BRACKETED_PASTE_DISABLE, BRACKETED_PASTE_ENABLE, FOCUS_DISABLE, FOCUS_ENABLE,
     KITTY_KEYBOARD_DISABLE, KITTY_KEYBOARD_ENABLE, MOUSE_DISABLE, MOUSE_DISABLE_MUX_SAFE,
-    MOUSE_ENABLE, MOUSE_ENABLE_MUX_SAFE,
+    MOUSE_ENABLE, MOUSE_ENABLE_MUX_SAFE, MOUSE_ENABLE_PIXEL, MOUSE_ENABLE_PIXEL_MUX_SAFE,
 };
 use ftui_core::session_teardown::{
     KittyPopLatch, TeardownPlan, install_chained_panic_hook, terminal_output_lock,
@@ -148,14 +148,24 @@ const fn mouse_disable_sequence_for_capabilities(
     }
 }
 
+#[cfg(test)]
 #[inline]
 const fn mouse_enable_sequence_for_capabilities(
     capabilities: TerminalCapabilities,
 ) -> &'static [u8] {
-    if capabilities.in_any_mux() {
-        MOUSE_ENABLE_MUX_SAFE
-    } else {
-        MOUSE_ENABLE
+    mouse_enable_sequence_for_options(capabilities, false)
+}
+
+#[inline]
+const fn mouse_enable_sequence_for_options(
+    capabilities: TerminalCapabilities,
+    pixel_mouse: bool,
+) -> &'static [u8] {
+    match (capabilities.in_any_mux(), pixel_mouse) {
+        (true, false) => MOUSE_ENABLE_MUX_SAFE,
+        (true, true) => MOUSE_ENABLE_PIXEL_MUX_SAFE,
+        (false, false) => MOUSE_ENABLE,
+        (false, true) => MOUSE_ENABLE_PIXEL,
     }
 }
 
@@ -419,6 +429,8 @@ pub struct TtySessionOptions {
     pub alternate_screen: bool,
     /// Initial feature toggles to enable.
     pub features: BackendFeatures,
+    /// Opt in to SGR-Pixels (`?1016h`) mouse reporting when `features.mouse_capture` is enabled.
+    pub pixel_mouse: bool,
     /// Install a signal handler to restore terminal state on SIGINT/SIGTERM/SIGHUP.
     pub intercept_signals: bool,
 }
@@ -428,6 +440,7 @@ impl Default for TtySessionOptions {
         Self {
             alternate_screen: false,
             features: BackendFeatures::default(),
+            pixel_mouse: false,
             intercept_signals: true,
         }
     }
@@ -521,6 +534,7 @@ impl Drop for ResizeSignalGuard {
 /// `InputParser`, and serves parsed events via `poll_event`/`read_event`.
 pub struct TtyEventSource {
     features: BackendFeatures,
+    pixel_mouse: bool,
     capabilities: TerminalCapabilities,
     width: u16,
     height: u16,
@@ -573,6 +587,7 @@ impl TtyEventSource {
     pub fn new(width: u16, height: u16) -> Self {
         Self {
             features: BackendFeatures::default(),
+            pixel_mouse: false,
             capabilities: TerminalCapabilities::basic(),
             width,
             height,
@@ -637,8 +652,14 @@ impl TtyEventSource {
             Err(_) => (None, None),
         };
 
+        let mut parser = InputParser::new();
+        if pw > 0 && ph > 0 && w > 0 && h > 0 {
+            parser.set_cell_size_px((pw / w).max(1), (ph / h).max(1));
+        }
+
         Ok(Self {
             features: BackendFeatures::default(),
+            pixel_mouse: false,
             capabilities,
             width: w,
             height: h,
@@ -652,7 +673,7 @@ impl TtyEventSource {
             resize_reader,
             #[cfg(unix)]
             _resize_guard: resize_guard,
-            parser: InputParser::new(),
+            parser,
             event_queue: VecDeque::new(),
             tty_reader: Some(tty_reader),
             reader_nonblocking,
@@ -670,6 +691,7 @@ impl TtyEventSource {
         let reader_nonblocking = Self::try_enable_nonblocking(&reader);
         Self {
             features: BackendFeatures::default(),
+            pixel_mouse: false,
             capabilities: TerminalCapabilities::basic(),
             width,
             height,
@@ -716,6 +738,13 @@ impl TtyEventSource {
         self.features
     }
 
+    /// Enable or disable SGR-Pixels (`?1016h`) mouse coordinate conversion.
+    pub fn set_pixel_mouse(&mut self, enabled: bool) {
+        self.pixel_mouse = enabled;
+        self.parser
+            .set_pixel_mouse(enabled && self.features.mouse_capture);
+    }
+
     #[inline]
     fn sanitize_features(&self, requested: BackendFeatures) -> BackendFeatures {
         if !self.live {
@@ -744,6 +773,8 @@ impl TtyEventSource {
         // Always allow numeric legacy mouse fallback when capture is enabled.
         // Some terminals/muxes may ignore SGR mode requests in edge cases.
         self.parser.set_allow_legacy_mouse(features.mouse_capture);
+        self.parser
+            .set_pixel_mouse(self.pixel_mouse && features.mouse_capture);
     }
 
     fn push_resize(&mut self, new_width: u16, new_height: u16) {
@@ -780,6 +811,16 @@ impl TtyEventSource {
         };
 
         let outside_grid = mouse.x >= self.width || mouse.y >= self.height;
+        if mouse.pixel.is_some() {
+            // Explicit SGR-Pixels (`?1016h`) mode: InputParser already converted
+            // pixel coordinates into cell coordinates (using XTWINOPS / cell_size_px).
+            if outside_grid && self.width > 0 && self.height > 0 {
+                mouse.x = mouse.x.min(self.width.saturating_sub(1));
+                mouse.y = mouse.y.min(self.height.saturating_sub(1));
+            }
+            return Event::Mouse(mouse);
+        }
+
         // Heuristic: Pixel coordinates are typically much larger than cell coordinates.
         // We use `width * 2` to scale with window size, but also enforce a static minimum (600)
         // to prevent false positives on wide terminals during resize races (e.g. clicking at
@@ -922,6 +963,12 @@ impl TtyEventSource {
             self.pixel_width = ws.ws_xpixel;
             self.pixel_height = ws.ws_ypixel;
             if ws.ws_col > 0 && ws.ws_row > 0 {
+                if ws.ws_xpixel > 0 && ws.ws_ypixel > 0 {
+                    self.parser.set_cell_size_px(
+                        (ws.ws_xpixel / ws.ws_col).max(1),
+                        (ws.ws_ypixel / ws.ws_row).max(1),
+                    );
+                }
                 self.push_resize(ws.ws_col, ws.ws_row);
             }
         }
@@ -1138,13 +1185,24 @@ impl TtyEventSource {
     }
 
     /// Write the escape sequences needed to transition from current to new features.
+    #[cfg(test)]
     fn write_feature_delta(
         current: &BackendFeatures,
         new: &BackendFeatures,
         capabilities: TerminalCapabilities,
         writer: &mut impl Write,
     ) -> io::Result<()> {
-        let mouse_enable_seq = mouse_enable_sequence_for_capabilities(capabilities);
+        Self::write_feature_delta_for_options(current, new, capabilities, false, writer)
+    }
+
+    fn write_feature_delta_for_options(
+        current: &BackendFeatures,
+        new: &BackendFeatures,
+        capabilities: TerminalCapabilities,
+        pixel_mouse: bool,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        let mouse_enable_seq = mouse_enable_sequence_for_options(capabilities, pixel_mouse);
         let mouse_disable_seq = mouse_disable_sequence_for_capabilities(capabilities);
         Self::write_feature_delta_with_mouse(
             current,
@@ -1204,7 +1262,13 @@ impl TtyEventSource {
     #[allow(dead_code)]
     fn disable_all(&mut self, writer: &mut impl Write) -> io::Result<()> {
         let off = BackendFeatures::default();
-        Self::write_feature_delta(&self.features, &off, self.capabilities, writer)?;
+        Self::write_feature_delta_for_options(
+            &self.features,
+            &off,
+            self.capabilities,
+            self.pixel_mouse,
+            writer,
+        )?;
         self.apply_feature_state(off);
         Ok(())
     }
@@ -1226,10 +1290,11 @@ impl BackendEventSource for TtyEventSource {
         if self.live {
             let _output_guard = terminal_output_lock();
             let mut stdout = io::stdout();
-            if let Err(err) = Self::write_feature_delta(
+            if let Err(err) = Self::write_feature_delta_for_options(
                 &self.features,
                 &effective_features,
                 self.capabilities,
+                self.pixel_mouse,
                 &mut stdout,
             )
             .and_then(|_| stdout.flush())
@@ -1421,12 +1486,14 @@ impl TtyBackend {
         let capabilities = TerminalCapabilities::with_overrides();
         let requested_features = options.features;
         let effective_features = sanitize_feature_request(requested_features, capabilities);
+        let effective_pixel_mouse = options.pixel_mouse && effective_features.mouse_capture;
 
         let mut stdout = io::stdout();
         let mut alt_screen_active = false;
 
         // Enable initial features.
         let mut events = TtyEventSource::live(width, height, capabilities)?;
+        events.set_pixel_mouse(effective_pixel_mouse);
         let _output_guard = terminal_output_lock();
         let setup: io::Result<()> = (|| {
             // Enter alt screen if requested.
@@ -1437,10 +1504,11 @@ impl TtyBackend {
                 alt_screen_active = true;
             }
 
-            TtyEventSource::write_feature_delta(
+            TtyEventSource::write_feature_delta_for_options(
                 &BackendFeatures::default(),
                 &effective_features,
                 capabilities,
+                effective_pixel_mouse,
                 &mut stdout,
             )?;
 
@@ -1557,10 +1625,11 @@ impl TtyBackend {
             stdout.write_all(CURSOR_HOME)?;
             self.alt_screen_active = true;
         }
-        TtyEventSource::write_feature_delta(
+        TtyEventSource::write_feature_delta_for_options(
             &BackendFeatures::default(),
             &session.features,
             self.events.capabilities,
+            self.events.pixel_mouse,
             &mut stdout,
         )?;
         stdout.flush()?;
@@ -2063,6 +2132,7 @@ mod tests {
                 x: 9,
                 y: 19,
                 modifiers: Modifiers::NONE,
+                pixel: None,
             })
         );
     }
@@ -2091,6 +2161,7 @@ mod tests {
                 x: 9,
                 y: 19,
                 modifiers: Modifiers::NONE,
+                pixel: None,
             })
         );
     }
@@ -2140,6 +2211,7 @@ mod tests {
                 x: 9,
                 y: 19,
                 modifiers: Modifiers::NONE,
+                pixel: None,
             })
         );
     }
@@ -2223,6 +2295,7 @@ mod tests {
                 x: 4,
                 y: 4,
                 modifiers: Modifiers::NONE,
+                pixel: None,
             })
         );
     }
@@ -3452,6 +3525,7 @@ mod tests {
             x: 500,
             y: 400,
             modifiers: Modifiers::NONE,
+            pixel: None,
         });
         let normalized = src.normalize_event(event);
 
@@ -3503,6 +3577,7 @@ mod tests {
             x: 50,
             y: 10,
             modifiers: Modifiers::NONE,
+            pixel: None,
         });
         let normalized = src.normalize_event(event.clone());
         assert_eq!(
@@ -3529,6 +3604,7 @@ mod tests {
             x: 700,
             y: 500,
             modifiers: Modifiers::NONE,
+            pixel: None,
         });
         let _ = src.normalize_event(first);
         assert!(
@@ -3541,6 +3617,7 @@ mod tests {
             x: 100,
             y: 20,
             modifiers: Modifiers::NONE,
+            pixel: None,
         });
         let normalized = src.normalize_event(second);
         let mouse = match normalized {
@@ -3587,6 +3664,7 @@ mod tests {
             x: 700,
             y: 500,
             modifiers: Modifiers::NONE,
+            pixel: None,
         });
         let normalized_first = src.normalize_event(first);
         let first_mouse = match normalized_first {
@@ -3603,6 +3681,7 @@ mod tests {
             x: 250,
             y: 200,
             modifiers: Modifiers::NONE,
+            pixel: None,
         });
         let normalized = src.normalize_event(second);
         let mouse = match normalized {
@@ -3636,6 +3715,7 @@ mod tests {
             x: 100,
             y: 40,
             modifiers: Modifiers::NONE,
+            pixel: None,
         });
         let normalized = src.normalize_event(near_edge);
         let mouse = match normalized {
@@ -3656,6 +3736,7 @@ mod tests {
             x: 50,
             y: 20,
             modifiers: Modifiers::NONE,
+            pixel: None,
         });
         let normalized_follow_up = src.normalize_event(follow_up);
         assert_eq!(
@@ -3665,6 +3746,7 @@ mod tests {
                 x: 50,
                 y: 20,
                 modifiers: Modifiers::NONE,
+                pixel: None,
             }),
             "normal cell-space events should remain unchanged after edge clamp"
         );

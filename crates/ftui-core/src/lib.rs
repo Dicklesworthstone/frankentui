@@ -50,6 +50,9 @@ pub mod terminal_capabilities;
 pub mod terminal_session;
 pub use session_teardown::with_panic_cleanup_suppressed;
 
+/// Tracing target for input parser protocol events (DCS, APC, XTWINOPS, SGR-Pixels).
+pub const TARGET_INPUT_PARSER: &str = "ftui.input.parser";
+
 pub mod shutdown_signal {
     //! Process-wide graceful-termination signal state shared by runtime and backends.
     //!

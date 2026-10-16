@@ -174,6 +174,11 @@ fn event_payload_bytes(event: &Event) -> usize {
         Event::Paste(paste) => paste.text.capacity(),
         Event::Ime(ime) => ime.text.capacity(),
         Event::Clipboard(clipboard) => clipboard.content.capacity(),
+        Event::TerminalResponse(resp) => match resp {
+            ftui_core::event::TerminalResponse::Dcs { payload, .. }
+            | ftui_core::event::TerminalResponse::Apc { payload, .. } => payload.capacity(),
+            ftui_core::event::TerminalResponse::CellSize { .. } => 0,
+        },
         Event::Key(_) | Event::Mouse(_) | Event::Resize { .. } | Event::Focus(_) | Event::Tick => 0,
     }
 }

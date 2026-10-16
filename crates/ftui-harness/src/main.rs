@@ -978,8 +978,15 @@ impl Model for AgentHarness {
                     MouseEventKind::ScrollLeft => "ScrollLeft".to_string(),
                     MouseEventKind::ScrollRight => "ScrollRight".to_string(),
                 };
-                self.log_viewer
-                    .push(format!("Mouse: {} @ {},{}", kind, mouse.x, mouse.y));
+                let msg = if let Some((px, py)) = mouse.pixel {
+                    format!(
+                        "Mouse: {} @ {},{} pixel=({}, {})",
+                        kind, mouse.x, mouse.y, px, py
+                    )
+                } else {
+                    format!("Mouse: {} @ {},{}", kind, mouse.x, mouse.y)
+                };
+                self.log_viewer.push(msg);
                 Cmd::None
             }
             Msg::Paste(paste) => {
@@ -2025,6 +2032,7 @@ fn run_log_injection(mode: &str) -> io::Result<()> {
             focus_events: false,
             kitty_keyboard: false,
             intercept_signals: false,
+            pixel_mouse: false,
         })?;
         let (width, height) = session.size()?;
         let mut caps = TerminalCapabilities::basic();
@@ -2197,6 +2205,7 @@ fn run_writer_session(mode: &str) -> io::Result<()> {
             focus_events: false,
             kitty_keyboard: false,
             intercept_signals: false,
+            pixel_mouse: false,
         })?;
         // OSC markers cannot be forged by the sanitized logs or ASCII frames.
         io::stdout().write_all(b"\x1b]777;SESSION_ACTIVE\x07")?;
@@ -2474,9 +2483,14 @@ fn main() -> std::io::Result<()> {
         _ => HarnessView::Default,
     };
 
-    let enable_mouse = std::env::var("FTUI_HARNESS_ENABLE_MOUSE")
-        .ok()
-        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    let mouse_env = std::env::var("FTUI_HARNESS_ENABLE_MOUSE").ok();
+    let pixel_mouse = mouse_env
+        .as_deref()
+        .is_some_and(|v| v.eq_ignore_ascii_case("pixel") || v == "1016");
+    let enable_mouse = pixel_mouse
+        || mouse_env
+            .as_deref()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
     let enable_focus = std::env::var("FTUI_HARNESS_ENABLE_FOCUS")
         .ok()
@@ -2513,6 +2527,7 @@ fn main() -> std::io::Result<()> {
         } else {
             MouseCapturePolicy::Off
         },
+        pixel_mouse,
         focus_reporting: enable_focus,
         kitty_keyboard: enable_kitty_keyboard,
         ..Default::default()

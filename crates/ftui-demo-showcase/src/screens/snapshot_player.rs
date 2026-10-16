@@ -2095,6 +2095,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: mid_x,
             y: mid_y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         });
         player.update(&event);
@@ -2126,6 +2127,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: preview.x + 1,
             y: preview.y + 1,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         });
         player.update(&event);
@@ -2147,6 +2149,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Right),
             x: timeline.x + 1,
             y: timeline.y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         });
         player.update(&event);
@@ -2168,6 +2171,7 @@ mod tests {
             kind: MouseEventKind::ScrollUp,
             x: timeline.x + 1,
             y: timeline.y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         });
         player.update(&event);
@@ -2177,6 +2181,7 @@ mod tests {
             kind: MouseEventKind::ScrollDown,
             x: timeline.x + 1,
             y: timeline.y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         });
         player.update(&event);
@@ -2198,6 +2203,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: timeline.x,
             y: timeline.y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         }));
         assert!(player.timeline_scrubbing);
@@ -2206,6 +2212,7 @@ mod tests {
             kind: MouseEventKind::Drag(MouseButton::Left),
             x: timeline.x + timeline.width.saturating_sub(1),
             y: timeline.y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         }));
         assert_eq!(player.current_frame, player.frame_count().saturating_sub(1));
@@ -2227,6 +2234,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: timeline.x,
             y: timeline.y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         }));
 
@@ -2234,6 +2242,7 @@ mod tests {
             kind: MouseEventKind::Drag(MouseButton::Left),
             x: timeline.x.saturating_add(timeline.width).saturating_add(25),
             y: timeline.y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         }));
         assert_eq!(player.current_frame, player.frame_count().saturating_sub(1));
@@ -2255,12 +2264,14 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: timeline.x,
             y: timeline.y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         }));
         player.update(&Event::Mouse(ftui_core::event::MouseEvent {
             kind: MouseEventKind::Drag(MouseButton::Left),
             x: mid_x,
             y: timeline.y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         }));
         let scrubbed_frame = player.current_frame;
@@ -2269,6 +2280,7 @@ mod tests {
             kind: MouseEventKind::Up(MouseButton::Left),
             x: mid_x,
             y: timeline.y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         }));
         assert!(!player.timeline_scrubbing);
@@ -2277,6 +2289,7 @@ mod tests {
             kind: MouseEventKind::Moved,
             x: timeline.x,
             y: timeline.y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         }));
         assert_eq!(player.current_frame, scrubbed_frame);

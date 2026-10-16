@@ -58,6 +58,7 @@ fn pty_inline_mode_restores_terminal_and_uses_cursor_save_restore() {
         focus_events: false,
         kitty_keyboard: false,
         intercept_signals: true,
+        pixel_mouse: false,
     };
     let expectations = CleanupExpectations::for_session(&options);
     assert_terminal_restored(&output, &expectations)
@@ -92,6 +93,7 @@ fn pty_alt_screen_restores_terminal() {
         focus_events: false,
         kitty_keyboard: false,
         intercept_signals: true,
+        pixel_mouse: false,
     };
     let expectations = CleanupExpectations::for_session(&options);
     assert_terminal_restored(&output, &expectations)

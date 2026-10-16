@@ -26,6 +26,9 @@ source "$LIB_DIR/pty.sh"
 E2E_SUITE_SCRIPT="$SCRIPT_DIR/test_mouse_sgr.sh"
 export E2E_SUITE_SCRIPT
 export PTY_CANONICALIZE=1
+if [[ -z "${TERM:-}" || "${TERM:-}" == "dumb" ]]; then
+    export TERM="xterm-256color"
+fi
 ONLY_CASE="${E2E_ONLY_CASE:-}"
 
 # All test cases for skip reporting
@@ -41,6 +44,7 @@ ALL_CASES=(
     mouse_shift_click
     mouse_ctrl_click
     mouse_alt_click
+    mouse_sgr_pixels_1016
 )
 
 if [[ ! -x "${E2E_HARNESS_BIN:-}" ]]; then
@@ -319,6 +323,29 @@ mouse_alt_click() {
     grep -a -q "Mouse: Down(Left)" "$canonical_file" || return 1
 }
 
+mouse_sgr_pixels_1016() {
+    LOG_FILE="$E2E_LOG_DIR/mouse_sgr_pixels_1016.log"
+    local output_file="$E2E_LOG_DIR/mouse_sgr_pixels_1016.pty"
+
+    log_test_start "mouse_sgr_pixels_1016"
+    PTY_TEST_NAME="mouse_sgr_pixels_1016"
+
+    # XTWINOPS cell size (CSI 6;16;8t -> height=16, width=8) followed by
+    # SGR-Pixels left press + release at (160, 80) -> cell (20, 5), pixel=(160, 80).
+    PTY_SEND=$'\x1b[6;16;8t\x1b[<0;160;80M\x1b[<0;160;80m' \
+    PTY_SEND_DELAY_MS=300 \
+    FTUI_HARNESS_ENABLE_MOUSE=pixel \
+    FTUI_HARNESS_EXIT_AFTER_MS=1500 \
+    PTY_TIMEOUT=4 \
+        pty_run "$output_file" "$E2E_HARNESS_BIN"
+
+    local canonical_file="${PTY_CANONICAL_FILE:-$output_file}"
+    grep -a -F -q $'\x1b[?1000h\x1b[?1002h\x1b[?1016h' "$output_file" || return 1
+    grep -a -F -q $'\x1b[?1016l' "$output_file" || return 1
+    grep -a -F -q "Mouse: Down(Left) @ 20,5 pixel=(160, 80)" "$canonical_file" || return 1
+    grep -a -F -q "Mouse: Up(Left) @ 20,5 pixel=(160, 80)" "$canonical_file" || return 1
+}
+
 FAILURES=0
 
 # Basic button tests
@@ -341,5 +368,8 @@ run_case "mouse_large_coords" mouse_large_coords             || FAILURES=$((FAIL
 run_case "mouse_shift_click" mouse_shift_click               || FAILURES=$((FAILURES + 1))
 run_case "mouse_ctrl_click" mouse_ctrl_click                 || FAILURES=$((FAILURES + 1))
 run_case "mouse_alt_click" mouse_alt_click                   || FAILURES=$((FAILURES + 1))
+
+# SGR-Pixels (1016)
+run_case "mouse_sgr_pixels_1016" mouse_sgr_pixels_1016       || FAILURES=$((FAILURES + 1))
 
 exit "$FAILURES"

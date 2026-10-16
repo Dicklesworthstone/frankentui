@@ -1756,6 +1756,7 @@ mod robustness_tests {
             kind,
             x,
             y,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::empty(),
         }
     }

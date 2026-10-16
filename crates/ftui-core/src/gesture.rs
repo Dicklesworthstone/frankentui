@@ -530,6 +530,7 @@ mod tests {
             x,
             y,
             modifiers: Modifiers::NONE,
+            pixel: None,
         })
     }
 
@@ -539,6 +540,7 @@ mod tests {
             x,
             y,
             modifiers: Modifiers::NONE,
+            pixel: None,
         })
     }
 
@@ -548,6 +550,7 @@ mod tests {
             x,
             y,
             modifiers: Modifiers::NONE,
+            pixel: None,
         })
     }
 
@@ -1635,6 +1638,7 @@ mod tests {
             x,
             y,
             modifiers: Modifiers::NONE,
+            pixel: None,
         })
     }
 
@@ -1644,6 +1648,7 @@ mod tests {
             x,
             y,
             modifiers: Modifiers::NONE,
+            pixel: None,
         })
     }
 
@@ -1653,6 +1658,7 @@ mod tests {
             x,
             y,
             modifiers: Modifiers::NONE,
+            pixel: None,
         })
     }
 

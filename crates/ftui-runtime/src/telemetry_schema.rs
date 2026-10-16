@@ -69,6 +69,9 @@ pub const TARGET_WIDTH_CACHE: &str = "ftui.text.width_cache";
 /// Runtime locale and text direction changes.
 pub const TARGET_LOCALE: &str = "ftui.runtime.locale";
 
+/// Input parser protocol events (DCS, APC, XTWINOPS, SGR-Pixels).
+pub const TARGET_INPUT_PARSER: &str = "ftui.input.parser";
+
 // ============================================================================
 // Span names
 // ============================================================================
@@ -322,6 +325,7 @@ pub const ALL_TARGETS: &[&str] = &[
     TARGET_A11Y,
     TARGET_WIDTH_CACHE,
     TARGET_LOCALE,
+    TARGET_INPUT_PARSER,
 ];
 
 /// Complete list of registered span names.

@@ -207,11 +207,13 @@ const KITTY_KEYBOARD_DISABLE: &[u8] = seq::KITTY_KEYBOARD_DISABLE;
 // NOTE: Set SGR format (1006) before enabling mouse event modes for better
 // compatibility with terminals that key off "last mode set" ordering.
 const MOUSE_ENABLE_SEQ: &[u8] = seq::MOUSE_ENABLE;
+const MOUSE_ENABLE_PIXEL_SEQ: &[u8] = seq::MOUSE_ENABLE_PIXEL;
 // Conservative mouse enable sequence for mux sessions and runtime toggles.
 // Keep to split DECSET/DECRST forms (better passthrough behavior), but still
 // reset alternate encodings so the inner terminal doesn't get "stuck" in a
 // format our parser won't decode.
 const MOUSE_ENABLE_MUX_SAFE_SEQ: &[u8] = seq::MOUSE_ENABLE_MUX_SAFE;
+const MOUSE_ENABLE_PIXEL_MUX_SAFE_SEQ: &[u8] = seq::MOUSE_ENABLE_PIXEL_MUX_SAFE;
 const MOUSE_DISABLE_SEQ: &[u8] = seq::MOUSE_DISABLE;
 // Conservative mouse disable sequence for mux/panic cleanup paths. Keeps
 // parser surface minimal while still restoring canonical capture modes and
@@ -298,6 +300,14 @@ pub struct SessionOptions {
     /// - SGR extended coordinates (1006) - supports coordinates > 223
     pub mouse_capture: bool,
 
+    /// Opt in to SGR-Pixels (`?1016h`) mouse coordinates when `mouse_capture`
+    /// is enabled.
+    ///
+    /// When `true`, `\x1b[?1016h` is emitted *after* `\x1b[?1006h` so terminals
+    /// that support 1016 switch to pixel reporting while terminals that do not
+    /// remain in 1006 cell mode. Defaults to `false`.
+    pub pixel_mouse: bool,
+
     /// Enable bracketed paste mode (`CSI ? 2004 h`).
     ///
     /// When enabled, pasted text is wrapped in escape sequences:
@@ -333,6 +343,7 @@ impl Default for SessionOptions {
         Self {
             alternate_screen: false,
             mouse_capture: false,
+            pixel_mouse: false,
             bracketed_paste: false,
             focus_events: false,
             kitty_keyboard: false,
@@ -350,6 +361,7 @@ fn sanitize_session_options(
     let kitty_keyboard_supported = capabilities.kitty_keyboard && !capabilities.in_any_mux();
 
     requested.mouse_capture = requested.mouse_capture && capabilities.mouse_sgr;
+    requested.pixel_mouse = requested.pixel_mouse && requested.mouse_capture;
     requested.bracketed_paste = requested.bracketed_paste && capabilities.bracketed_paste;
     requested.focus_events = requested.focus_events && focus_events_supported;
     requested.kitty_keyboard = requested.kitty_keyboard && kitty_keyboard_supported;
@@ -437,12 +449,22 @@ struct SuspendedFeatures {
 }
 
 impl TerminalSession {
+    #[cfg(test)]
     #[inline]
     fn mouse_enable_sequence_for_caps(caps: &TerminalCapabilities) -> &'static [u8] {
-        if caps.in_any_mux() {
-            MOUSE_ENABLE_MUX_SAFE_SEQ
-        } else {
-            MOUSE_ENABLE_SEQ
+        Self::mouse_enable_sequence_for_options(caps, false)
+    }
+
+    #[inline]
+    fn mouse_enable_sequence_for_options(
+        caps: &TerminalCapabilities,
+        pixel_mouse: bool,
+    ) -> &'static [u8] {
+        match (caps.in_any_mux(), pixel_mouse) {
+            (true, false) => MOUSE_ENABLE_MUX_SAFE_SEQ,
+            (true, true) => MOUSE_ENABLE_PIXEL_MUX_SAFE_SEQ,
+            (false, false) => MOUSE_ENABLE_SEQ,
+            (false, true) => MOUSE_ENABLE_PIXEL_SEQ,
         }
     }
 
@@ -519,7 +541,8 @@ impl TerminalSession {
 
         if options.mouse_capture {
             session.mouse_enabled = true;
-            let enable_seq = Self::mouse_enable_sequence_for_caps(&capabilities);
+            let enable_seq =
+                Self::mouse_enable_sequence_for_options(&capabilities, options.pixel_mouse);
             stdout.write_all(enable_seq)?;
             stdout.flush()?;
             #[cfg(feature = "tracing")]
@@ -832,7 +855,8 @@ impl TerminalSession {
 
         let mut stdout = io::stdout();
         let write_result = if enabled {
-            let enable_seq = Self::mouse_enable_sequence_for_caps(&caps);
+            let enable_seq =
+                Self::mouse_enable_sequence_for_options(&caps, self.options.pixel_mouse);
             stdout.write_all(enable_seq).and_then(|_| stdout.flush())
         } else {
             let disable_seq = Self::mouse_disable_sequence_for_caps(&caps);
@@ -894,7 +918,8 @@ impl TerminalSession {
         let start = web_time::Instant::now();
         let mut stdout = io::stdout();
         let result = if enabled {
-            let enable_seq = Self::mouse_enable_sequence_for_caps(&caps);
+            let enable_seq =
+                Self::mouse_enable_sequence_for_options(&caps, self.options.pixel_mouse);
             let r = stdout.write_all(enable_seq).and_then(|_| stdout.flush());
             if r.is_ok() {
                 self.mouse_enabled = true;
@@ -1087,7 +1112,10 @@ impl TerminalSession {
         }
         if features.mouse {
             self.mouse_enabled = true;
-            stdout.write_all(Self::mouse_enable_sequence_for_caps(&caps))?;
+            stdout.write_all(Self::mouse_enable_sequence_for_options(
+                &caps,
+                self.options.pixel_mouse,
+            ))?;
         }
         if features.bracketed_paste {
             self.bracketed_paste_enabled = true;
@@ -1386,6 +1414,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: false,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let cloned = opts.clone();
         assert_eq!(cloned.alternate_screen, opts.alternate_screen);
@@ -1664,6 +1693,38 @@ mod tests {
     }
 
     #[test]
+    fn mouse_enable_pixel_opt_in_orders_1006_before_1016() {
+        let caps = TerminalCapabilities::modern();
+        let cell_seq = TerminalSession::mouse_enable_sequence_for_options(&caps, false);
+        assert!(
+            cell_seq
+                .windows(b"\x1b[?1016l".len())
+                .any(|w| w == b"\x1b[?1016l"),
+            "pixel_mouse=false must clear 1016l"
+        );
+        assert!(
+            !cell_seq
+                .windows(b"\x1b[?1016h".len())
+                .any(|w| w == b"\x1b[?1016h"),
+            "pixel_mouse=false must not enable 1016h"
+        );
+
+        let pixel_seq = TerminalSession::mouse_enable_sequence_for_options(&caps, true);
+        let pos_1006h = pixel_seq
+            .windows(b"\x1b[?1006h".len())
+            .position(|w| w == b"\x1b[?1006h")
+            .expect("pixel_mouse=true must include ?1006h fallback");
+        let pos_1016h = pixel_seq
+            .windows(b"\x1b[?1016h".len())
+            .position(|w| w == b"\x1b[?1016h")
+            .expect("pixel_mouse=true must include ?1016h");
+        assert!(
+            pos_1006h < pos_1016h,
+            "?1006h must precede ?1016h so terminals supporting 1016 switch to pixel mode while others stay in 1006 cell mode"
+        );
+    }
+
+    #[test]
     fn mouse_disable_mux_safe_sequence_clears_1016() {
         let mux_caps = TerminalCapabilities::builder()
             .mouse_sgr(true)
@@ -1711,6 +1772,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let caps = TerminalCapabilities::basic();
         let sanitized = sanitize_session_options(requested, &caps);
@@ -1731,6 +1793,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let caps = TerminalCapabilities::builder()
             .mouse_sgr(true)
@@ -1757,6 +1820,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let caps = TerminalCapabilities::builder()
             .mouse_sgr(true)
@@ -1857,6 +1921,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         assert!(opts.alternate_screen);
         assert!(opts.mouse_capture);
@@ -1874,6 +1939,7 @@ mod tests {
             focus_events: false,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let debug = format!("{opts:?}");
         assert!(debug.contains("alternate_screen: true"), "{debug}");
@@ -1923,6 +1989,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let session = TerminalSession::new_for_tests(opts).unwrap();
         let stored = session.options();
@@ -1944,6 +2011,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let session = TerminalSession::new_for_tests(opts).unwrap();
         // Flags track *actual* enabled state, not *requested* state
@@ -2058,6 +2126,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         })
         .unwrap();
         // Manually set flags to simulate features being enabled
@@ -2115,6 +2184,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         })
         .unwrap();
         session.alternate_screen_enabled = true;
@@ -2175,6 +2245,7 @@ mod tests {
                     focus_events: true,
                     kitty_keyboard: true,
                     intercept_signals: true,
+                    pixel_mouse: false,
                 })
                 .expect("TerminalSession::new should succeed in PTY");
                 panic!("intentional panic to exercise cleanup");

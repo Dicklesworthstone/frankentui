@@ -5214,8 +5214,17 @@ os._exit(7)
 
     #[cfg(unix)]
     fn shell(script: &str) -> ProcessSubscription<ProcessEvent> {
-        ProcessSubscription::new("sh", |event| event)
-            .args(["-c", script])
+        // Non-interactive background test runners (e.g. remote SSH jobs) can
+        // start `cargo test` with `SIGINT = SIG_IGN`, which POSIX `sh` refuses
+        // to override in `trap ... INT`. Resetting `SIGINT` to `SIG_DFL` before
+        // `execvp("sh", ...)` preserves the exact process/PGID while ensuring
+        // shell traps behave identically to an interactive terminal.
+        ProcessSubscription::new("python3", |event| event)
+            .args([
+                "-c",
+                "import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execvp('sh', ['sh', '-c', sys.argv[1]])",
+                script,
+            ])
             .timeout(Duration::from_secs(10))
     }
 

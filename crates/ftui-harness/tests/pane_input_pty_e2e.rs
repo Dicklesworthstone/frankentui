@@ -653,6 +653,7 @@ fn pty_escape_cancels_armed_interaction_cleanly() {
                 focus_events: false,
                 kitty_keyboard: false,
                 intercept_signals: true,
+                pixel_mouse: false,
             };
             assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
                 .expect("cancel restores terminal modes");
@@ -723,6 +724,7 @@ fn pty_escape_cancels_dragging_without_committing_or_mutating_again() {
                 focus_events: false,
                 kitty_keyboard: false,
                 intercept_signals: true,
+                pixel_mouse: false,
             };
             assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
                 .expect("drag cancel restores terminal modes");
@@ -798,6 +800,7 @@ fn pty_cancel_preserves_real_undo_history_and_keyboard_pane_focus() {
                     focus_events: false,
                     kitty_keyboard: false,
                     intercept_signals: true,
+                    pixel_mouse: false,
                 };
                 assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
                     .expect("history/focus cancel restores terminal modes");
@@ -846,6 +849,7 @@ fn pty_safety_timeout_restores_terminal_with_an_uncommitted_pointer() {
                 focus_events: false,
                 kitty_keyboard: false,
                 intercept_signals: true,
+                pixel_mouse: false,
             };
             assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
                 .expect("safety expiry restores terminal modes");
@@ -934,6 +938,7 @@ fn pty_keyboard_resize_across_terminal_capability_matrix() {
             focus_events: false,
             kitty_keyboard: false,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let expectations = CleanupExpectations::for_session(&options);
         assert_terminal_restored(&output, &expectations)

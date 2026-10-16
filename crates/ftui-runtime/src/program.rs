@@ -3398,6 +3398,13 @@ pub struct ProgramConfig {
     /// events are coalesced so intermediate states do not trigger redundant
     /// updates and renders. The recognizer still receives all raw events.
     pub event_coalescing: bool,
+    /// Opt into SGR-Pixels (`DECSET ?1016h`) mouse reporting when mouse capture
+    /// is enabled (`false` by default).
+    pub pixel_mouse: bool,
+    /// Forward [`Event::TerminalResponse`] (DCS/APC/XTWINOPS replies) to
+    /// [`Model::update`] instead of consuming them inside `Program` (`false`
+    /// by default).
+    pub deliver_terminal_responses: bool,
 }
 
 impl Default for ProgramConfig {
@@ -3443,6 +3450,8 @@ impl Default for ProgramConfig {
             runtime_lane: RuntimeLane::default(),
             rollout_policy: RolloutPolicy::default(),
             event_coalescing: false,
+            pixel_mouse: false,
+            deliver_terminal_responses: false,
         }
     }
 }
@@ -3495,6 +3504,20 @@ impl ProgramConfig {
     #[must_use]
     pub fn with_event_coalescing(mut self, enabled: bool) -> Self {
         self.event_coalescing = enabled;
+        self
+    }
+
+    /// Opt into SGR-Pixels (`DECSET ?1016h`) mouse reporting.
+    #[must_use]
+    pub fn with_pixel_mouse(mut self, enabled: bool) -> Self {
+        self.pixel_mouse = enabled;
+        self
+    }
+
+    /// Forward [`Event::TerminalResponse`] replies to [`Model::update`].
+    #[must_use]
+    pub fn with_deliver_terminal_responses(mut self, enabled: bool) -> Self {
+        self.deliver_terminal_responses = enabled;
         self
     }
 
@@ -5440,6 +5463,8 @@ pub struct Program<
     startup_events: Vec<Event>,
     /// Preserve sequence state across successive recovered byte chunks.
     startup_parser: ftui_core::input_parser::InputParser,
+    /// Forward [`Event::TerminalResponse`] replies to [`Model::update`].
+    deliver_terminal_responses: bool,
     /// Per-frame bump arena for temporary render-path allocations.
     frame_arena: FrameArena,
     /// Unified frame guardrails (memory/queue limits).
@@ -5488,6 +5513,7 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
         let session = TerminalSession::new(SessionOptions {
             alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
             mouse_capture: initial_features.mouse_capture,
+            pixel_mouse: config.pixel_mouse,
             bracketed_paste: initial_features.bracketed_paste,
             focus_events: initial_features.focus_events,
             kitty_keyboard: initial_features.kitty_keyboard,
@@ -5608,6 +5634,9 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
             .then(ftui_core::job_control::JobControlClaim::acquire)
             .flatten();
 
+        let mut startup_parser = ftui_core::input_parser::InputParser::new();
+        startup_parser.set_pixel_mouse(config.pixel_mouse);
+
         Ok(Self {
             model,
             presenter: TerminalPresenter::new(writer),
@@ -5631,7 +5660,8 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
             a11y_changed: false,
             a11y_dropped: 0,
             startup_events: Vec::new(),
-            startup_parser: ftui_core::input_parser::InputParser::new(),
+            startup_parser,
+            deliver_terminal_responses: config.deliver_terminal_responses,
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -5787,6 +5817,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             .then(ftui_core::job_control::JobControlClaim::acquire)
             .flatten();
 
+        let mut startup_parser = ftui_core::input_parser::InputParser::new();
+        startup_parser.set_pixel_mouse(config.pixel_mouse);
+
         Ok(Self {
             model,
             presenter,
@@ -5810,7 +5843,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             a11y_changed: false,
             a11y_dropped: 0,
             startup_events: Vec::new(),
-            startup_parser: ftui_core::input_parser::InputParser::new(),
+            startup_parser,
+            deliver_terminal_responses: config.deliver_terminal_responses,
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -5929,6 +5963,7 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, TerminalPresenter<Stdout>> {
         let options = ftui_tty::TtySessionOptions {
             alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
             features,
+            pixel_mouse: config.pixel_mouse,
             intercept_signals: config.intercept_signals,
         };
         let backend = ftui_tty::TtyBackend::open(0, 0, options)?;
@@ -6877,6 +6912,14 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                     }
                 }
             }
+            Event::TerminalResponse(ref resp) => {
+                self.on_terminal_response(resp);
+                if !self.deliver_terminal_responses {
+                    self.record_fairness_event(fairness_event_type, event_start.elapsed());
+                    return Ok(());
+                }
+                event
+            }
             other => other,
         };
 
@@ -6933,6 +6976,38 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         self.record_fairness_event(fairness_event_type, event_start.elapsed());
 
         Ok(())
+    }
+
+    fn on_terminal_response(&mut self, resp: &ftui_core::event::TerminalResponse) {
+        match resp {
+            ftui_core::event::TerminalResponse::Dcs { payload, truncated } => {
+                debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
+                    payload_len = payload.len(),
+                    truncated,
+                    "terminal DCS response received"
+                );
+            }
+            ftui_core::event::TerminalResponse::Apc { payload, truncated } => {
+                debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
+                    payload_len = payload.len(),
+                    truncated,
+                    "terminal APC response received"
+                );
+            }
+            ftui_core::event::TerminalResponse::CellSize { width, height } => {
+                debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
+                    cell_width_px = width,
+                    cell_height_px = height,
+                    "terminal cell-size response received"
+                );
+                if *width > 0 && *height > 0 {
+                    self.startup_parser.set_cell_size_px(*width, *height);
+                }
+            }
+        }
     }
 
     fn record_fairness_event(&mut self, event_type: FairnessEventType, duration: Duration) {
@@ -7023,7 +7098,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             | Event::Paste(_)
             | Event::Ime(_)
             | Event::Focus(_)
-            | Event::Clipboard(_) => FairnessEventType::Input,
+            | Event::Clipboard(_)
+            | Event::TerminalResponse(_) => FairnessEventType::Input,
             Event::Resize { .. } => FairnessEventType::Resize,
             Event::Tick => FairnessEventType::Tick,
         }
@@ -13346,6 +13422,9 @@ mod tests {
         )
         .expect("task executor");
 
+        let mut startup_parser = ftui_core::input_parser::InputParser::new();
+        startup_parser.set_pixel_mouse(config.pixel_mouse);
+
         Program {
             model,
             presenter: TerminalPresenter::new(writer),
@@ -13369,7 +13448,8 @@ mod tests {
             a11y_changed: false,
             a11y_dropped: 0,
             startup_events: Vec::new(),
-            startup_parser: ftui_core::input_parser::InputParser::new(),
+            startup_parser,
+            deliver_terminal_responses: config.deliver_terminal_responses,
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -15666,6 +15746,7 @@ mod tests {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 x: 3,
                 y: 3,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             }))
             .unwrap();
@@ -15734,6 +15815,7 @@ mod tests {
                 kind,
                 x,
                 y,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             })
         };
@@ -15836,6 +15918,7 @@ mod tests {
                     kind: MouseEventKind::Moved,
                     x: i,
                     y: i,
+                    pixel: None,
                     modifiers: Modifiers::NONE,
                 }))
                 .unwrap();
@@ -15872,6 +15955,7 @@ mod tests {
                     kind: MouseEventKind::Moved,
                     x: i,
                     y: i * 2,
+                    pixel: None,
                     modifiers: Modifiers::NONE,
                 }))
                 .unwrap();
@@ -15925,6 +16009,7 @@ mod tests {
                     kind: MouseEventKind::ScrollUp,
                     x: 10,
                     y: 20,
+                    pixel: None,
                     modifiers: Modifiers::NONE,
                 }))
                 .unwrap();
@@ -15982,6 +16067,7 @@ mod tests {
                 kind: MouseEventKind::ScrollUp,
                 x: 5,
                 y: 5,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             }))
             .unwrap();
@@ -15996,6 +16082,7 @@ mod tests {
                 kind: MouseEventKind::ScrollDown,
                 x: 6,
                 y: 6,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             }))
             .unwrap();
@@ -16044,6 +16131,7 @@ mod tests {
                 kind: MouseEventKind::Moved,
                 x: 42,
                 y: 24,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             }))
             .unwrap();
@@ -16088,6 +16176,7 @@ mod tests {
                 kind: MouseEventKind::Moved,
                 x: 10,
                 y: 10,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             }))
             .unwrap();
@@ -16114,6 +16203,52 @@ mod tests {
             program.model.events[0],
             Event::Key(KeyEvent::new(KeyCode::Char('a')))
         );
+    }
+
+    #[test]
+    fn headless_program_terminal_response_intercepted_unless_opted_in() {
+        use ftui_core::event::TerminalResponse;
+
+        #[derive(Default)]
+        struct RespTestModel {
+            events: Vec<Event>,
+        }
+
+        impl Model for RespTestModel {
+            type Message = Event;
+            fn update(&mut self, msg: Event) -> Cmd<Event> {
+                self.events.push(msg);
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let dcs = Event::TerminalResponse(TerminalResponse::Dcs {
+            payload: b"1$r0m".to_vec(),
+            truncated: false,
+        });
+        let cell_size = Event::TerminalResponse(TerminalResponse::CellSize {
+            width: 10,
+            height: 20,
+        });
+
+        // Default: intercepted inside Program without reaching Model::update.
+        let mut program =
+            headless_program_with_config(RespTestModel::default(), ProgramConfig::default());
+        program.handle_event(dcs.clone()).unwrap();
+        program.handle_event(cell_size.clone()).unwrap();
+        assert!(program.model.events.is_empty());
+        assert_eq!(program.startup_parser.cell_size_px(), Some((10, 20)));
+
+        // Opt-in: forwarded to Model::update.
+        let mut opted_in = headless_program_with_config(
+            RespTestModel::default(),
+            ProgramConfig::default().with_deliver_terminal_responses(true),
+        );
+        opted_in.handle_event(dcs.clone()).unwrap();
+        opted_in.handle_event(cell_size.clone()).unwrap();
+        assert_eq!(opted_in.model.events, vec![dcs, cell_size]);
+        assert_eq!(opted_in.startup_parser.cell_size_px(), Some((10, 20)));
     }
 
     /// CONTRACT (bd-1za0z item 3): the queue guardrail sees the live effect
@@ -19917,8 +20052,8 @@ mod tests {
         assert!(output.contains("a\r\nlineb\r\n"));
         assert!(!output.contains("hidden"));
         assert!(!output.contains("\x1b[2J"));
-        assert!(output.contains("\x1b[31mred\x1b[0m\r"));
-        assert!(output.contains("\x1b[0m\nplain\x1b[0m\r"));
+        assert!(output.contains("\x1b[31mred\x1b[0m\r\n"));
+        assert!(output.contains("\x1b[0m\r\nplain\x1b[0m\r\n"));
     }
 
     #[test]

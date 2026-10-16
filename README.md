@@ -1314,14 +1314,14 @@ Key(Ctrl+x)     ─┘          ModifiedKey
 
 `TextArea` handles the mouse itself with the same thresholds, so a host only forwards events through `handle_event`. A left press places the cursor, a double click selects the word under it (Unicode word boundaries), a triple click selects the line, and dragging extends the selection. Presses outside the area it last rendered are ignored, and so is a drag that started outside it. The showcase's forms, advanced text editor and live Markdown screens forward their mouse events to it.
 
-### Input Parser (3,200+ Lines)
+### Input Parser (4,300+ Lines)
 
 The `InputParser` in `ftui-core` handles the full complexity of terminal input encoding:
 
-- **ANSI escape sequences**: CSI, SS3, DCS, and OSC parsing with timeout-based disambiguation (`APC`/`SOS`/`PM` introducers are preserved as `Alt+key` events)
+- **ANSI escape sequences**: CSI, SS3, OSC, and DCS (captured via `TerminalResponse::Dcs`, bounded at 8 KiB) with timeout-based ESC disambiguation; APC/SOS/PM are treated as Alt-modified keys unless `InputParser::set_capture_apc(true)` opts into `TerminalResponse::Apc` capture
 - **Kitty keyboard protocol**: repeat/release events, modifier encoding, functional key disambiguation
 - **Bracketed paste**: captures pasted text as a single `Paste` event, preventing paste injection attacks
-- **Mouse protocols**: SGR (`1006`) by default, plus opt-in X10 and legacy xterm/rxvt `1015` fallback (`with_x10_mouse` / `with_legacy_mouse`; SGR-Pixels `1016` is cleared on session teardown)
+- **Mouse protocols**: X10, SGR (`1006`), legacy numeric fallback (`1015`), and SGR-Pixels (`1016`, via `InputParser::set_pixel_mouse(true)` and `MouseEvent::pixel`) with pixel-to-cell conversion from the terminal's reported cell size (`CSI 6 ; height ; width t` / `InputParser::set_cell_size_px`); the active protocol is selected by the session (`SessionOptions::pixel_mouse` / `ProgramConfig::with_pixel_mouse`), not sniffed
 - **UTF-8 streaming**: multi-byte character assembly across partial reads
 - **Ambiguous prefix handling**: `ESC` alone vs `ESC [` (Alt+key vs CSI) resolved by timing
 

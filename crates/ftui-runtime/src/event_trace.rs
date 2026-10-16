@@ -96,6 +96,8 @@ pub enum TraceRecord {
         x: u16,
         y: u16,
         modifiers: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pixel: Option<(u32, u32)>,
     },
 
     /// Terminal resize.
@@ -357,6 +359,7 @@ impl TraceRecord {
                 x: me.x,
                 y: me.y,
                 modifiers: me.modifiers.bits(),
+                pixel: me.pixel,
             },
             Event::Resize { width, height } => TraceRecord::Resize {
                 ts_ns,
@@ -382,7 +385,7 @@ impl TraceRecord {
                 content: ce.content.clone(),
                 source: SerClipboardSource::from_source(ce.source),
             },
-            Event::Tick => TraceRecord::Tick { ts_ns },
+            Event::TerminalResponse(_) | Event::Tick => TraceRecord::Tick { ts_ns },
         }
     }
 
@@ -407,11 +410,13 @@ impl TraceRecord {
                 x,
                 y,
                 modifiers,
+                pixel,
                 ..
             } => Some(Event::Mouse(MouseEvent {
                 kind: kind.into_kind(),
                 x: *x,
                 y: *y,
+                pixel: *pixel,
                 modifiers: Modifiers::from_bits_truncate(*modifiers),
             })),
             TraceRecord::Resize { cols, rows, .. } => Some(Event::Resize {

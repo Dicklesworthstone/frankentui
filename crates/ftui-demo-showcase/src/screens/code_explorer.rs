@@ -2511,6 +2511,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x,
             y,
+            pixel: None,
             modifiers: Modifiers::NONE,
         })
     }

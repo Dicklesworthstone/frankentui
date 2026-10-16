@@ -51,6 +51,9 @@ pub enum Event {
     /// Clipboard content received (optional, from OSC 52 response).
     Clipboard(ClipboardEvent),
 
+    /// Terminal query or control-string response (DCS, APC, XTWINOPS cell size).
+    TerminalResponse(TerminalResponse),
+
     /// A tick event from the runtime.
     ///
     /// Fired when a scheduled tick interval elapses. Applications use this
@@ -78,8 +81,15 @@ impl Event {
             Event::Ime(_) => "ime",
             Event::Focus(_) => "focus",
             Event::Clipboard(_) => "clipboard",
+            Event::TerminalResponse(_) => "terminal_response",
             Event::Tick => "tick",
         }
+    }
+
+    /// Return the canonical event type name (alias for [`Self::event_type_label`]).
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.event_type_label()
     }
 }
 
@@ -273,6 +283,10 @@ pub struct MouseEvent {
 
     /// Modifier keys held during the event.
     pub modifiers: Modifiers,
+
+    /// Optional sub-cell pixel coordinates (`(px, py)`) when reported via
+    /// SGR-Pixels (`?1016h`) mode.
+    pub pixel: Option<(u32, u32)>,
 }
 
 impl MouseEvent {
@@ -284,6 +298,7 @@ impl MouseEvent {
             x,
             y,
             modifiers: Modifiers::NONE,
+            pixel: None,
         }
     }
 
@@ -291,6 +306,13 @@ impl MouseEvent {
     #[must_use]
     pub const fn with_modifiers(mut self, modifiers: Modifiers) -> Self {
         self.modifiers = modifiers;
+        self
+    }
+
+    /// Attach pixel coordinates `(px, py)` reported via SGR-Pixels (`?1016h`) mode.
+    #[must_use]
+    pub const fn with_pixel(mut self, px: u32, py: u32) -> Self {
+        self.pixel = Some((px, py));
         self
     }
 
@@ -462,6 +484,32 @@ pub enum ClipboardSource {
     /// Unknown or unspecified source.
     #[default]
     Unknown,
+}
+
+/// Terminal query or control-string response decoded from the input stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalResponse {
+    /// Device Control String (`ESC P ... ST`) payload (e.g. XTGETTCAP or DECRQSS reply).
+    Dcs {
+        /// Raw payload bytes between `ESC P` and `ESC \`.
+        payload: Vec<u8>,
+        /// `true` when the payload exceeded the parser's `MAX_DCS_LEN` cap (8 KiB).
+        truncated: bool,
+    },
+    /// Application Program Command (`ESC _ ... ST`) payload when APC capture is enabled.
+    Apc {
+        /// Raw payload bytes between `ESC _` and `ESC \`.
+        payload: Vec<u8>,
+        /// `true` when the payload exceeded the parser's `MAX_DCS_LEN` cap (8 KiB).
+        truncated: bool,
+    },
+    /// XTWINOPS cell size in pixels (`CSI 6 ; height ; width t`).
+    CellSize {
+        /// Cell width in pixels.
+        width: u16,
+        /// Cell height in pixels.
+        height: u16,
+    },
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]

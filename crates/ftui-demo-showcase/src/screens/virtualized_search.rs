@@ -2162,6 +2162,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: list_area.x + 2,
             y: list_area.y + 3,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         screen.update(&event);
@@ -2182,6 +2183,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: search_area.x + 2,
             y: search_area.y + 1,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         screen.update(&event);
@@ -2204,6 +2206,7 @@ mod tests {
             kind: MouseEventKind::ScrollDown,
             x: list_area.x + 2,
             y: list_area.y + 2,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         screen.update(&scroll_down);

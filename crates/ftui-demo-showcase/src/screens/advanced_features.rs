@@ -944,6 +944,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x,
             y,
+            pixel: None,
             modifiers: Modifiers::NONE,
         })
     }
@@ -954,6 +955,7 @@ mod tests {
             kind: MouseEventKind::ScrollDown,
             x,
             y,
+            pixel: None,
             modifiers: Modifiers::NONE,
         })
     }
@@ -964,6 +966,7 @@ mod tests {
             kind: MouseEventKind::ScrollUp,
             x,
             y,
+            pixel: None,
             modifiers: Modifiers::NONE,
         })
     }

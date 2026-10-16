@@ -25,7 +25,7 @@
 
 use crate::event::{
     ClipboardEvent, ClipboardSource, Event, KeyCode, KeyEvent, KeyEventKind, Modifiers,
-    MouseButton, MouseEvent, MouseEventKind, PasteEvent,
+    MouseButton, MouseEvent, MouseEventKind, PasteEvent, TerminalResponse,
 };
 
 // Import tracing macros (no-op when tracing feature is disabled).
@@ -39,6 +39,9 @@ const MAX_CSI_LEN: usize = 256;
 
 /// DoS protection: maximum OSC sequence length.
 const MAX_OSC_LEN: usize = 102_400;
+
+/// DoS protection: maximum DCS / APC payload length (8 KiB).
+pub const MAX_DCS_LEN: usize = 8 * 1024;
 
 /// DoS protection: maximum paste content length.
 const MAX_PASTE_LEN: usize = 1024 * 1024; // 1MB
@@ -72,15 +75,20 @@ enum ParserState {
     OscEscape,
     /// Ignoring oversized OSC sequence.
     OscIgnore,
-    /// Inside a DCS (`ESC P …`) control string, which we consume and discard
-    /// until its String Terminator. DCS carries terminal query *responses*
-    /// (XTGETTCAP capability reports, DECRQSS status strings), not key input;
-    /// decoding its bytes as keys would inject garbage (e.g. an XTGETTCAP reply
-    /// that leaks into the input stream on a slow link).
-    DcsIgnore,
+    /// Inside a DCS (`ESC P …`) control string, capturing up to [`MAX_DCS_LEN`]
+    /// bytes until its String Terminator (`ESC \`). DCS carries terminal query
+    /// *responses* (XTGETTCAP capability reports, DECRQSS status strings), not
+    /// key input; bytes beyond the cap are discarded while waiting for ST.
+    DcsBody,
     /// After an ESC inside a DCS string — checking for the `ESC \` (ST)
     /// terminator.
     DcsEscape,
+    /// Inside an APC (`ESC _ …`) control string when `capture_apc` is enabled,
+    /// capturing up to [`MAX_DCS_LEN`] bytes until its String Terminator (`ESC \`).
+    ApcBody,
+    /// After an ESC inside an APC string — checking for the `ESC \` (ST)
+    /// terminator.
+    ApcEscape,
     /// Collecting UTF-8 multi-byte sequence.
     Utf8 {
         /// Bytes collected so far.
@@ -112,6 +120,10 @@ pub struct InputParser {
     buffer: Vec<u8>,
     /// Buffer for collecting paste content.
     paste_buffer: Vec<u8>,
+    /// Buffer for collecting bounded DCS or APC control-string payloads.
+    dcs_buffer: Vec<u8>,
+    /// Whether the active DCS or APC payload exceeded [`MAX_DCS_LEN`].
+    dcs_truncated: bool,
     /// UTF-8 bytes collected so far.
     utf8_buffer: [u8; 4],
     /// Whether we're in bracketed paste mode.
@@ -134,6 +146,16 @@ pub struct InputParser {
     /// while keeping raw X10 byte-triplet decoding separately gated by
     /// `expect_x10_mouse`.
     allow_legacy_mouse: bool,
+    /// Whether SGR mouse packets (`CSI < Cb;Cx;Cy M|m`) carry pixel coordinates
+    /// (`?1016h` mode) rather than 1-based cell coordinates (`?1006h` mode).
+    pixel_mouse: bool,
+    /// Cell dimensions in pixels `(width, height)` for SGR-Pixels (`?1016h`)
+    /// coordinate conversion, populated via [`Self::set_cell_size_px`] or an
+    /// XTWINOPS `CSI 6 ; height ; width t` reply.
+    cell_size_px: Option<(u16, u16)>,
+    /// Whether `ESC _ ... ST` (APC) should be captured as a
+    /// [`TerminalResponse::Apc`] event instead of decoded as `Alt+_`.
+    capture_apc: bool,
 }
 
 impl Default for InputParser {
@@ -155,11 +177,16 @@ impl InputParser {
             state: ParserState::Ground,
             buffer: Vec::with_capacity(64),
             paste_buffer: Vec::new(),
+            dcs_buffer: Vec::new(),
+            dcs_truncated: false,
             utf8_buffer: [0; 4],
             in_paste: false,
             pending_event: None,
             expect_x10_mouse: false,
             allow_legacy_mouse: false,
+            pixel_mouse: false,
+            cell_size_px: None,
+            capture_apc: false,
         }
     }
 
@@ -179,6 +206,75 @@ impl InputParser {
     /// Default: `false`.
     pub fn set_allow_legacy_mouse(&mut self, enabled: bool) {
         self.allow_legacy_mouse = enabled;
+    }
+
+    /// Enable or disable SGR-Pixels (`?1016h`) mouse coordinate conversion.
+    ///
+    /// When enabled, `CSI < Cb ; Px ; Py M|m` coordinates are treated as
+    /// pixel coordinates, stored in [`MouseEvent::pixel`], and converted to
+    /// 0-indexed cell coordinates using [`Self::cell_size_px`] (or `(0, 0)`
+    /// if the cell size is not yet known).
+    pub fn set_pixel_mouse(&mut self, enabled: bool) {
+        self.pixel_mouse = enabled;
+    }
+
+    /// Builder variant of [`Self::set_pixel_mouse`].
+    #[must_use]
+    pub const fn with_pixel_mouse(mut self, enabled: bool) -> Self {
+        self.pixel_mouse = enabled;
+        self
+    }
+
+    /// Whether SGR-Pixels (`?1016h`) mouse mode is enabled.
+    #[must_use]
+    pub const fn pixel_mouse(&self) -> bool {
+        self.pixel_mouse
+    }
+
+    /// Set the cell dimensions in pixels `(width, height)` used to convert
+    /// SGR-Pixels (`?1016h`) coordinates into cell coordinates.
+    ///
+    /// Passing a zero width or height clears the stored cell size.
+    pub fn set_cell_size_px(&mut self, width: u16, height: u16) {
+        if width > 0 && height > 0 {
+            self.cell_size_px = Some((width, height));
+        } else {
+            self.cell_size_px = None;
+        }
+    }
+
+    /// Current cell size in pixels `(width, height)`, if known.
+    #[must_use]
+    pub const fn cell_size_px(&self) -> Option<(u16, u16)> {
+        self.cell_size_px
+    }
+
+    /// Enable or disable APC (`ESC _ ... ST`) control-string capture.
+    ///
+    /// Defaults to `false` so `ESC _` continues to decode as `Alt+_`.
+    /// When `true`, `ESC _ ... ST` is captured up to [`MAX_DCS_LEN`] bytes
+    /// and emitted as `Event::TerminalResponse(TerminalResponse::Apc { .. })`.
+    pub fn set_capture_apc(&mut self, enabled: bool) {
+        self.capture_apc = enabled;
+    }
+
+    /// Builder variant of [`Self::set_capture_apc`].
+    #[must_use]
+    pub const fn with_capture_apc(mut self, enabled: bool) -> Self {
+        self.capture_apc = enabled;
+        self
+    }
+
+    /// Whether APC (`ESC _ ... ST`) capture is enabled.
+    #[must_use]
+    pub const fn capture_apc(&self) -> bool {
+        self.capture_apc
+    }
+
+    /// Current length of the internal DCS/APC accumulation buffer (for fuzzing/tests).
+    #[must_use]
+    pub fn dcs_buffer_len(&self) -> usize {
+        self.dcs_buffer.len()
     }
 
     /// Whether the parser is currently waiting on additional bytes for a
@@ -208,6 +304,15 @@ impl InputParser {
                     KeyEvent::new(KeyCode::Char(std::char::REPLACEMENT_CHARACTER))
                         .with_modifiers(mods),
                 ))
+            }
+            ParserState::DcsBody
+            | ParserState::DcsEscape
+            | ParserState::ApcBody
+            | ParserState::ApcEscape => {
+                self.dcs_buffer.clear();
+                self.dcs_truncated = false;
+                self.state = ParserState::Ground;
+                None
             }
             _ => None,
         }
@@ -272,8 +377,10 @@ impl InputParser {
             ParserState::OscContent => self.process_osc_content(byte),
             ParserState::OscEscape => self.process_osc_escape(byte),
             ParserState::OscIgnore => self.process_osc_ignore(byte),
-            ParserState::DcsIgnore => self.process_dcs_ignore(byte),
+            ParserState::DcsBody => self.process_dcs_body(byte),
             ParserState::DcsEscape => self.process_dcs_escape(byte),
+            ParserState::ApcBody => self.process_apc_body(byte),
+            ParserState::ApcEscape => self.process_apc_escape(byte),
             ParserState::Utf8 {
                 collected,
                 expected,
@@ -399,7 +506,8 @@ impl InputParser {
             }
             // DCS introducer (ESC P). DCS is how terminals return string-valued
             // query responses — XTGETTCAP capability reports and DECRQSS status
-            // strings — so we consume and discard the whole `ESC P … ST` string
+            // strings — so we capture up to MAX_DCS_LEN bytes of the `ESC P … ST`
+            // string into `Event::TerminalResponse(TerminalResponse::Dcs { .. })`
             // rather than decoding it as keys. Without this, a leaked XTGETTCAP
             // reply (`ESC P 1+r524742=8/8/8 ESC \`) would decode as `Alt+P`
             // followed by its payload as literal keystrokes
@@ -409,14 +517,26 @@ impl InputParser {
             // `ESC P` under metaSendsEscape) — an unavoidable, standard ambiguity
             // (DCS wins, exactly as `ESC [`/`ESC ]`/`ESC O` already shadow
             // `Alt+[`/`Alt+]`/`Alt+Shift+O`). We deliberately do NOT intercept
-            // the sibling C1 string introducers SOS (`ESC X`), PM (`ESC ^`) or
-            // APC (`ESC _`): terminals essentially never send those as responses,
-            // so shadowing them would needlessly swallow `Alt+Shift+X`/`Alt+^`/
-            // `Alt+_` keypresses for no benefit. (8-bit C1 DCS `0x90` is likewise
-            // not handled — modern UTF-8 terminals use the 7-bit form above.)
+            // the sibling C1 string introducers SOS (`ESC X`), PM (`ESC ^`) or,
+            // by default, APC (`ESC _`): terminals essentially never send those as
+            // responses, so shadowing them would needlessly swallow `Alt+Shift+X`/
+            // `Alt+^`/`Alt+_` keypresses for no benefit. Callers that need APC
+            // responses can opt in via `set_capture_apc(true)`. (8-bit C1 DCS
+            // `0x90` is likewise not handled — modern UTF-8 terminals use the
+            // 7-bit form above.)
             b'P' => {
-                self.state = ParserState::DcsIgnore;
+                self.state = ParserState::DcsBody;
                 self.buffer.clear();
+                self.dcs_buffer.clear();
+                self.dcs_truncated = false;
+                None
+            }
+            // APC introducer (ESC _) when explicitly opted in via `set_capture_apc(true)`.
+            b'_' if self.capture_apc => {
+                self.state = ParserState::ApcBody;
+                self.buffer.clear();
+                self.dcs_buffer.clear();
+                self.dcs_truncated = false;
                 None
             }
             // Another ESC - emit Alt+Escape and reset to ground
@@ -681,8 +801,36 @@ impl InputParser {
             )),
             b'~' => self.parse_csi_tilde(params),
             b'u' => self.parse_kitty_keyboard(params),
+            b't' => self.parse_xtwinops(params),
             _ => None,
         }
+    }
+
+    /// Parse XTWINOPS replies ending in `t` (`CSI 6 ; height ; width t` cell size in pixels).
+    fn parse_xtwinops(&mut self, params: &[u8]) -> Option<Event> {
+        let s = std::str::from_utf8(params).ok()?;
+        let mut parts = s.split(';');
+        let op: u16 = parts.next()?.parse().ok()?;
+        if op != 6 {
+            return None;
+        }
+        let height: u16 = parts.next()?.parse().ok()?;
+        let width: u16 = parts.next()?.parse().ok()?;
+        if parts.next().is_some() || width == 0 || height == 0 {
+            return None;
+        }
+        self.set_cell_size_px(width, height);
+        debug!(
+            target: crate::TARGET_INPUT_PARSER,
+            kind = "cell_size",
+            width,
+            height,
+            "parsed XTWINOPS cell size"
+        );
+        Some(Event::TerminalResponse(TerminalResponse::CellSize {
+            width,
+            height,
+        }))
     }
 
     /// Parse CSI sequences ending in ~.
@@ -981,12 +1129,41 @@ impl InputParser {
             MouseEventKind::Up(button)
         };
 
-        Some(Event::Mouse(MouseEvent {
-            kind,
-            x: Self::normalize_sgr_coord(x_raw),
-            y: Self::normalize_sgr_coord(y_raw),
-            modifiers: mods,
-        }))
+        if self.pixel_mouse {
+            let px = x_raw.max(0) as u32;
+            let py = y_raw.max(0) as u32;
+            let (x, y) = if let Some((cell_w, cell_h)) = self.cell_size_px {
+                let cx = (px / u32::from(cell_w)).min(u32::from(u16::MAX)) as u16;
+                let cy = (py / u32::from(cell_h)).min(u32::from(u16::MAX)) as u16;
+                (cx, cy)
+            } else {
+                (0, 0)
+            };
+            debug!(
+                target: crate::TARGET_INPUT_PARSER,
+                kind = "mouse_pixel",
+                px,
+                py,
+                cell_x = x,
+                cell_y = y,
+                "parsed SGR-Pixels mouse event"
+            );
+            Some(Event::Mouse(MouseEvent {
+                kind,
+                x,
+                y,
+                modifiers: mods,
+                pixel: Some((px, py)),
+            }))
+        } else {
+            Some(Event::Mouse(MouseEvent {
+                kind,
+                x: Self::normalize_sgr_coord(x_raw),
+                y: Self::normalize_sgr_coord(y_raw),
+                modifiers: mods,
+                pixel: None,
+            }))
+        }
     }
 
     #[inline]
@@ -1076,6 +1253,7 @@ impl InputParser {
             x: x.saturating_sub(1),
             y: y.saturating_sub(1),
             modifiers: mods,
+            pixel: None,
         }))
     }
 
@@ -1236,48 +1414,132 @@ impl InputParser {
         }
     }
 
-    /// Ignore bytes inside a DCS (`ESC P …`) string until its terminator.
+    /// Accumulate bytes inside a DCS (`ESC P …`) string until its `ESC \` (ST)
+    /// terminator, capped at [`MAX_DCS_LEN`].
     ///
-    /// The content (e.g. an XTGETTCAP reply `1+r524742=8/8/8`) is discarded — a
-    /// DCS never carries key input. Like [`Self::process_osc_ignore`], a
-    /// non-ESC/BEL control byte aborts the string and is reprocessed, so a
-    /// truncated/never-terminated string cannot permanently swallow real input.
-    fn process_dcs_ignore(&mut self, byte: u8) -> Option<Event> {
+    /// Per ECMA-48, BEL (`0x07`) is body data inside a DCS string (not a
+    /// terminator); only `ESC \` terminates and emits [`TerminalResponse::Dcs`].
+    /// Other C0 control characters (`< 0x20`) abort the string and are
+    /// reprocessed in Ground so a truncated/never-terminated string cannot
+    /// permanently swallow real input.
+    fn process_dcs_body(&mut self, byte: u8) -> Option<Event> {
         match byte {
-            // BEL terminates (lenient: some terminals close strings with BEL).
-            0x07 => {
-                self.state = ParserState::Ground;
-                None
-            }
             // ESC may begin the ST (ESC \) terminator.
             0x1B => {
                 self.state = ParserState::DcsEscape;
                 None
             }
-            // Abort on other control characters so a malformed string can't
-            // swallow subsequent legitimate input (matches OSC-ignore).
-            _ if byte < 0x20 => {
+            // Abort on C0 control characters (except BEL 0x07 which is treated
+            // as body data per ECMA-48) so a malformed string can't swallow
+            // subsequent legitimate input.
+            _ if byte < 0x20 && byte != 0x07 => {
+                self.dcs_buffer.clear();
+                self.dcs_truncated = false;
                 self.state = ParserState::Ground;
                 self.process_ground(byte)
             }
-            // Consume DCS payload (hex, '=', '/', etc.).
-            _ => None,
+            // Accumulate DCS payload up to MAX_DCS_LEN.
+            _ => {
+                if self.dcs_buffer.len() < MAX_DCS_LEN {
+                    self.dcs_buffer.push(byte);
+                } else {
+                    self.dcs_truncated = true;
+                }
+                None
+            }
         }
     }
 
-    /// After an ESC inside a DCS string: complete on `\` (ST) or recover.
+    /// After an ESC inside a DCS string: emit [`TerminalResponse::Dcs`] on `\` (ST)
+    /// or cancel and recover.
     fn process_dcs_escape(&mut self, byte: u8) -> Option<Event> {
         if byte == b'\\' {
-            // ST found — the control string is complete and discarded (no event).
+            // ST found — emit bounded DCS response.
             self.state = ParserState::Ground;
-            None
+            let payload = std::mem::take(&mut self.dcs_buffer);
+            let truncated = std::mem::replace(&mut self.dcs_truncated, false);
+            let len = payload.len();
+            debug!(
+                target: crate::TARGET_INPUT_PARSER,
+                kind = "dcs",
+                len,
+                truncated,
+                "captured DCS terminal response"
+            );
+            let _ = len;
+            Some(Event::TerminalResponse(TerminalResponse::Dcs {
+                payload,
+                truncated,
+            }))
         } else if byte == 0x1B {
-            // ESC ESC — treat the second ESC as the start of a new sequence.
+            // ESC ESC — cancel the string and treat the second ESC as the start of a new sequence.
+            self.dcs_buffer.clear();
+            self.dcs_truncated = false;
             self.state = ParserState::Escape;
             None
         } else {
             // ESC followed by something else cancels the string; reprocess the
             // byte as a fresh escape sequence (matches OSC-escape recovery).
+            self.dcs_buffer.clear();
+            self.dcs_truncated = false;
+            self.state = ParserState::Escape;
+            self.process_escape(byte)
+        }
+    }
+
+    /// Accumulate bytes inside an APC (`ESC _ …`) string until its `ESC \` (ST)
+    /// terminator when `capture_apc` is enabled, capped at [`MAX_DCS_LEN`].
+    fn process_apc_body(&mut self, byte: u8) -> Option<Event> {
+        match byte {
+            0x1B => {
+                self.state = ParserState::ApcEscape;
+                None
+            }
+            _ if byte < 0x20 && byte != 0x07 => {
+                self.dcs_buffer.clear();
+                self.dcs_truncated = false;
+                self.state = ParserState::Ground;
+                self.process_ground(byte)
+            }
+            _ => {
+                if self.dcs_buffer.len() < MAX_DCS_LEN {
+                    self.dcs_buffer.push(byte);
+                } else {
+                    self.dcs_truncated = true;
+                }
+                None
+            }
+        }
+    }
+
+    /// After an ESC inside an APC string: emit [`TerminalResponse::Apc`] on `\` (ST)
+    /// or cancel and recover.
+    fn process_apc_escape(&mut self, byte: u8) -> Option<Event> {
+        if byte == b'\\' {
+            self.state = ParserState::Ground;
+            let payload = std::mem::take(&mut self.dcs_buffer);
+            let truncated = std::mem::replace(&mut self.dcs_truncated, false);
+            let len = payload.len();
+            debug!(
+                target: crate::TARGET_INPUT_PARSER,
+                kind = "apc",
+                len,
+                truncated,
+                "captured APC terminal response"
+            );
+            let _ = len;
+            Some(Event::TerminalResponse(TerminalResponse::Apc {
+                payload,
+                truncated,
+            }))
+        } else if byte == 0x1B {
+            self.dcs_buffer.clear();
+            self.dcs_truncated = false;
+            self.state = ParserState::Escape;
+            None
+        } else {
+            self.dcs_buffer.clear();
+            self.dcs_truncated = false;
             self.state = ParserState::Escape;
             self.process_escape(byte)
         }
@@ -1467,6 +1729,7 @@ impl InputParser {
                     x: cx,
                     y: cy,
                     modifiers: mods,
+                    pixel: None,
                 }));
             }
         }
@@ -2856,18 +3119,25 @@ mod tests {
         ));
     }
 
-    // --- DCS / control-string handling (XTGETTCAP-reply leak guard) ---
+    // --- DCS / control-string handling (XTGETTCAP-reply capture & leak guard) ---
 
     #[test]
     fn dcs_xtgettcap_reply_produces_no_events() {
         let mut parser = InputParser::new();
-        // A leaked XTGETTCAP `RGB` reply (e.g. a truecolor probe whose answer
-        // arrives after the probe timed out on a slow ssh link) MUST be consumed
-        // silently — not decoded as `Alt+P` then the payload as literal keys.
+        // A leaked XTGETTCAP `RGB` reply MUST be captured as a structured
+        // `TerminalResponse::Dcs` event — never decoded as `Alt+P` then the
+        // payload as literal keys.
         let events = parser.parse(b"\x1bP1+r524742=8/8/8\x1b\\");
         assert!(
-            events.is_empty(),
-            "a DCS reply must produce no events, got: {events:?}"
+            !events.iter().any(|e| matches!(e, Event::Key(_))),
+            "a DCS reply must produce no key events, got: {events:?}"
+        );
+        assert_eq!(
+            events,
+            vec![Event::TerminalResponse(TerminalResponse::Dcs {
+                payload: b"1+r524742=8/8/8".to_vec(),
+                truncated: false,
+            })],
         );
     }
 
@@ -2878,18 +3148,273 @@ mod tests {
         // following real keypress parses normally.
         let events = parser.parse(b"\x1bP1+r524742=8/8/8\x1b\\a");
         assert!(
-            matches!(events.as_slice(), [Event::Key(k)] if k.code == KeyCode::Char('a')),
-            "parser must recover to Ground after a DCS, got: {events:?}"
+            matches!(
+                events.as_slice(),
+                [
+                    Event::TerminalResponse(TerminalResponse::Dcs { payload, truncated: false }),
+                    Event::Key(k),
+                ] if payload == b"1+r524742=8/8/8" && k.code == KeyCode::Char('a')
+            ),
+            "parser must emit DCS then recover to Ground for the key, got: {events:?}"
         );
     }
 
     #[test]
     fn dcs_bel_terminated_is_ignored() {
         let mut parser = InputParser::new();
-        let events = parser.parse(b"\x1bPsome-payload\x07b");
+        // Per ECMA-48, BEL (0x07) inside a DCS string is body data, not a
+        // terminator; ST (ESC \) terminates the DCS and the following key parses.
+        let events = parser.parse(b"\x1bPsome-payload\x07\x1b\\b");
         assert!(
-            matches!(events.as_slice(), [Event::Key(k)] if k.code == KeyCode::Char('b')),
-            "BEL-terminated DCS ignored, then key parses, got: {events:?}"
+            matches!(
+                events.as_slice(),
+                [
+                    Event::TerminalResponse(TerminalResponse::Dcs { payload, truncated: false }),
+                    Event::Key(k),
+                ] if payload == b"some-payload\x07" && k.code == KeyCode::Char('b')
+            ),
+            "BEL inside DCS is body data until ST, then key parses, got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn dcs_payload_captured_up_to_cap() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1bP1+r524742=8/8/8\x1b\\");
+        assert_eq!(
+            events,
+            vec![Event::TerminalResponse(TerminalResponse::Dcs {
+                payload: b"1+r524742=8/8/8".to_vec(),
+                truncated: false,
+            })]
+        );
+    }
+
+    #[test]
+    fn dcs_split_across_reads() {
+        let mut parser = InputParser::new();
+        assert!(parser.parse(b"\x1bP1+r").is_empty());
+        assert!(parser.parse(b"524742=").is_empty());
+        let events = parser.parse(b"8/8/8\x1b\\");
+        assert_eq!(
+            events,
+            vec![Event::TerminalResponse(TerminalResponse::Dcs {
+                payload: b"1+r524742=8/8/8".to_vec(),
+                truncated: false,
+            })]
+        );
+    }
+
+    #[test]
+    fn dcs_overlong_truncated_not_dropped_keys_after_st() {
+        let mut parser = InputParser::new();
+        let mut input = b"\x1bP".to_vec();
+        input.extend(std::iter::repeat_n(b'A', 10_000));
+        input.extend_from_slice(b"\x1b\\x");
+        let events = parser.parse(&input);
+        assert_eq!(events.len(), 2, "expected DCS + key 'x', got {events:?}");
+        match &events[0] {
+            Event::TerminalResponse(TerminalResponse::Dcs { payload, truncated }) => {
+                assert_eq!(payload.len(), MAX_DCS_LEN);
+                assert!(payload.iter().all(|&b| b == b'A'));
+                assert!(*truncated);
+            }
+            other => panic!("expected TerminalResponse::Dcs, got {other:?}"),
+        }
+        assert!(matches!(
+            events[1],
+            Event::Key(k) if k.code == KeyCode::Char('x') && k.modifiers == Modifiers::NONE
+        ));
+    }
+
+    #[test]
+    fn dcs_bel_is_not_a_terminator() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1bPa\x07b\x1b\\c");
+        assert_eq!(events.len(), 2, "expected DCS + key 'c', got {events:?}");
+        assert_eq!(
+            events[0],
+            Event::TerminalResponse(TerminalResponse::Dcs {
+                payload: b"a\x07b".to_vec(),
+                truncated: false,
+            })
+        );
+        assert!(matches!(
+            events[1],
+            Event::Key(k) if k.code == KeyCode::Char('c') && k.modifiers == Modifiers::NONE
+        ));
+    }
+
+    #[test]
+    fn apc_default_stays_alt_key() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b_");
+        assert!(matches!(
+            events.as_slice(),
+            [Event::Key(k)] if k.code == KeyCode::Char('_') && k.modifiers.contains(Modifiers::ALT)
+        ));
+    }
+
+    #[test]
+    fn apc_capture_opt_in() {
+        let mut parser = InputParser::new();
+        parser.set_capture_apc(true);
+        let events = parser.parse(b"\x1b_Gi=31;OK\x1b\\z");
+        assert_eq!(events.len(), 2, "expected APC + key 'z', got {events:?}");
+        assert_eq!(
+            events[0],
+            Event::TerminalResponse(TerminalResponse::Apc {
+                payload: b"Gi=31;OK".to_vec(),
+                truncated: false,
+            })
+        );
+        assert!(matches!(
+            events[1],
+            Event::Key(k) if k.code == KeyCode::Char('z') && k.modifiers == Modifiers::NONE
+        ));
+    }
+
+    #[test]
+    fn sos_pm_unchanged_with_apc_capture() {
+        let mut parser = InputParser::new();
+        parser.set_capture_apc(true);
+        for &introducer in b"X^" {
+            let events = parser.parse(&[0x1b, introducer]);
+            assert!(
+                matches!(
+                    events.as_slice(),
+                    [Event::Key(k)]
+                        if k.code == KeyCode::Char(introducer as char)
+                            && k.modifiers.contains(Modifiers::ALT)
+                ),
+                "ESC {} must stay an Alt key even with capture_apc=true, got: {events:?}",
+                introducer as char
+            );
+        }
+    }
+
+    #[test]
+    fn sgr_pixel_mouse_converts_to_cells() {
+        let mut parser = InputParser::new();
+        parser.set_pixel_mouse(true);
+        parser.set_cell_size_px(10, 20);
+        let events = parser.parse(b"\x1b[<0;25;45M");
+        assert_eq!(
+            events,
+            vec![Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                x: 2,
+                y: 2,
+                modifiers: Modifiers::NONE,
+                pixel: Some((25, 45)),
+            })]
+        );
+    }
+
+    #[test]
+    fn sgr_pixel_mouse_release_and_motion() {
+        let mut parser = InputParser::new();
+        parser.set_pixel_mouse(true);
+        parser.set_cell_size_px(8, 16);
+
+        let release = parser.parse(b"\x1b[<0;80;160m");
+        assert_eq!(
+            release,
+            vec![Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                x: 10,
+                y: 10,
+                modifiers: Modifiers::NONE,
+                pixel: Some((80, 160)),
+            })]
+        );
+
+        let drag = parser.parse(b"\x1b[<32;15;31M");
+        assert_eq!(
+            drag,
+            vec![Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                x: 1,
+                y: 1,
+                modifiers: Modifiers::NONE,
+                pixel: Some((15, 31)),
+            })]
+        );
+    }
+
+    #[test]
+    fn sgr_pixel_mouse_without_cell_size_keeps_pixels_and_zero_cells() {
+        let mut parser = InputParser::new();
+        parser.set_pixel_mouse(true);
+        let events = parser.parse(b"\x1b[<0;123;456M");
+        assert_eq!(
+            events,
+            vec![Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                x: 0,
+                y: 0,
+                modifiers: Modifiers::NONE,
+                pixel: Some((123, 456)),
+            })]
+        );
+    }
+
+    #[test]
+    fn sgr_pixel_mouse_off_ignores_cell_size() {
+        let mut parser = InputParser::new();
+        parser.set_pixel_mouse(false);
+        parser.set_cell_size_px(10, 20);
+        let events = parser.parse(b"\x1b[<0;5;3M");
+        assert_eq!(
+            events,
+            vec![Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                x: 4,
+                y: 2,
+                modifiers: Modifiers::NONE,
+                pixel: None,
+            })]
+        );
+    }
+
+    #[test]
+    fn sgr_pixel_mouse_negative_coords_clamp() {
+        let mut parser = InputParser::new();
+        parser.set_pixel_mouse(true);
+        parser.set_cell_size_px(10, 20);
+        let events = parser.parse(b"\x1b[<32;-5;-10M");
+        assert_eq!(
+            events,
+            vec![Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                x: 0,
+                y: 0,
+                modifiers: Modifiers::NONE,
+                pixel: Some((0, 0)),
+            })]
+        );
+    }
+
+    #[test]
+    fn xtwinops_cell_size_reply_parsed() {
+        let mut parser = InputParser::new();
+        parser.set_pixel_mouse(true);
+        let events = parser.parse(b"\x1b[6;18;9t\x1b[<0;27;36M");
+        assert_eq!(
+            events,
+            vec![
+                Event::TerminalResponse(TerminalResponse::CellSize {
+                    width: 9,
+                    height: 18,
+                }),
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    x: 3,
+                    y: 2,
+                    modifiers: Modifiers::NONE,
+                    pixel: Some((27, 36)),
+                }),
+            ]
         );
     }
 
@@ -3642,6 +4167,40 @@ mod proptest_fuzz {
                     prop_assert!(m.x <= x, "Mouse x {} > input x {}", m.x, x);
                     prop_assert!(m.y <= y, "Mouse y {} > input y {}", m.y, y);
                 }
+            }
+        }
+
+        /// SGR-Pixels coordinate conversion is monotone in pixel coordinates.
+        #[test]
+        fn pixel_to_cell_is_monotone(
+            px1 in 0u32..=100_000,
+            px2 in 0u32..=100_000,
+            py1 in 0u32..=100_000,
+            py2 in 0u32..=100_000,
+            cw in 1u16..=64,
+            ch in 1u16..=64,
+        ) {
+            let (px_lo, px_hi) = if px1 <= px2 { (px1, px2) } else { (px2, px1) };
+            let (py_lo, py_hi) = if py1 <= py2 { (py1, py2) } else { (py2, py1) };
+
+            let mut parser = InputParser::new();
+            parser.set_pixel_mouse(true);
+            parser.set_cell_size_px(cw, ch);
+
+            let seq1 = format!("\x1b[<0;{px_lo};{py_lo}M");
+            let seq2 = format!("\x1b[<0;{px_hi};{py_hi}M");
+
+            let ev1 = parser.parse(seq1.as_bytes());
+            let ev2 = parser.parse(seq2.as_bytes());
+
+            match (ev1.as_slice(), ev2.as_slice()) {
+                ([Event::Mouse(m1)], [Event::Mouse(m2)]) => {
+                    prop_assert!(m1.x <= m2.x, "m1.x={} > m2.x={}", m1.x, m2.x);
+                    prop_assert!(m1.y <= m2.y, "m1.y={} > m2.y={}", m1.y, m2.y);
+                    prop_assert_eq!(m1.pixel, Some((px_lo, py_lo)));
+                    prop_assert_eq!(m2.pixel, Some((px_hi, py_hi)));
+                }
+                other => prop_assert!(false, "unexpected events: {other:?}"),
             }
         }
 

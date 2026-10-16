@@ -285,6 +285,11 @@ impl ActionTimeline {
                 ];
                 (summary, fields, Severity::Debug)
             }
+            Event::TerminalResponse(_) => {
+                let summary = "Terminal response received".to_string();
+                let fields = Vec::new();
+                (summary, fields, Severity::Debug)
+            }
             Event::Tick => {
                 let summary = "Runtime tick".to_string();
                 let fields = vec![("tick".to_string(), tick.to_string())];

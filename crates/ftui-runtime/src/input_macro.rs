@@ -929,7 +929,8 @@ impl RecordingFilter {
             Event::Ime(_) => self.ime,
             Event::Focus(_) => self.focus,
             Event::Clipboard(_) => true, // Always record clipboard responses
-            Event::Tick => false,        // Internal timing, not recorded
+            Event::TerminalResponse(_) => false, // Low-level terminal protocol replies are not recorded as user input
+            Event::Tick => false,                // Internal timing, not recorded
         }
     }
 }

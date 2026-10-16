@@ -2086,6 +2086,7 @@ mod tests {
             kind: ftui_core::event::MouseEventKind::Moved,
             x: 0,
             y: 0,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         demo.update(&mouse_event);
@@ -2109,6 +2110,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: presets.x + 1,
             y: presets.y + 3,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         demo.update(&event);
@@ -2131,6 +2133,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: inspector.x + 1,
             y: inspector.y + 2,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         demo.update(&event);
@@ -2153,6 +2156,7 @@ mod tests {
             kind: MouseEventKind::ScrollDown,
             x: presets.x + 1,
             y: presets.y + 1,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         demo.update(&event);
@@ -2174,6 +2178,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Right),
             x: presets.x + 1,
             y: presets.y + 1,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         demo.update(&event);

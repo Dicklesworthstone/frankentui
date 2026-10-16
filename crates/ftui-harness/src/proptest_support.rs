@@ -225,6 +225,7 @@ fn arb_mouse_event() -> BoxedStrategy<MouseEvent> {
             kind,
             x,
             y,
+            pixel: None,
             modifiers,
         })
         .boxed()

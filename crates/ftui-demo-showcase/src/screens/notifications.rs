@@ -549,6 +549,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: instructions.x + 1,
             y: instructions.y + 1,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         });
         screen.update(&event);
@@ -572,6 +573,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: notif_area.x + 1,
             y: notif_area.y + 1,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         });
         screen.update(&event);
@@ -591,6 +593,7 @@ mod tests {
             kind: MouseEventKind::ScrollUp,
             x: instructions.x + 1,
             y: instructions.y + 1,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         });
         screen.update(&event);
@@ -610,6 +613,7 @@ mod tests {
             kind: MouseEventKind::ScrollDown,
             x: instructions.x + 1,
             y: instructions.y + 1,
+            pixel: None,
             modifiers: ftui_core::event::Modifiers::NONE,
         });
         screen.update(&event);

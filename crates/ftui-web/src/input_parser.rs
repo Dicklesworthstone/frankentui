@@ -269,6 +269,7 @@ fn parse_mouse_event(raw: &RawInput) -> Result<Option<Event>, InputParseError> {
         kind,
         x,
         y,
+        pixel: None,
         modifiers,
     })))
 }
@@ -296,6 +297,7 @@ fn parse_wheel_event(raw: &RawInput) -> Result<Option<Event>, InputParseError> {
         kind,
         x,
         y,
+        pixel: None,
         modifiers,
     })))
 }
@@ -569,6 +571,7 @@ mod tests {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 x: 10,
                 y: 5,
+                pixel: None,
                 modifiers: Modifiers::empty(),
             })
         );
@@ -587,6 +590,7 @@ mod tests {
                 kind: MouseEventKind::Moved,
                 x: 11,
                 y: 5,
+                pixel: None,
                 modifiers: Modifiers::empty(),
             })
         );
@@ -605,6 +609,7 @@ mod tests {
                 kind: MouseEventKind::Down(MouseButton::Right),
                 x: 5,
                 y: 3,
+                pixel: None,
                 modifiers: Modifiers::SHIFT,
             })
         );
@@ -623,6 +628,7 @@ mod tests {
                 kind: MouseEventKind::Up(MouseButton::Left),
                 x: 5,
                 y: 3,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             })
         );
@@ -687,6 +693,7 @@ mod tests {
                 kind: MouseEventKind::Moved,
                 x: 0,
                 y: 0,
+                pixel: None,
                 modifiers: Modifiers::empty(),
             })
         );
@@ -705,6 +712,7 @@ mod tests {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 x: u16::MAX,
                 y: u16::MAX,
+                pixel: None,
                 modifiers: Modifiers::empty(),
             })
         );
@@ -723,6 +731,7 @@ mod tests {
                 kind: MouseEventKind::ScrollUp,
                 x: 10,
                 y: 5,
+                pixel: None,
                 modifiers: Modifiers::empty(),
             })
         );
@@ -740,6 +749,7 @@ mod tests {
                 kind: MouseEventKind::ScrollDown,
                 x: 0,
                 y: 0,
+                pixel: None,
                 modifiers: Modifiers::empty(),
             })
         );
@@ -757,6 +767,7 @@ mod tests {
                 kind: MouseEventKind::ScrollRight,
                 x: 0,
                 y: 0,
+                pixel: None,
                 modifiers: Modifiers::empty(),
             })
         );
@@ -775,6 +786,7 @@ mod tests {
                 kind: MouseEventKind::ScrollDown,
                 x: 0,
                 y: u16::MAX,
+                pixel: None,
                 modifiers: Modifiers::empty(),
             })
         );
