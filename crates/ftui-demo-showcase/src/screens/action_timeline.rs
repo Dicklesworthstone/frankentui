@@ -27,6 +27,8 @@ use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
+#[cfg(feature = "experimental")]
+use ftui_runtime::{AggregatorConfig, SketchConfig, TimelineAggregator};
 use ftui_style::Style;
 use ftui_text::grapheme_count;
 use ftui_widgets::Widget;
@@ -107,7 +109,7 @@ impl Component {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum EventKind {
     Input,
     Command,
@@ -140,6 +142,19 @@ impl EventKind {
             EventKind::Degrade => "budget",
         }
     }
+
+    #[cfg(feature = "experimental")]
+    const fn index(self) -> usize {
+        match self {
+            EventKind::Input => 0,
+            EventKind::Command => 1,
+            EventKind::Subscription => 2,
+            EventKind::Render => 3,
+            EventKind::Present => 4,
+            EventKind::Capability => 5,
+            EventKind::Degrade => 6,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +182,12 @@ pub struct ActionTimeline {
     next_id: u64,
     tick_count: u64,
     last_timeline_area: Cell<Rect>,
+    #[cfg(feature = "experimental")]
+    aggregator: TimelineAggregator,
+    #[cfg(feature = "experimental")]
+    show_aggregate: bool,
+    #[cfg(feature = "experimental")]
+    exact_kind_counts: [u64; 7],
 }
 
 impl Default for ActionTimeline {
@@ -191,6 +212,21 @@ impl ActionTimeline {
             next_id: 1,
             tick_count: 0,
             last_timeline_area: Cell::new(Rect::default()),
+            #[cfg(feature = "experimental")]
+            aggregator: TimelineAggregator::new(AggregatorConfig {
+                sketch: SketchConfig {
+                    // ceil(e / 0.01062) = 256, ceil(ln(1 / 0.02)) = 4
+                    epsilon: 0.01062,
+                    delta: 0.02,
+                    enable_calibration: true,
+                    ..SketchConfig::default()
+                },
+                ..AggregatorConfig::default()
+            }),
+            #[cfg(feature = "experimental")]
+            show_aggregate: false,
+            #[cfg(feature = "experimental")]
+            exact_kind_counts: [0; 7],
         };
         for tick in 0..12 {
             timeline.tick_count = tick;
@@ -364,6 +400,15 @@ impl ActionTimeline {
             buffer_len = self.events.len() + 1,
             "Pushing event to timeline"
         );
+        #[cfg(feature = "experimental")]
+        {
+            let kind = event.kind;
+            let idx = kind.index();
+            self.exact_kind_counts[idx] = self.exact_kind_counts[idx].saturating_add(1);
+            self.aggregator.observe(&kind, 1);
+            self.aggregator
+                .calibrate(&kind, self.exact_kind_counts[idx]);
+        }
         self.events.push_back(event);
     }
 
@@ -733,6 +778,72 @@ impl ActionTimeline {
             .render(inner, frame);
     }
 
+    #[cfg(feature = "experimental")]
+    fn render_aggregate(&self, frame: &mut Frame, area: Rect) {
+        let border_style = Style::new().fg(theme::screen_accent::ACTION_TIMELINE);
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Timeline Aggregate (CMS + BOCPD)")
+            .title_alignment(Alignment::Center)
+            .style(border_style);
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let stats = self.aggregator.stats();
+        let evidence = self.aggregator.current_evidence();
+        let error_bound = evidence.sketch_evidence.error_bound();
+        let mut total_estimate = 0u64;
+        for kind in EventKind::ALL {
+            total_estimate = total_estimate.saturating_add(self.aggregator.estimate(&kind));
+        }
+
+        debug!(
+            target: "ftui.demo.timeline",
+            estimate = total_estimate,
+            exact = stats.total_events,
+            error_bound = error_bound,
+            changepoint = evidence.change_probability,
+            "Refreshed timeline aggregate pane"
+        );
+
+        let mut lines = Vec::new();
+        lines.push(format!("Total Events: {}", stats.total_events));
+        lines.push(format!("CMS Total Est: {total_estimate}"));
+        lines.push(format!("Change Points: {}", stats.change_points_detected));
+        lines.push(format!("Alerts: {}", stats.alerts_triggered));
+        lines.push(format!("BOCPD Run Length: {}", evidence.run_length));
+        lines.push(format!(
+            "BOCPD Change Prob: {:.4}",
+            evidence.change_probability
+        ));
+        lines.push(format!("PAC-Bayes Bound: {:.2}", error_bound));
+        lines.push(format!("Memory Bytes: {}", stats.memory_bytes));
+        lines.push(String::new());
+        lines.push("Category   CMS Est  Exact   Diff".to_string());
+        lines.push("--------------------------------".to_string());
+        for kind in EventKind::ALL {
+            let est = self.aggregator.estimate(&kind);
+            let exact = self.exact_kind_counts[kind.index()];
+            let diff = est.saturating_sub(exact);
+            lines.push(format!(
+                "{:<9} {:>8} {:>6} {:>6}",
+                kind.label(),
+                est,
+                exact,
+                diff
+            ));
+        }
+
+        Paragraph::new(lines.join("\n"))
+            .style(theme::body())
+            .render(inner, frame);
+    }
+
     /// Handle mouse events: click to select event, scroll to navigate.
     fn handle_mouse(&mut self, event: &Event) {
         if let Event::Mouse(mouse) = event {
@@ -796,6 +907,17 @@ impl Screen for ActionTimeline {
         }) = event
         {
             match (*code, *modifiers) {
+                #[cfg(feature = "experimental")]
+                (KeyCode::Char('a'), Modifiers::NONE)
+                | (KeyCode::Char('A'), Modifiers::NONE | Modifiers::SHIFT) => {
+                    let prev = self.show_aggregate;
+                    self.show_aggregate = !self.show_aggregate;
+                    debug!(
+                        prev = prev,
+                        new = self.show_aggregate,
+                        "Toggled aggregate pane"
+                    );
+                }
                 (KeyCode::Char('f'), Modifiers::NONE)
                 | (KeyCode::Char('F'), Modifiers::NONE | Modifiers::SHIFT) => {
                     let prev = self.follow;
@@ -910,11 +1032,17 @@ impl Screen for ActionTimeline {
         let filtered = self.filtered_indices();
         self.render_filters(frame, rows[0]);
         self.render_timeline(frame, cols[0], &filtered);
+        #[cfg(feature = "experimental")]
+        if self.show_aggregate {
+            self.render_aggregate(frame, cols[1]);
+            return;
+        }
         self.render_details(frame, cols[1], &filtered);
     }
 
     fn keybindings(&self) -> Vec<HelpEntry> {
-        vec![
+        #[allow(unused_mut)]
+        let mut entries = vec![
             HelpEntry {
                 key: "F",
                 action: "Toggle follow mode",
@@ -959,7 +1087,13 @@ impl Screen for ActionTimeline {
                 key: "Scroll",
                 action: "Navigate timeline",
             },
-        ]
+        ];
+        #[cfg(feature = "experimental")]
+        entries.push(HelpEntry {
+            key: "A",
+            action: "Toggle aggregate pane",
+        });
+        entries
     }
 
     fn title(&self) -> &'static str {
@@ -1713,5 +1847,39 @@ mod tests {
         // Should not panic
         let filtered_len = timeline.filtered_indices().len();
         assert!(timeline.selected <= filtered_len);
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn toggle_aggregate_pane_and_cms_estimates() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut timeline = ActionTimeline::new();
+        assert!(!timeline.show_aggregate);
+        assert_eq!(timeline.aggregator.stats().total_events, 12);
+
+        timeline.update(&press(KeyCode::Char('a')));
+        assert!(timeline.show_aggregate);
+
+        for t in 1..=20 {
+            timeline.tick(t);
+        }
+        let stats = timeline.aggregator.stats();
+        assert_eq!(stats.total_events, 22);
+        for kind in EventKind::ALL {
+            let est = timeline.aggregator.estimate(&kind);
+            let exact = timeline.exact_kind_counts[kind.index()];
+            assert!(
+                est >= exact,
+                "CMS estimate {est} < exact {exact} for {kind:?}"
+            );
+        }
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        timeline.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        timeline.update(&press(KeyCode::Char('A')));
+        assert!(!timeline.show_aggregate);
     }
 }

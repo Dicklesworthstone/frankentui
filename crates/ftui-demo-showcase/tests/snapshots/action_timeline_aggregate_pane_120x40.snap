@@ -1,0 +1,40 @@
+╭───────────────────────────────────────────────────Filters + Follow───────────────────────────────────────────────────╮
+│Follow[F]: ON  Component[C]: all  Severity[S]: all  Type[T]: all  Clear[X]                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────Event Timeline──────────────────────────╮╭─────────Timeline Aggregate (CMS + BOCPD)─────────╮
+│  10 TRACE runtime render  Frame diff computed                    ││Total Events: 22                                  │
+│  11 DEBUG runtime render  Frame diff computed                    ││CMS Total Est: 22                                 │
+│   2 INFO  runtime input   Key event processed                    ││Change Points: 0                                  │
+│   4 ERROR render  cmd     Command dispatched to model            ││Alerts: 0                                         │
+│   6 DEBUG widgets sub     Subscription tick delivered            ││BOCPD Run Length: 0                               │
+│   8 WARN  core    sub     Subscription tick delivered            ││BOCPD Change Prob: 1.0000                         │
+│  10 TRACE runtime render  Frame diff computed                    ││PAC-Bayes Bound: 0.23                             │
+│  12 INFO  render  present Presenter emitted ANSI batch           ││Memory Bytes: 14512                               │
+│  14 ERROR widgets present Presenter emitted ANSI batch           ││                                                  │
+│  16 DEBUG core    caps    Capability probe updated               ││Category   CMS Est  Exact   Diff                  │
+│  18 WARN  runtime budget  Render budget degraded                 ││--------------------------------                  │
+│  20 TRACE render  budget  Render budget degraded                 ││input            4      4      0                  │
+│                                                                  ││cmd              4      4      0                  │
+│                                                                  ││sub              5      5      0                  │
+│                                                                  ││render           4      4      0                  │
+│                                                                  ││present          2      2      0                  │
+│                                                                  ││caps             1      1      0                  │
+│                                                                  ││budget           2      2      0                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+│                                                                  ││                                                  │
+╰──────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────╯

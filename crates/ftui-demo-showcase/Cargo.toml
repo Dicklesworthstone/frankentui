@@ -74,7 +74,7 @@ logging = ["ftui-extras/logging"]
 screen-mermaid = ["ftui-extras/markdown-diagram"]
 default = ["caps-probe", "native-backend", "crossterm-compat", "clipboard", "image", "logging", "screen-mermaid"]
 # Compiles internal research modules not reachable from the public API. Not supported. See README.
-experimental = []
+experimental = ["ftui-runtime/experimental"]
 # Enable test-support to expose test infrastructure (locks, guards) to integration tests
 test-support = []
 

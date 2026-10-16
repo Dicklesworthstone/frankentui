@@ -422,12 +422,13 @@ impl TimelineAggregator {
     }
 
     /// Get current statistics.
-    pub fn stats(&mut self) -> AggregatorStats {
+    pub fn stats(&self) -> AggregatorStats {
         let sketch_stats = self.sketch.stats();
-        self.stats.memory_bytes = sketch_stats.memory_bytes
+        let mut stats = self.stats.clone();
+        stats.memory_bytes = sketch_stats.memory_bytes
             + self.window.len() * std::mem::size_of::<f64>()
             + MAX_RUN_LENGTH * (std::mem::size_of::<f64>() + std::mem::size_of::<u64>() * 2);
-        self.stats.clone()
+        stats
     }
 
     /// Estimate frequency for a category.
@@ -436,7 +437,7 @@ impl TimelineAggregator {
     }
 
     /// Get current aggregation evidence (without observing).
-    pub fn current_evidence(&mut self) -> AggregationEvidence {
+    pub fn current_evidence(&self) -> AggregationEvidence {
         let variance = if self.observation_count > 1 {
             (self.rolling_m2 / (self.observation_count - 1) as f64).max(MIN_VARIANCE)
         } else {
@@ -958,7 +959,7 @@ mod tests {
 
     #[test]
     fn current_evidence_on_fresh_aggregator() {
-        let mut agg = TimelineAggregator::new(test_config());
+        let agg = TimelineAggregator::new(test_config());
         let evidence = agg.current_evidence();
         assert_eq!(evidence.observation_count, 0);
         assert_eq!(evidence.rolling_mean, 0.0);
@@ -986,5 +987,34 @@ mod tests {
         }
         assert!(agg.estimate(&"key") >= 15);
         assert_eq!(agg.estimate(&"missing"), 0);
+    }
+
+    #[test]
+    fn regime_shift_at_event_250_detected_within_500_events() {
+        let mut config = test_config();
+        config.warmup_observations = 20;
+        config.hazard_rate = 0.05;
+        let mut agg = TimelineAggregator::new(config);
+
+        for i in 0..500u64 {
+            let category = i % 7;
+            // Regime 1 (0..250): steady low volume (1-2 events per observation)
+            // Regime 2 (250..500): abrupt high-volume burst (80-120 events)
+            let count = if i < 250 { 1 + (i % 2) } else { 80 + (i % 41) };
+            let _ = agg.observe(&category, count);
+        }
+
+        let stats = agg.stats();
+        assert_eq!(
+            stats.total_events,
+            (0..500u64)
+                .map(|i| if i < 250 { 1 + (i % 2) } else { 80 + (i % 41) })
+                .sum::<u64>()
+        );
+        assert!(
+            stats.change_points_detected >= 1,
+            "Expected at least 1 change point across 500 events with regime shift at 250, got {}",
+            stats.change_points_detected
+        );
     }
 }

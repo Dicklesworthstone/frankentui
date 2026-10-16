@@ -218,6 +218,8 @@ pub use cost_model::{
     BatchCostParams, BatchCostResult, CacheCostParams, CacheCostResult, PipelineCostParams,
     PipelineCostResult, StageStats,
 };
+#[cfg(feature = "experimental")]
+pub use countmin_sketch::{CountMinSketch, ErrorEvidence, SketchConfig, SketchStats};
 pub use decision_core::{
     Action as DecisionAction, Decision, DecisionCore, Outcome as DecisionOutcome, Posterior,
     State as DecisionState, argmin_expected_loss, second_best_loss,
@@ -284,6 +286,10 @@ pub use schema_compat::{
 pub use slo::{
     BreachResult, BreachSeverity, MetricSlo, MetricType, SafeModeDecision, SloSchema,
     SloSchemaError, check_breach, check_safe_mode, emit_slo_check, parse_slo_yaml, run_slo_check,
+};
+#[cfg(feature = "experimental")]
+pub use timeline_aggregator::{
+    AggregationEvidence, AggregatorConfig, AggregatorStats, TimelineAggregator,
 };
 pub use undo::{
     CommandBatch, CommandError, CommandMetadata, CommandResult, CommandSource, HistoryConfig,

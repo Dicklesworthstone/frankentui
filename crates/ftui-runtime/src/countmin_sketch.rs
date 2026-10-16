@@ -287,12 +287,13 @@ impl CountMinSketch {
             self.calibration.remove(0);
         }
 
-        // Invalidate cached bound
+        // Recompute cached bound
         self.calibrated_bound = None;
+        self.calibrated_bound = self.compute_calibrated_bound().0;
     }
 
     /// Get current error evidence.
-    pub fn error_evidence(&mut self) -> ErrorEvidence {
+    pub fn error_evidence(&self) -> ErrorEvidence {
         let theoretical_bound = self.config.epsilon * self.total_count as f64;
 
         let (calibrated_bound, observed_max, observed_mean, kl_term) =
@@ -316,25 +317,13 @@ impl CountMinSketch {
     }
 
     /// Compute PAC-Bayes calibrated bound.
-    fn compute_calibrated_bound(&mut self) -> (Option<f64>, Option<u64>, Option<f64>, Option<f64>) {
+    fn compute_calibrated_bound(&self) -> (Option<f64>, Option<u64>, Option<f64>, Option<f64>) {
         if self.calibration.is_empty() {
             return (None, None, None, None);
         }
 
         let n = self.calibration.len() as f64;
         let kl_term = (n.ln().max(1.0)) / (2.0 * n);
-
-        // Check cache
-        if let Some(bound) = self.calibrated_bound {
-            let errors: Vec<u64> = self
-                .calibration
-                .iter()
-                .map(|s| s.estimated_count.saturating_sub(s.true_count))
-                .collect();
-            let max_error = errors.iter().copied().max();
-            let mean_error = errors.iter().sum::<u64>() as f64 / n;
-            return (Some(bound), max_error, Some(mean_error), Some(kl_term));
-        }
 
         // Compute errors
         let errors: Vec<u64> = self
@@ -346,6 +335,10 @@ impl CountMinSketch {
         let max_error = errors.iter().copied().max();
         let mean_error = errors.iter().sum::<u64>() as f64 / n;
 
+        if let Some(bound) = self.calibrated_bound {
+            return (Some(bound), max_error, Some(mean_error), Some(kl_term));
+        }
+
         // PAC-Bayes bound:
         // E[error] <= empirical_mean + sqrt(KL(post||prior) / (2n))
         // With uniform prior and empirical posterior, KL ~ log(n)
@@ -355,13 +348,11 @@ impl CountMinSketch {
         let theoretical = self.config.epsilon * self.total_count as f64;
         let calibrated = pac_bayes_bound.min(theoretical);
 
-        self.calibrated_bound = Some(calibrated);
-
         (Some(calibrated), max_error, Some(mean_error), Some(kl_term))
     }
 
     /// Get sketch statistics.
-    pub fn stats(&mut self) -> SketchStats {
+    pub fn stats(&self) -> SketchStats {
         let memory_bytes = self.width * self.depth * std::mem::size_of::<u64>();
 
         // Estimate unique items by counting non-zero cells in first row
@@ -1016,5 +1007,66 @@ mod tests {
         // Re-computing evidence should still work
         let evidence = sketch1.error_evidence();
         assert!(evidence.total_count >= 10);
+    }
+
+    #[test]
+    fn negative_or_zero_epsilon_and_delta_clamp_safely() {
+        for (eps, delta) in [(0.0, 0.0), (-0.5, -0.25), (f64::NAN, f64::INFINITY)] {
+            let sketch = CountMinSketch::new(SketchConfig {
+                epsilon: eps,
+                delta,
+                ..Default::default()
+            });
+            assert!(sketch.width() >= 1 && sketch.width() <= MAX_WIDTH);
+            assert!(sketch.depth() >= 1 && sketch.depth() <= MAX_DEPTH);
+        }
+    }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn proptest_cms_never_underestimates_and_respects_bound(
+                events in proptest::collection::vec((0u16..64u16, 1u64..20u64), 1..200)
+            ) {
+                let config = SketchConfig {
+                    epsilon: 0.05,
+                    delta: 0.01,
+                    ..Default::default()
+                };
+                let mut sketch = CountMinSketch::new(config.clone());
+                let mut true_counts = std::collections::HashMap::<u16, u64>::new();
+                let mut total = 0u64;
+
+                for (key, count) in events {
+                    sketch.add(&key, count);
+                    *true_counts.entry(key).or_insert(0) += count;
+                    total += count;
+                }
+
+                prop_assert_eq!(sketch.total_count(), total);
+                let bound = (config.epsilon * total as f64).ceil() as u64;
+                let mut violations = 0usize;
+                for (&key, &true_count) in &true_counts {
+                    let est = sketch.estimate(&key);
+                    prop_assert!(
+                        est >= true_count,
+                        "CountMinSketch underestimated key {key}: est={est} < true={true_count}"
+                    );
+                    if est.saturating_sub(true_count) > bound {
+                        violations += 1;
+                    }
+                }
+                // With width = ceil(e / 0.05) = 55 and <= 64 distinct keys,
+                // empirical violation rate must stay well below 25%.
+                prop_assert!(
+                    violations * 4 <= true_counts.len() + 1,
+                    "Too many bound violations: {violations} / {}",
+                    true_counts.len()
+                );
+            }
+        }
     }
 }

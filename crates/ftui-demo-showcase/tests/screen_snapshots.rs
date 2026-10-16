@@ -2013,6 +2013,21 @@ fn action_timeline_title() {
     assert_eq!(screen.tab_label(), "Timeline");
 }
 
+#[cfg(feature = "experimental")]
+#[test]
+fn action_timeline_aggregate_pane_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    for t in 1..=20 {
+        screen.tick(t);
+    }
+    screen.update(&press(KeyCode::Char('a')));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_aggregate_pane_120x40", &frame.buffer);
+}
+
 // ============================================================================
 // Theme Studio — Live palette editor (bd-vu0o.1)
 // ============================================================================

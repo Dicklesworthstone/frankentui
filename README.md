@@ -2027,7 +2027,7 @@ $$
 
 Intuition: a tiny data structure gives you “close enough” frequencies at huge scale.
 
-**Where it runs:** `ftui_text::width_cache::CountMinSketch` backs the benchmark-only `TinyLfuWidthCache` (production width caching uses `S3FifoWidthCache` in `ftui_core::text_width`), and `ftui_runtime::countmin_sketch` is a quarantined `experimental` module with no production consumer.
+**Where it runs:** `ftui_text::width_cache::CountMinSketch` backs the benchmark-only `TinyLfuWidthCache` (production width caching uses `S3FifoWidthCache` in `ftui_core::text_width`), and `ftui_runtime::countmin_sketch` (`experimental`) provides a Count-Min sketch with PAC-Bayes error budgeting used by `TimelineAggregator`; the showcase `action_timeline` screen exercises it when built with `--features experimental` (no consumer in the default runtime/render path).
 
 ### PAC‑Bayes Calibration (Error Tightening)
 
@@ -2039,7 +2039,7 @@ $$
 
 Intuition: the bound shrinks as we observe more data, without assuming a specific distribution.
 
-**Where it runs: nowhere in production.** Implemented only in the quarantined `experimental` module `ftui_runtime::countmin_sketch`.
+**Where it runs:** Implemented in `ftui_runtime::countmin_sketch` (`experimental`), used by `ftui_runtime::timeline_aggregator`, and exercised by the showcase `action_timeline` screen when built with `--features experimental` (not in the default runtime/render path).
 
 ### Scheduling Math (Smith’s Rule + Aging)
 
@@ -2276,7 +2276,7 @@ ftui-runtime = { version = "0.9", features = ["experimental"] }
 | `ftui-runtime` | `conformal_frame_guard` | Conformal frame guard for frame timing with explicit unavailable bounds | `experimental` |
 | `ftui-runtime` | `conformal_stages` | Multi-stage Mondrian conformal prediction for render pipeline timing | `experimental` |
 | `ftui-runtime` | `cost_model` | Formal mathematical cost models for caches, scheduling, and batching | `experimental` |
-| `ftui-runtime` | `countmin_sketch` | Count-Min Sketch with PAC-Bayes error budgeting for timeline aggregation | `experimental` |
+| `ftui-runtime` | `countmin_sketch` | Count-Min Sketch with PAC-Bayes error budgeting for timeline aggregation (exercised in showcase `action_timeline` under `--features experimental`) | `experimental` |
 | `ftui-runtime` | `degradation_cascade` | Cascade from conformal frame guard risk detection through budget controller to widget priority | `merge pending (G13)` |
 | `ftui-runtime` | `eprocess_throttle` | Anytime-valid adaptive recompute throttle using GRAPA test martingales | `merge pending (G13)` |
 | `ftui-runtime` | `evidence_bridges` | Convert domain-specific decision types into unified evidence ledger records | `experimental` |
@@ -2292,7 +2292,7 @@ ftui-runtime = { version = "0.9", features = ["experimental"] }
 | `ftui-runtime` | `schedule_trace` | Deterministic golden trace infrastructure for async task manager testing | `experimental` |
 | `ftui-runtime` | `slo` | Machine-readable SLO definitions, breach detection, and safe-mode enforcement | `experimental` |
 | `ftui-runtime` | `sos_barrier` | Sum-of-squares (SOS) polynomial barrier certificate evaluator for frame-budget admissibility | `experimental` |
-| `ftui-runtime` | `timeline_aggregator` | Bounded-memory action timeline event aggregation and change-point alerting | `experimental` |
+| `ftui-runtime` | `timeline_aggregator` | Bounded-memory action timeline event aggregation and change-point alerting (exercised in showcase `action_timeline` under `--features experimental`) | `experimental` |
 | `ftui-runtime` | `validation_pipeline` | Expected-cost validation ordering with Bayesian online learning | `experimental` |
 | `ftui-runtime` | `wasm_runner` | Step-based synchronous program runner driving a Model without background threads | `experimental` |
 
@@ -2970,7 +2970,7 @@ Before anyone builds the engine, note that the render cost surface measured on 2
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-The module offers a frame-budget admissibility test built on a **polynomial barrier certificate** in the sum-of-squares style. Nothing calls it — see **Where it runs** below — so the present tense here describes the function, not the render path:
+The module offers a frame-budget admissibility test built on a **polynomial barrier certificate** in the sum-of-squares style. It is not used for frame admissibility in the runtime (which is decided by `ConformalPredictor` and `BudgetController`) — see **Where it runs** below — so the present tense here describes the function, not the render path:
 
 ```
 State space:
@@ -2985,11 +2985,11 @@ Safety:
   B(x) ≤ 0   ⟹  state is at or beyond the unsafe boundary
 ```
 
-**Provenance: the coefficients are hand-chosen, not SDP-solved.** `sos_barrier_coeffs.rs` says so itself — they were written by hand to satisfy eight verification points, and **no `scripts/solve_sos_barrier.py` exists in this repository or its history**. An earlier version of this section claimed an SOS/SDP relaxation produced them and named that script; the 2026-09-01 reality check found that claim false, the source header was corrected, and this section was not. If a solver is ever added, regenerate the coefficients from it and record the solver, its inputs and the run date in that file.
+**Provenance: the coefficients are hand-chosen, not SDP-solved.** `sos_barrier_coeffs.rs` says so itself — they were written by hand (2026-03-05) to satisfy eight verification points, and have not been verified by an SDP solver. An earlier version of this section claimed an SOS/SDP relaxation produced them; the 2026-09-01 reality check found that claim false, the source header was corrected, and this section was updated to match. If a solver is ever added, regenerate the coefficients from it and record the solver, its inputs and the run date in that file.
 
 So what the evaluator gives you is a *polynomial admissibility test whose shape was chosen by hand*, not a certificate carrying an SOS proof of the Lyapunov-like decrease condition.
 
-**Where it runs: nowhere.** Nothing in any crate's `src/` imports `ftui_runtime::sos_barrier`, so no frame's budget is actually checked against the barrier. An earlier correction of this section said the evaluator "runs in constant time per frame with no allocations" — true of the function's complexity, misleading about its use, since nothing calls it per frame or at all. `sos_barrier.rs` is 257 lines, allocation-free and constant-time *when called*, which is the part worth relying on if you call it yourself.
+**Where it runs: nowhere.** Nothing in any crate's `src/` imports `ftui_runtime::sos_barrier`, so no frame's budget is actually checked against the barrier. An earlier correction of this section said the evaluator "runs in constant time per frame with no allocations" — true of the function's complexity, misleading about its use, since nothing calls it per frame or at all. `sos_barrier.rs` is allocation-free and constant-time *when called*, which is the part worth relying on if you call it yourself.
 
 Why SOS instead of a simple threshold? A polynomial barrier can encode nonlinear safe/unsafe boundaries that accurately reflect the interaction between budget remaining and workload estimate. A flat threshold either triggers too early (wasting visual quality) or too late (missing the deadline).
 
