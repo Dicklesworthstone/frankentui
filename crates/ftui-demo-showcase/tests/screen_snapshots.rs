@@ -1385,6 +1385,20 @@ fn app_help_overlay_80x24() {
 }
 
 #[test]
+fn help_overlay_from_keymap_80x24() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let _caps = stable_caps();
+    let app = AppModel::new();
+    let hints = app
+        .help_hints_from_keymap()
+        .with_mode(ftui_widgets::help::HelpMode::Full);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    ftui_widgets::Widget::render(&hints, Rect::new(0, 0, 80, 24), &mut frame);
+    assert_snapshot!("help_overlay_from_keymap_80x24", &frame.buffer);
+}
+
+#[test]
 fn app_help_overlay_mermaid_mega_showcase_80x24() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
     let _caps = mermaid_cell_only_caps();

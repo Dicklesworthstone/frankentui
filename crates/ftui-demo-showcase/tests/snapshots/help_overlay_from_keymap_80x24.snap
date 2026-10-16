@@ -1,0 +1,24 @@
+Global                                                                          
+q              Quit application                                                 
+Ctrl+c         Quit application                                                 
+Ctrl+k         Open command palette                                             
+?              Toggle this help overlay                                         
+Shift+?        Toggle this help overlay                                         
+F12            Toggle debug overlay                                             
+F6             Toggle mouse capture                                             
+Ctrl+p         Toggle performance HUD                                           
+Ctrl+i         Toggle evidence inspector                                        
+Ctrl+z         Undo                                                             
+Ctrl+y         Redo                                                             
+Ctrl+Z         Redo                                                             
+A              Toggle A11y panel                                                
+Ctrl+t         Cycle color theme                                                
+m              Toggle mouse capture                                             
+Tab            Next screen                                                      
+BackTab        Previous screen                                                  
+Shift+BackTab  Previous screen                                                  
+L              Next screen                                                      
+H              Previous screen                                                  
+1              Jump to screen 1-10                                              
+2              Jump to screen 1-10                                              
+3              Jump to screen 1-10                                              

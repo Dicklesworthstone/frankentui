@@ -1317,7 +1317,11 @@ pub fn global_keybindings() -> Vec<GlobalBinding> {
     ]
 }
 
-fn build_help_overlay_hints(current: ScreenId, screen_bindings: &[HelpEntry]) -> KeybindingHints {
+fn build_help_overlay_hints(
+    current: ScreenId,
+    screen_bindings: &[HelpEntry],
+    keymap_help: Option<&ftui_widgets::help::Help>,
+) -> KeybindingHints {
     // Key styling: bold with accent color
     let key_style = Style::new().bold().fg(theme::accent::PRIMARY);
 
@@ -1328,6 +1332,7 @@ fn build_help_overlay_hints(current: ScreenId, screen_bindings: &[HelpEntry]) ->
     let category_style = Style::new().bold().underline().fg(theme::fg::SECONDARY);
 
     // Build KeybindingHints with categorized global entries and screen bindings.
+    let globals = global_keybindings();
     let mut hints = KeybindingHints::new()
         .with_mode(HelpMode::Full)
         .with_show_context(!screen_bindings.is_empty())
@@ -1336,9 +1341,30 @@ fn build_help_overlay_hints(current: ScreenId, screen_bindings: &[HelpEntry]) ->
         .with_key_style(key_style)
         .with_desc_style(desc_style)
         .with_category_style(category_style);
-    for global in global_keybindings() {
+    for global in &globals {
         hints =
-            hints.global_entry_categorized(global.entry.key, global.entry.action, global.category);
+            hints.global_entry_categorized(global.entry.key, global.entry.action, global.category.clone());
+    }
+    if let Some(help) = keymap_help {
+        for entry in help.entries() {
+            let already_listed = globals.iter().any(|g| {
+                g.entry.action.eq_ignore_ascii_case(&entry.desc)
+                    || g.entry.key.eq_ignore_ascii_case(&entry.key)
+            }) || matches!(
+                entry.desc.as_str(),
+                "Pass through to focused widget"
+                    | "Next screen"
+                    | "Previous screen"
+                    | "Jump to screen 1-10"
+            );
+            if !already_listed {
+                hints = hints.global_entry_categorized(
+                    entry.key.clone(),
+                    entry.desc.clone(),
+                    HelpCategory::Global,
+                );
+            }
+        }
     }
 
     // Add screen-specific bindings as contextual entries under a custom category.
@@ -1364,6 +1390,18 @@ fn build_help_overlay_hints(current: ScreenId, screen_bindings: &[HelpEntry]) ->
 pub fn render_help_overlay(
     current: ScreenId,
     screen_bindings: &[HelpEntry],
+    frame: &mut Frame,
+    area: Rect,
+) {
+    render_help_overlay_with_keymap(current, screen_bindings, None, frame, area);
+}
+
+/// Render the centered help overlay, augmenting global entries with any
+/// custom bindings present in `keymap_help`.
+pub fn render_help_overlay_with_keymap(
+    current: ScreenId,
+    screen_bindings: &[HelpEntry],
+    keymap_help: Option<&ftui_widgets::help::Help>,
     frame: &mut Frame,
     area: Rect,
 ) {
@@ -1403,7 +1441,7 @@ pub fn render_help_overlay(
         return;
     }
 
-    let hints = build_help_overlay_hints(current, screen_bindings);
+    let hints = build_help_overlay_hints(current, screen_bindings, keymap_help);
 
     let legend_width = {
         let mut width = display_width("Categories:");
@@ -1688,7 +1726,7 @@ mod tests {
 
     #[test]
     fn help_overlay_hints_include_global_dismiss_key() {
-        let hints = build_help_overlay_hints(ScreenId::Dashboard, &[]);
+        let hints = build_help_overlay_hints(ScreenId::Dashboard, &[], None);
         let entries = hints.visible_entries();
         assert!(
             entries
