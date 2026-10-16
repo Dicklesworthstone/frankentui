@@ -496,7 +496,7 @@ Provides a layered terminal UI framework with an Elm/Bubbletea-style runtime, de
                                 ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │                          Output Layer                              │
-│   TerminalWriter (inline or alt-screen)                           │
+│   BackendPresenter (TerminalPresenter over TerminalWriter; Web)    │
 └──────────────────────────────────────────────────────────────────┘
 ```
 

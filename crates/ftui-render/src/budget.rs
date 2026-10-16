@@ -211,9 +211,23 @@ impl PidState {
 ///   a warmup period of 10 frames to avoid unstable early estimates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EProcessConfig {
-    /// Sensitivity parameter λ. Higher values detect overload faster
+    /// Initial/baseline sensitivity parameter λ. Higher values detect overload faster
     /// but increase false positive risk near the boundary.
+    /// Default: 0.5.
     pub lambda: f64,
+    /// Whether to adapt λ online via the Gaussian-form GRAPA update
+    /// `λ_{t+1} = clamp(λ_t + η (r_t − λ_t), λ_min, λ_max)`.
+    /// Default: true.
+    pub adaptive_lambda: bool,
+    /// Step size η for Gaussian-form GRAPA adaptation of λ.
+    /// Default: 0.1.
+    pub grapa_eta: f64,
+    /// Lower bound on the betting fraction λ.
+    /// Default: 0.05.
+    pub lambda_min: f64,
+    /// Upper bound on the betting fraction λ.
+    /// Default: 2.0.
+    pub lambda_max: f64,
     /// Significance level α. Degrade when E_t > 1/α.
     /// Default: 0.05 (need E_t > 20 to degrade).
     pub alpha: f64,
@@ -242,6 +256,10 @@ impl Default for EProcessConfig {
     fn default() -> Self {
         Self {
             lambda: 0.5,
+            adaptive_lambda: true,
+            grapa_eta: 0.1,
+            lambda_min: 0.05,
+            lambda_max: 2.0,
             alpha: 0.05,
             beta: 0.5,
             sigma_ema_decay: 0.9,
@@ -256,6 +274,12 @@ impl Default for EProcessConfig {
 struct EProcessState {
     /// Current e-process value E_t (starts at 1.0).
     e_value: f64,
+    /// Current predictable betting fraction λ_t (initialized from `config.lambda`).
+    ///
+    /// Invariant: at frame `t`, `update()` uses the `lambda` stored at the end of
+    /// frame `t - 1` (measurable before observing `r_t`) to update `e_value`, and
+    /// only then adapts `lambda` for frame `t + 1`.
+    lambda: f64,
     /// EMA estimate of frame time standard deviation (ms).
     sigma_ema: f64,
     /// EMA estimate of mean frame time (ms) for residual computation.
@@ -268,6 +292,7 @@ impl Default for EProcessState {
     fn default() -> Self {
         Self {
             e_value: 1.0,
+            lambda: EProcessConfig::default().lambda,
             sigma_ema: 0.0,
             mean_ema: 0.0,
             frames_observed: 0,
@@ -276,7 +301,25 @@ impl Default for EProcessState {
 }
 
 impl EProcessState {
+    fn new(config: &EProcessConfig) -> Self {
+        Self {
+            lambda: config.lambda,
+            ..Self::default()
+        }
+    }
+
     /// Update the e-process with a new frame time observation.
+    ///
+    /// Uses the current predictable betting fraction `self.lambda` ($\lambda_{t-1}$)
+    /// to update $E_t = E_{t-1} \exp(\lambda_{t-1} r_t - \lambda_{t-1}^2 / 2)$, and
+    /// then (when `config.adaptive_lambda` is enabled and warmup has completed)
+    /// applies the Gaussian-form GRAPA gradient step:
+    ///
+    /// $$\frac{\partial}{\partial \lambda}\left(\lambda r_t - \frac{\lambda^2}{2}\right) = r_t - \lambda_t
+    ///   \implies \lambda_t = \mathrm{clamp}(\lambda_{t-1} + \eta (r_t - \lambda_{t-1}), \lambda_{\min}, \lambda_{\max})$$
+    ///
+    /// generalizing the Bernoulli GRAPA update in `ftui_runtime::eprocess_throttle`
+    /// (`grad = (x_t - μ_0) / (1 + λ(x_t - μ_0))`) to standardized sub-Gaussian residuals.
     ///
     /// Returns the updated E_t value.
     fn update(&mut self, frame_time_ms: f64, target_ms: f64, config: &EProcessConfig) -> f64 {
@@ -286,6 +329,7 @@ impl EProcessState {
         if self.frames_observed == 1 {
             self.mean_ema = frame_time_ms;
             self.sigma_ema = config.sigma_floor_ms;
+            self.lambda = config.lambda;
         } else {
             let decay = config.sigma_ema_decay;
             self.mean_ema = decay * self.mean_ema + (1.0 - decay) * frame_time_ms;
@@ -294,16 +338,21 @@ impl EProcessState {
             self.sigma_ema = decay * self.sigma_ema + (1.0 - decay) * deviation;
         }
 
+        if !config.adaptive_lambda {
+            self.lambda = config.lambda;
+        }
+
         // Floor sigma to prevent instability
         let sigma = self.sigma_ema.max(config.sigma_floor_ms);
 
         // Compute standardized residual
         let residual = (frame_time_ms - target_ms) / sigma;
 
-        // E-process multiplicative update:
-        // E_{t+1} = E_t * exp(λ * r_t − λ² * σ² / 2)
+        // E-process multiplicative update (predictable betting: uses λ_{t-1}
+        // measurable at time t-1 before observing r_t):
+        // E_t = E_{t-1} * exp(λ_{t-1} * r_t − λ_{t-1}² * σ² / 2)
         // Since r_t is already standardized, σ in the exponent is 1.0.
-        let lambda = config.lambda;
+        let lambda = self.lambda;
         let log_factor = lambda * residual - lambda * lambda / 2.0;
         if !log_factor.is_nan() {
             self.e_value *= log_factor.exp();
@@ -311,6 +360,33 @@ impl EProcessState {
             // by allowing it to grow large or shrink small).
             self.e_value = self.e_value.clamp(1e-10, 1e10);
         }
+
+        // Adapt λ for step t+1 after computing E_t (no adaptation during warmup frames).
+        // While accumulated overload evidence E_t > 1.0 is draining, keep λ >= config.lambda
+        // so negative residuals during recovery drain E_t back below β promptly.
+        if config.adaptive_lambda
+            && self.frames_observed >= config.warmup_frames
+            && !residual.is_nan()
+        {
+            let lo = config.lambda_min.min(config.lambda_max);
+            let hi = config.lambda_max.max(config.lambda_min);
+            let effective_min = if self.e_value > 1.0 && residual < 0.0 {
+                config.lambda.clamp(lo, hi)
+            } else {
+                lo
+            };
+            self.lambda = (self.lambda + config.grapa_eta * (residual - self.lambda))
+                .clamp(effective_min, hi);
+        }
+
+        #[cfg(feature = "tracing")]
+        trace!(
+            target: "ftui.eprocess",
+            lambda = self.lambda,
+            e_value = self.e_value,
+            residual,
+            "e-process update"
+        );
 
         self.e_value
     }
@@ -332,8 +408,8 @@ impl EProcessState {
     }
 
     /// Reset state.
-    fn reset(&mut self) {
-        *self = Self::default();
+    fn reset(&mut self, config: &EProcessConfig) {
+        *self = Self::new(config);
     }
 }
 
@@ -516,10 +592,11 @@ impl BudgetDecisionReason {
 impl BudgetController {
     /// Create a new budget controller with the given configuration.
     pub fn new(config: BudgetControllerConfig) -> Self {
+        let eprocess = EProcessState::new(&config.eprocess);
         Self {
             config,
             pid: PidState::default(),
-            eprocess: EProcessState::default(),
+            eprocess,
             current_level: DegradationLevel::Full,
             frames_since_change: 0,
             last_pid_output: 0.0,
@@ -714,6 +791,12 @@ impl BudgetController {
         self.eprocess.e_value
     }
 
+    /// Get the current e-process predictable betting fraction λ (for diagnostics/logging).
+    #[inline]
+    pub fn eprocess_lambda(&self) -> f64 {
+        self.eprocess.lambda
+    }
+
     /// Get the current e-process sigma estimate (ms).
     #[inline]
     pub fn eprocess_sigma_ms(&self) -> f64 {
@@ -748,6 +831,7 @@ impl BudgetController {
             pid_i: self.pid.last_i,
             pid_d: self.pid.last_d,
             e_value: self.eprocess.e_value,
+            eprocess_lambda: self.eprocess.lambda,
             frames_observed: self.eprocess.frames_observed,
             frames_since_change: self.frames_since_change,
             last_decision: self.last_decision,
@@ -770,7 +854,7 @@ impl BudgetController {
     /// Reset the controller to initial state.
     pub fn reset(&mut self) {
         self.pid.reset();
-        self.eprocess.reset();
+        self.eprocess.reset(&self.config.eprocess);
         self.current_level = DegradationLevel::Full;
         self.frames_since_change = 0;
         self.last_pid_output = 0.0;
@@ -816,6 +900,8 @@ pub struct BudgetTelemetry {
     pub pid_d: f64,
     /// Current e-process value E_t.
     pub e_value: f64,
+    /// Current e-process betting fraction λ_t.
+    pub eprocess_lambda: f64,
     /// Frames observed by the e-process.
     pub frames_observed: u32,
     /// Frames since last level change.
@@ -2253,7 +2339,7 @@ mod tests {
             state.update(50.0, 16.0, &config);
             state.update(50.0, 16.0, &config);
 
-            state.reset();
+            state.reset(&config);
             assert!((state.e_value - 1.0).abs() < f64::EPSILON);
             assert_eq!(state.frames_observed, 0);
         }
@@ -4243,6 +4329,7 @@ mod tests {
                 pid_i: 0.0,
                 pid_d: 0.0,
                 e_value: 1.0,
+                eprocess_lambda: 0.5,
                 frames_observed: 0,
                 frames_since_change: 0,
                 last_decision: BudgetDecision::Hold,
@@ -4274,6 +4361,7 @@ mod tests {
                 pid_i: 0.1,
                 pid_d: 0.1,
                 e_value: 1.0,
+                eprocess_lambda: 0.5,
                 frames_observed: 5,
                 frames_since_change: 2,
                 last_decision: BudgetDecision::Hold,
@@ -4741,6 +4829,250 @@ mod tests {
                 assert!(
                     path_a.contains(&expected),
                     "expected ladder traversal to visit {expected:?}"
+                );
+            }
+        }
+
+        fn splitmix64_normal(state: &mut u64) -> (f64, f64) {
+            fn next_u01(state: &mut u64) -> f64 {
+                *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = *state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^= z >> 31;
+                ((z >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+            }
+            let u1 = next_u01(state).clamp(1e-12, 1.0 - 1e-12);
+            let u2 = next_u01(state);
+            let r = (-2.0 * u1.ln()).sqrt();
+            let theta = 2.0 * std::f64::consts::PI * u2;
+            (r * theta.cos(), r * theta.sin())
+        }
+
+        #[test]
+        fn budget_controller_grapa_adapts_lambda() {
+            let target_ms = 16.0;
+            let step_ms = target_ms * 1.8; // 28.8ms
+            let base_eprocess = EProcessConfig {
+                lambda: 0.5,
+                adaptive_lambda: true,
+                grapa_eta: 0.1,
+                lambda_min: 0.05,
+                lambda_max: 2.0,
+                alpha: 0.05,
+                beta: 0.5,
+                sigma_ema_decay: 0.9,
+                sigma_floor_ms: 4.0,
+                warmup_frames: 10,
+            };
+
+            let mut adaptive = BudgetController::new(BudgetControllerConfig {
+                target: Duration::from_millis(16),
+                eprocess: base_eprocess.clone(),
+                ..Default::default()
+            });
+            let mut fixed = BudgetController::new(BudgetControllerConfig {
+                target: Duration::from_millis(16),
+                eprocess: EProcessConfig {
+                    adaptive_lambda: false,
+                    ..base_eprocess.clone()
+                },
+                ..Default::default()
+            });
+
+            // 1. Feed 30 frames at target (16ms), then a step to 1.8x target (28.8ms).
+            for _ in 0..30 {
+                adaptive.update(Duration::from_millis(16));
+                fixed.update(Duration::from_millis(16));
+            }
+
+            let threshold = 1.0 / base_eprocess.alpha; // 20.0
+            let step_dur = Duration::from_secs_f64(step_ms / 1000.0);
+            let mut adaptive_cross = None;
+            let mut fixed_cross = None;
+
+            for step_frame in 1..=50usize {
+                adaptive.update(step_dur);
+                fixed.update(step_dur);
+                if adaptive_cross.is_none() && adaptive.e_value() > threshold {
+                    adaptive_cross = Some(step_frame);
+                }
+                if fixed_cross.is_none() && fixed.e_value() > threshold {
+                    fixed_cross = Some(step_frame);
+                }
+                if adaptive_cross.is_some() && fixed_cross.is_some() {
+                    break;
+                }
+            }
+
+            let adaptive_frames = adaptive_cross.expect("adaptive controller must cross 1/alpha");
+            let fixed_frames = fixed_cross.expect("fixed controller must cross 1/alpha");
+            eprintln!(
+                "budget_controller_grapa_adapts_lambda: adaptive_frames={adaptive_frames}, fixed_frames={fixed_frames}"
+            );
+            assert!(
+                adaptive_frames < fixed_frames,
+                "Expected adaptive controller ({adaptive_frames} frames) to cross 1/alpha={threshold} in strictly fewer frames than fixed ({fixed_frames} frames)"
+            );
+
+            // 2. Feed 10,000 frames at target with N(0, 1*sigma) noise (seeded); neither crosses.
+            let null_eprocess = EProcessConfig {
+                sigma_floor_ms: 2.0,
+                ..EProcessConfig::default()
+            };
+            let mut adaptive_null = BudgetController::new(BudgetControllerConfig {
+                target: Duration::from_millis(16),
+                eprocess: null_eprocess.clone(),
+                ..Default::default()
+            });
+            let mut fixed_null = BudgetController::new(BudgetControllerConfig {
+                target: Duration::from_millis(16),
+                eprocess: EProcessConfig {
+                    adaptive_lambda: false,
+                    ..null_eprocess
+                },
+                ..Default::default()
+            });
+
+            let mut rng = 0x6130_1720_2026_1016u64;
+            for i in 0..5_000 {
+                let (z0, z1) = splitmix64_normal(&mut rng);
+                for (step_offset, z) in [(0usize, z0), (1usize, z1)] {
+                    let frame_idx = i * 2 + step_offset;
+                    // N(0, 1ms) noise around 16ms target with sigma_floor_ms = 2.0ms
+                    let ms = (16.0 + z).clamp(1.0, 31.0);
+                    let dur = Duration::from_secs_f64(ms / 1000.0);
+                    adaptive_null.update(dur);
+                    fixed_null.update(dur);
+                    assert!(
+                        adaptive_null.e_value() <= threshold,
+                        "adaptive crossed threshold at null frame {frame_idx}: E={}",
+                        adaptive_null.e_value()
+                    );
+                    assert!(
+                        fixed_null.e_value() <= threshold,
+                        "fixed crossed threshold at null frame {frame_idx}: E={}",
+                        fixed_null.e_value()
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn lambda_is_predictable() {
+            // Verify that at every step t, the log-factor uses λ_{t-1} (reported in
+            // telemetry at step t - 1 before observing r_t), reconstructing e_value_t
+            // from e_value_{t-1} and λ_{t-1} within 1e-9.
+            let cfg = BudgetControllerConfig {
+                target: Duration::from_millis(16),
+                eprocess: EProcessConfig {
+                    warmup_frames: 3,
+                    ..EProcessConfig::default()
+                },
+                ..Default::default()
+            };
+            let mut ctrl = BudgetController::new(cfg.clone());
+            let mut mirror_state = EProcessState::new(&cfg.eprocess);
+
+            let sequence_ms = [
+                16.0, 15.5, 16.5, 18.0, 22.0, 26.0, 30.0, 24.0, 16.0, 14.0, 12.0, 16.0, 20.0, 28.0,
+            ];
+
+            let mut prev_e = ctrl.telemetry().e_value;
+            let mut prev_lambda = ctrl.telemetry().eprocess_lambda;
+
+            for (idx, &ms) in sequence_ms.iter().enumerate() {
+                // Compute exact residual r_t using the same sigma EMA update.
+                mirror_state.frames_observed = mirror_state.frames_observed.saturating_add(1);
+                if mirror_state.frames_observed == 1 {
+                    mirror_state.mean_ema = ms;
+                    mirror_state.sigma_ema = cfg.eprocess.sigma_floor_ms;
+                } else {
+                    let decay = cfg.eprocess.sigma_ema_decay;
+                    mirror_state.mean_ema = decay * mirror_state.mean_ema + (1.0 - decay) * ms;
+                    let deviation = (ms - mirror_state.mean_ema).abs();
+                    mirror_state.sigma_ema =
+                        decay * mirror_state.sigma_ema + (1.0 - decay) * deviation;
+                }
+                let sigma = mirror_state.sigma_ema.max(cfg.eprocess.sigma_floor_ms);
+                let r_t = (ms - 16.0) / sigma;
+
+                ctrl.update(Duration::from_secs_f64(ms / 1000.0));
+                let telem = ctrl.telemetry();
+
+                let expected_e = (prev_e
+                    * (prev_lambda * r_t - prev_lambda * prev_lambda / 2.0).exp())
+                .clamp(1e-10, 1e10);
+                let rel_err = (telem.e_value - expected_e).abs() / expected_e.max(1.0);
+                assert!(
+                    (telem.e_value - expected_e).abs() < 1e-9 || rel_err < 1e-9,
+                    "step {idx}: expected e_value {expected_e} from prev_e={prev_e} and prev_lambda={prev_lambda}, got {}",
+                    telem.e_value
+                );
+
+                prev_e = telem.e_value;
+                prev_lambda = telem.eprocess_lambda;
+            }
+        }
+
+        #[test]
+        fn lambda_stays_within_bounds() {
+            let config = EProcessConfig {
+                warmup_frames: 0,
+                lambda_min: 0.05,
+                lambda_max: 2.0,
+                ..EProcessConfig::default()
+            };
+            let mut state = EProcessState::new(&config);
+
+            for &frame_ms in &[0.0, 1e6, 0.0, 1e6, 16.0, 1e6, 1e6, 0.0, 0.0, f64::NAN, 16.0] {
+                state.update(frame_ms, 16.0, &config);
+                assert!(
+                    state.lambda.is_finite(),
+                    "lambda must remain finite, got {}",
+                    state.lambda
+                );
+                assert!(
+                    state.lambda >= config.lambda_min && state.lambda <= config.lambda_max,
+                    "lambda {} out of [{}, {}]",
+                    state.lambda,
+                    config.lambda_min,
+                    config.lambda_max
+                );
+            }
+        }
+
+        proptest::proptest! {
+            #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+
+            #[test]
+            fn proptest_e_value_is_supermartingale_under_null(seed in 1u64..1_000_000u64) {
+                let cfg = EProcessConfig {
+                    warmup_frames: 10,
+                    sigma_floor_ms: 2.0,
+                    ..EProcessConfig::default()
+                };
+                let runs = 200usize;
+                let frames = 500usize;
+                let mut total_final_e = 0.0;
+
+                for run in 0..runs {
+                    let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(run as u64);
+                    let mut state = EProcessState::new(&cfg);
+                    for _ in 0..(frames / 2) {
+                        let (z0, z1) = splitmix64_normal(&mut rng);
+                        let f0 = (16.0 + z0).clamp(1.0, 31.0);
+                        let f1 = (16.0 + z1).clamp(1.0, 31.0);
+                        state.update(f0, 16.0, &cfg);
+                        state.update(f1, 16.0, &cfg);
+                    }
+                    total_final_e += state.e_value;
+                }
+
+                let mean_final_e = total_final_e / runs as f64;
+                proptest::prop_assert!(
+                    mean_final_e < 3.0,
+                    "Expected mean final e_value < 3.0 over {runs} null runs of {frames} frames, got {mean_final_e}"
                 );
             }
         }

@@ -1456,4 +1456,19 @@ mod tests {
 
         assert_eq!(patch.attrs >> 8, CellAttrs::LINK_ID_MAX);
     }
+
+    #[test]
+    fn web_presenter_default_trait_methods_are_neutral() {
+        let mut presenter = WebPresenter::default();
+        BackendPresenter::resize(&mut presenter, 120, 40);
+        assert_eq!(presenter.width, 120);
+        assert_eq!(presenter.height, 40);
+
+        let mode = ScreenMode::Inline { ui_height: 8 };
+        BackendPresenter::set_screen_mode(&mut presenter, mode);
+        assert_eq!(BackendPresenter::screen_mode(&presenter), mode);
+
+        BackendPresenter::write_log(&mut presenter, "hello").unwrap();
+        assert_eq!(presenter.outputs().logs, vec!["hello".to_string()]);
+    }
 }

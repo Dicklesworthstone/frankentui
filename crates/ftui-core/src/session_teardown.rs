@@ -768,6 +768,11 @@ mod tests {
     }
 
     #[test]
+    fn mux_suppresses_kitty_and_focus_in_plan() {
+        from_capabilities_applies_mux_policy();
+    }
+
+    #[test]
     fn chained_hook_runs_previous() {
         static HOOK_A_RAN: AtomicBool = AtomicBool::new(false);
         static HOOK_B_RAN: AtomicBool = AtomicBool::new(false);

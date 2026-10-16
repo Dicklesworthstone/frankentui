@@ -649,7 +649,7 @@ Terminal capability detection uses standard environment variables (`TERM`, `COLO
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                                OUTPUT LAYER                                  │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ TerminalWriter                                                               │
+│ BackendPresenter (TerminalPresenter over TerminalWriter; WebPresenter)       │
 │   inline mode (scrollback-friendly)  |  alt-screen mode (classic)            │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -1176,41 +1176,45 @@ Several monitors accumulate multiplicative **e-values** (sequential test wealth 
 
 ```
 Sub-Gaussian exponential form (ftui_render::budget::EProcessState, conformal_alert):
-    E_t = E_{t-1} × exp(λ_t · r_t − λ_t² · σ₀² / 2)
+    E_t = E_{t-1} × exp(λ_{t-1} · r_t − λ_{t-1}² · σ₀² / 2)
 
 Bernoulli wealth form (experimental ftui_runtime::eprocess_throttle, voi_sampling):
     W_t = W_{t-1} × (1 + λ_t · (X_t − μ₀))
 
-Ville's inequality (when E[e_t | F_{t-1}] ≤ 1 with predictable λ_t and no lower-floor bias):
+Ville's inequality (when E[e_t | F_{t-1}] ≤ 1 with predictable λ_{t-1} and no lower-floor bias):
     P(∃t: E_t ≥ 1/α | H₀) ≤ α   at any stopping time
 ```
 
 **Production vs. formal supermartingale distinction:**
-- **Render-path budget gate (`ftui_render::budget::EProcessState`) is a heuristic plug-in accumulator:**
-  It uses a fixed `λ = 0.5` from `EProcessConfig`, standardizes residuals by an EMA of mean absolute
-  deviation (`σ̂_MAD ≈ 0.8σ` for Gaussian noise, floored at `sigma_floor_ms = 1.0`), and clamps `E_t`
-  to `[0.01, 1000.0]`. Because `σ̂_MAD` underestimates true `σ` and the `0.01` floor prevents arbitrarily
-  small wealth, `E_t` drifts slightly upward under stationary jitter and Ville's inequality does **not**
-  formally hold (`alpha = 0.05` is a fail-safe sensitivity knob that errs toward earlier degradation,
-  not a guaranteed false-positive bound).
-- **Adaptive $\lambda_t$ (GRAPA) lives in two experimental modules with matching objectives:**
-  - `ftui_runtime::eprocess_throttle` adapts $\lambda_t$ on the Bernoulli wealth process via
+- **Render-path budget gate (`ftui_render::budget::EProcessState`) runs predictable Gaussian GRAPA over an EMA plug-in scale:**
+  By default (`EProcessConfig::default()`: `adaptive_lambda = true`, `grapa_eta = 0.1`, `lambda_min = 0.05`,
+  `lambda_max = 2.0`, initial `lambda = 0.5`), each frame computes $E_t = E_{t-1}\exp(\lambda_{t-1} r_t - \lambda_{t-1}^2 / 2)$
+  using the $\mathcal{F}_{t-1}$-measurable betting fraction $\lambda_{t-1}$ and then updates
+  $\lambda_t = \mathrm{clamp}(\lambda_{t-1} + \eta(r_t - \lambda_{t-1}), \lambda_{\min}, \lambda_{\max})$ after warmup
+  (holding $\lambda_t \ge \lambda_0$ while draining post-burst overload wealth $E_t > 1$ on recovery frames $r_t < 0$).
+  When fed standardized zero-mean unit-variance Gaussian residuals directly, the predictable GRAPA bet preserves the
+  exact supermartingale property $\mathbb{E}[E_t \mid \mathcal{F}_{t-1}] = E_{t-1}$ under $H_0$. On live frame times,
+  residuals are standardized by an EMA of mean absolute deviation (`σ̂_MAD ≈ 0.8σ` for Gaussian noise, floored at
+  `sigma_floor_ms = 1.0`) and `E_t` is clamped to `[0.01, 1e10]`, so `alpha = 0.05` acts as a fail-safe sensitivity
+  calibration that errs toward earlier degradation rather than a formal finite-sample false-positive bound.
+- **Other adaptive $\lambda_t$ (GRAPA) implementations:**
+  - `ftui_runtime::eprocess_throttle` (experimental) adapts $\lambda_t$ on the Bernoulli wealth process via
     $\lambda_{t+1} = \mathrm{clamp}(\lambda_t + \eta \frac{X_t - \mu_0}{1 + \lambda_t(X_t - \mu_0)})$.
-  - `ftui_runtime::conformal_alert` adapts $\lambda_t$ on the sub-Gaussian exponential process via
+  - `ftui_runtime::conformal_alert` (experimental) adapts $\lambda_t$ on the sub-Gaussian exponential process via
     the matching log-wealth gradient $\lambda_{t+1} = \mathrm{clamp}(\lambda_t + \eta ((z_t - \mu_0) - \lambda_t \sigma_0^2), \epsilon, 1 - \epsilon)$.
 
 **Applications in FrankenTUI:**
-- Budget degradation gate (`ftui_render::budget::EProcessState`, heuristic fixed-$\lambda$ plug-in on the render path)
+- Budget degradation decisions (`ftui_render::budget::BudgetController` with predictable Gaussian GRAPA)
+- Allocation leak alerts (`ftui_render::frame_guardrails::FrameGuardrails` via `AllocLeakDetector`)
 - VOI boundary-proximity weighting (`ftui_runtime::voi_sampling`, clamped `[1e-12, 1e12]` Bernoulli wealth)
 - Flake detection in tests (experimental `flake_detector`)
-- Allocation / throttle alerts (experimental `eprocess_throttle`)
-- Conformal *alert* threshold calibration (experimental `conformal_alert`)
+- Standalone throttle / conformal alert calibration (experimental `eprocess_throttle`, `conformal_alert`)
 
 Not the Mondrian conformal frame-time gate described below, which is the
 conformal path that is on by default: it calibrates from residual quantiles
 and carries no e-process.
 
-**Where it runs:** `ftui-render::budget` (`EProcessState` fixed-$\lambda$ heuristic gate on the default frame-budget path); `ftui-runtime::eprocess_throttle` and `ftui-runtime::conformal_alert` are experimental and not constructed by `Program` or `TerminalWriter`.
+**Where it runs:** `ftui-render::budget` (`EProcessState` with predictable Gaussian GRAPA on the default frame-budget path, emitted as `eprocess_lambda` in `budget_decision` evidence rows) and `ftui-render::frame_guardrails` (`AllocLeakDetector` on the default guardrail path); `ftui-runtime::eprocess_throttle` and `ftui-runtime::conformal_alert` are experimental and not constructed by `Program` or `TerminalWriter`.
 
 ### Conformal Alerting
 
@@ -1259,7 +1263,7 @@ preserving coverage even when data is sparse.
 
 ### CUSUM Control Charts
 
-Allocation budget tracking uses **CUSUM** (Cumulative Sum) for fast change detection:
+Allocation budget tracking in `FrameGuardrails` via `AllocLeakDetector` uses **CUSUM** (Cumulative Sum) for fast change detection:
 
 ```
 One-sided CUSUM:
@@ -1278,6 +1282,8 @@ Dual detection:
 ```
 
 **Why dual?** CUSUM is fast but can false-alarm; e-process is slower but anytime-valid. Intersection gives speed with guarantees.
+
+**Where it runs:** on every rendered frame inside `ftui_render::frame_guardrails::FrameGuardrails` via `ftui_render::alloc_budget::AllocLeakDetector` (reset after soft memory trims and emitted as `leak_e_value`, `leak_cusum_upper`, `leak_mean_bytes`, and `leak_alert` in `guardrail_snapshot` evidence rows).
 
 ### CUSUM Hover Stabilizer (Mouse Jitter)
 
@@ -1965,24 +1971,27 @@ Intuition: the system learns what “normal” looks like and updates the bar au
 We can check alerts continuously without “peeking penalties” using a sub‑Gaussian test‑martingale (e‑process):
 
 $$
-E_t = E_{t-1}\exp\bigl(\lambda r_t - \lambda^2/2\bigr)
+E_t = E_{t-1}\exp\bigl(\lambda_{t-1} r_t - \lambda_{t-1}^2/2\bigr)
 $$
 
 Intuition: we can look after every frame, and the false‑alarm guarantees still hold.
 
-**Where it runs:** fixed-$\lambda$ `EProcessState` runs on the render path inside `ftui_render::budget::BudgetController` (`warmup_frames = 10`, $\alpha = 0.05$, $\beta = 0.5$); adaptive GRAPA betting is implemented only in the quarantined `experimental` modules `ftui_runtime::conformal_alert` and `ftui_runtime::eprocess_throttle` (no production consumer).
+**Where it runs:** `ftui_render::budget::EProcessState` runs on the render path inside `BudgetController` (`warmup_frames = 10`, $\alpha = 0.05$, $\beta = 0.5$, `adaptive_lambda = true` with predictable Gaussian GRAPA) and `AllocLeakDetector` runs on the guardrail path inside `ftui_render::frame_guardrails::FrameGuardrails`; standalone experimental variants remain in `ftui_runtime::conformal_alert` and `ftui_runtime::eprocess_throttle`.
 
 ### GRAPA (Adaptive Betting Fraction)
 
 GRAPA adjusts the betting fraction to keep an e‑process sensitive but stable:
 
 $$
+\lambda_t = \mathrm{clamp}\bigl(\lambda_{t-1} + \eta(r_t - \lambda_{t-1}),\,\lambda_{\min},\,\lambda_{\max}\bigr)
+\quad\text{(Gaussian)},\qquad
 \lambda_{t+1} = \mathrm{clamp}\!\left(\lambda_t + \eta\,\frac{z_t}{1 + \lambda_t z_t}\right)
+\quad\text{(Bernoulli)}
 $$
 
 Intuition: it auto‑tunes how aggressively a test martingale bets instead of locking a single sensitivity.
 
-**Where it runs: nowhere in production.** Implemented only in the quarantined `experimental` modules `ftui_runtime::conformal_alert` and `ftui_runtime::eprocess_throttle`; the production `ftui_render::budget::EProcessState` uses a fixed $\lambda$ from `BudgetControllerConfig`.
+**Where it runs:** predictable Gaussian GRAPA runs on the default render path inside `ftui_render::budget::EProcessState` (`adaptive_lambda = true`, `grapa_eta = 0.1`, `lambda_min = 0.05`, `lambda_max = 2.0`, emitted as `eprocess_lambda` in `budget_decision` evidence rows); Bernoulli and conformal-alert variants remain in the quarantined `experimental` modules `ftui_runtime::eprocess_throttle` and `ftui_runtime::conformal_alert`.
 
 ### CUSUM (Fast Drift Detection)
 
@@ -2107,11 +2116,11 @@ The visual effects screen is deterministic math, not “random shader noise.” 
 | **Bayesian Height Predictor** | Virtualized list preallocation | $\mu_n=\frac{\kappa_0\mu_0+n\bar{x}}{\kappa_0+n}$ + conformal $q_{1-\alpha}$ | Fewer scroll jumps |
 | **BOCPD** | Resize coalescing (opt-in via `with_bocpd()`) | Run‑length posterior + hazard $H(r)$ | Regime-aware delay selection when enabled |
 | **Run‑Length Posterior** | BOCPD core (opt-in via `with_bocpd()`) | $P(r_t=r\mid x_{1:t})$ recursion | Regime switches without static rate thresholds |
-| **E‑Process** | Budget controller gate (`ftui_render::budget`, fixed $\lambda$, heuristic plug‑in) | $E_t=\mathrm{clamp}(E_{t-1}\exp(\lambda r_t-\lambda^2/2))$ | Early overload gating (empirical variance + `[0.01, 1e6]` clamp) |
-| **GRAPA** | Adaptive e‑process (experimental `conformal_alert` / `eprocess_throttle`) | $\lambda_{t+1}=\mathrm{clamp}(\lambda_t+\eta\partial\ell_t/\partial\lambda)$ | Self‑tuning sensitivity in experimental monitors |
+| **E‑Process** | Budget controller gate (`ftui_render::budget`, adaptive $\lambda_{t-1}$, plug‑in $\hat{\sigma}_{\text{MAD}}$) & leak detector (`FrameGuardrails`) | $E_t=\mathrm{clamp}(E_{t-1}\exp(\lambda_{t-1} r_t-\lambda_{t-1}^2/2))$ | Early overload & leak gating (`[0.01, 1e10]` clamp) |
+| **GRAPA** | Budget controller (`ftui_render::budget::EProcessState`, `adaptive_lambda = true`) + experimental `conformal_alert` / `eprocess_throttle` | $\lambda_t=\mathrm{clamp}(\lambda_{t-1}+\eta(r_t-\lambda_{t-1}),\lambda_{\min},\lambda_{\max})$ | Predictable self‑tuning betting sensitivity |
 | **Conformal Prediction** | Risk bounds | $q=\text{Quantile}_{\lceil(1-\alpha)(n+1)\rceil}(R)$ | Stable thresholds without tuning |
 | **Mondrian Conformal** | Frame‑time risk gating | $\hat y^+=\hat y+q_{1-\alpha}(|r|)$ per bucket | Safe budget gating with sparse data |
-| **CUSUM** | Budget change detection | $S_t=\max(0,S_{t-1}+X_t-\mu_0-k)$ | Fast drift detection |
+| **CUSUM** | Budget change detection (`FrameGuardrails` via `AllocLeakDetector`) | $S_t=\max(0,S_{t-1}+X_t-\mu_0-k)$ | Fast drift detection |
 | **CUSUM Hover Stabilizer** | Mouse hover jitter | $S_t=\max(0,S_{t-1}+d_t-k)$ | Stable hover targets without lag |
 | **Damped Spring** | Animation library (`ftui_core::animation`, standalone) | $x''+c x' + k(x-x^*)=0$ | Natural motion without frame‑rate artifacts |
 | **Easing Curves** | Animation library (`ftui_core::animation`, standalone) | $t^2$, $1-(1-t)^2$, cubic variants | Predictable velocity shaping |
@@ -2243,15 +2252,16 @@ Budget decisions and alert thresholds use **e-processes** (sequential test wealt
 
 ```
 Sub-Gaussian / Bernoulli E-Process:
-  True conditional supermartingale (fixed known σ₀ or p₀, predictable λ_t, unclamped):
+  True conditional supermartingale (fixed known σ₀ or p₀, predictable λ_{t-1}, unclamped):
     P(∃t: E_t ≥ 1/α) ≤ α under H₀ (Ville's inequality)
 
-  Production heuristic gate (ftui_render::budget::EProcessState):
-    E_t = clamp(E_{t-1} × exp(λ·r_t − λ²/2), 0.01, 1e6)
+  Production render-path gate (ftui_render::budget::EProcessState):
+    E_t = clamp(E_{t-1} × exp(λ_{t-1}·r_t − λ_{t-1}²/2), 0.01, 1e10)
+    λ_t = clamp(λ_{t-1} + η·(r_t − λ_{t-1}), λ_min, λ_max)
     with EMA plug-in variance and sub-threshold decay
 ```
 
-**Where it runs:** `ftui_render::budget::EProcessState` runs on the render path with a fixed $\lambda$ from `BudgetControllerConfig` as a practical overload gate; adaptive $\lambda_t$ (matching log-wealth gradient ascent) is implemented only in the quarantined `experimental` modules `conformal_alert` (sub-Gaussian gradient $z_{\text{centered}} - \lambda_t \sigma_0^2$) and `eprocess_throttle` (Bernoulli GRAPA gradient $r_t / (1 + \lambda_t r_t)$).
+**Where it runs:** `ftui_render::budget::EProcessState` runs on the render path with predictable Gaussian GRAPA (`adaptive_lambda = true` by default in `EProcessConfig`, updating $\lambda_t$ from $\mathcal{F}_{t-1}$-measurable residuals after warmup); quarantined experimental variants remain in `conformal_alert` (sub-Gaussian gradient $z_{\text{centered}} - \lambda_t \sigma_0^2$) and `eprocess_throttle` (Bernoulli GRAPA gradient $r_t / (1 + \lambda_t r_t)$).
 
 **Practical benefit:** Sequential wealth accumulates overload evidence across frames without fixed sample-size windows.
 
@@ -2294,8 +2304,8 @@ ftui-runtime = { version = "0.9", features = ["experimental"] }
 | `ftui-runtime` | `conformal_stages` | Multi-stage Mondrian conformal prediction for render pipeline timing | `experimental` |
 | `ftui-runtime` | `cost_model` | Formal mathematical cost models for caches, scheduling, and batching | `experimental` |
 | `ftui-runtime` | `countmin_sketch` | Count-Min Sketch with PAC-Bayes error budgeting for timeline aggregation (exercised in showcase `action_timeline` under `--features experimental`) | `experimental` |
-| `ftui-runtime` | `degradation_cascade` | Cascade from conformal frame guard risk detection through budget controller to widget priority | `merge pending (G13)` |
-| `ftui-runtime` | `eprocess_throttle` | Anytime-valid adaptive recompute throttle using GRAPA test martingales | `merge pending (G13)` |
+| `ftui-runtime` | `degradation_cascade` | Cascade from conformal frame guard risk detection through budget controller to widget priority | `superseded by ftui_render::budget + program.rs (experimental)` |
+| `ftui-runtime` | `eprocess_throttle` | Anytime-valid adaptive recompute throttle using GRAPA test martingales | `superseded by ftui_render::budget::EProcessState (experimental)` |
 | `ftui-runtime` | `evidence_bridges` | Convert domain-specific decision types into unified evidence ledger records | `experimental` |
 | `ftui-runtime` | `flake_detector` | Anytime-valid test martingale detector for flaky timing regressions in E2E tests | `experimental` |
 | `ftui-runtime` | `flat_combine` | Caller-driven flat combining for batched operation dispatch | `experimental` |
