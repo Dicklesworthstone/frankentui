@@ -1406,7 +1406,7 @@ impl Screen for LogSearch {
                 action: "Pause / resume log stream",
             },
             HelpEntry {
-                key: "g / G",
+                key: "g g / G",
                 action: "Go to top / bottom",
             },
             HelpEntry {
