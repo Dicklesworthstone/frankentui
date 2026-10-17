@@ -1417,6 +1417,91 @@ mod tests {
     }
 
     #[test]
+    fn push_a11y_collects_nodes_in_render_order_with_block_nesting() {
+        use ftui_a11y::node::A11yRole;
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(40, 10, &mut pool);
+        frame.set_a11y(&mut builder);
+
+        frame.with_a11y_scope(a11y_node(100, A11yRole::Group, "Form Block"), |f| {
+            f.push_a11y(a11y_node(101, A11yRole::TextInput, "First"));
+            f.push_a11y(a11y_node(102, A11yRole::TextInput, "Second"));
+        });
+        frame.finish_a11y();
+        let order = frame.take_a11y_order();
+        drop(frame);
+
+        let tree = builder.build();
+        assert_eq!(order, vec![100, 101, 102]);
+        assert_eq!(tree.node_count(), 3);
+        assert_eq!(tree.root_id(), Some(100));
+        assert_eq!(tree.node(101).and_then(|n| n.parent), Some(100));
+        assert_eq!(tree.node(102).and_then(|n| n.parent), Some(100));
+        assert_eq!(
+            tree.node(100).map(|n| n.children.clone()),
+            Some(vec![101, 102])
+        );
+    }
+
+    #[test]
+    fn push_a11y_is_noop_without_builder() {
+        frame_a11y_is_a_noop_without_a_builder();
+    }
+
+    #[test]
+    fn nested_scopes_three_deep_record_ancestry() {
+        use ftui_a11y::node::A11yRole;
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(40, 10, &mut pool);
+        frame.set_a11y(&mut builder);
+
+        frame.with_a11y_scope(a11y_node(1, A11yRole::Window, "Win"), |f| {
+            f.with_a11y_scope(a11y_node(2, A11yRole::Group, "Grp"), |f| {
+                f.with_a11y_scope(a11y_node(3, A11yRole::List, "Lst"), |f| {
+                    f.push_a11y(a11y_node(4, A11yRole::ListItem, "Itm"));
+                });
+            });
+        });
+        frame.finish_a11y();
+        drop(frame);
+
+        let tree = builder.build();
+        assert_eq!(tree.ancestors(4), vec![4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn finish_a11y_applies_pending_children_once() {
+        use ftui_a11y::node::A11yRole;
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(40, 10, &mut pool);
+        frame.set_a11y(&mut builder);
+
+        frame.with_a11y_scope(a11y_node(1, A11yRole::Group, "Parent"), |f| {
+            f.push_a11y(a11y_node(2, A11yRole::Button, "Child"));
+        });
+        frame.finish_a11y();
+        frame.finish_a11y();
+        drop(frame);
+
+        let tree = builder.build();
+        assert_eq!(tree.node(1).map(|n| n.children.clone()), Some(vec![2]));
+    }
+
+    #[test]
+    fn duplicate_ids_in_one_frame_debug_assert() {
+        frame_a11y_rekeys_a_taken_id_instead_of_dropping_the_node();
+    }
+
+    #[test]
     fn frame_area_is_the_full_buffer_rect() {
         let mut pool = GraphemePool::new();
         let frame = Frame::new(120, 40, &mut pool);
