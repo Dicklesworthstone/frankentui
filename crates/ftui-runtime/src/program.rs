@@ -15372,6 +15372,282 @@ mod tests {
         );
     }
 
+    #[test]
+    fn accessibility_tree_is_built_when_enabled() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+        use ftui_core::geometry::Rect;
+
+        struct SimpleA11yModel;
+        impl Model for SimpleA11yModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(10, A11yRole::Button, Rect::new(0, 0, 8, 1))
+                        .with_name("Submit")
+                        .with_state(A11yState {
+                            focused: true,
+                            ..A11yState::default()
+                        }),
+                );
+            }
+        }
+
+        let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+        let mut program = headless_program_with_config(SimpleA11yModel, config);
+        program.dirty = true;
+        program.render_frame().expect("render enabled a11y frame");
+        let tree = program.accessibility_tree().expect("tree built when enabled");
+        assert_eq!(tree.node_count(), 1);
+        assert_eq!(tree.focused_id(), Some(10));
+    }
+
+    #[test]
+    fn accessibility_tree_is_none_when_disabled() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+        use ftui_core::geometry::Rect;
+
+        struct SimpleA11yModel;
+        impl Model for SimpleA11yModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(10, A11yRole::Button, Rect::new(0, 0, 8, 1))
+                        .with_name("Submit"),
+                );
+            }
+        }
+
+        let mut program =
+            headless_program_with_config(SimpleA11yModel, ProgramConfig::default());
+        program.dirty = true;
+        program.render_frame().expect("render disabled a11y frame");
+        assert!(program.accessibility_tree().is_none());
+        assert!(program.accessibility_announcements().is_empty());
+    }
+
+    #[test]
+    fn focus_move_between_two_inputs_emits_one_announcement() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+        use ftui_a11y::tree::AnnouncementReason;
+        use ftui_core::geometry::Rect;
+
+        struct TwoInputModel {
+            focused_idx: usize,
+        }
+        impl Model for TwoInputModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                for (i, label) in ["First", "Second"].into_iter().enumerate() {
+                    frame.push_a11y(
+                        A11yNodeInfo::new((i + 1) as u64, A11yRole::TextInput, Rect::new(0, i as u16, 12, 1))
+                            .with_name(label)
+                            .with_state(A11yState {
+                                focused: self.focused_idx == i,
+                                ..A11yState::default()
+                            }),
+                    );
+                }
+            }
+        }
+
+        let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+        let mut program = headless_program_with_config(TwoInputModel { focused_idx: 0 }, config);
+        program.dirty = true;
+        program.render_frame().expect("render initial focus");
+        assert_eq!(program.accessibility_tree().unwrap().focused_id(), Some(1));
+
+        program.model.focused_idx = 1;
+        program.dirty = true;
+        program.render_frame().expect("render moved focus");
+        assert_eq!(program.accessibility_tree().unwrap().focused_id(), Some(2));
+        let focus_announcements: Vec<_> = program
+            .accessibility_announcements()
+            .iter()
+            .filter(|a| a.reason == AnnouncementReason::FocusChanged)
+            .collect();
+        assert_eq!(focus_announcements.len(), 1);
+        assert_eq!(focus_announcements[0].node_id, Some(2));
+        assert!(focus_announcements[0].text.contains("Second"));
+    }
+
+    #[test]
+    fn progress_value_change_emits_polite_live_region_announcement() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState, LiveRegion};
+        use ftui_a11y::tree::AnnouncementReason;
+        use ftui_core::geometry::Rect;
+
+        struct ProgressModel {
+            pct: u8,
+        }
+        impl Model for ProgressModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(1, A11yRole::ProgressBar, Rect::new(0, 0, 20, 1))
+                        .with_name("Upload")
+                        .with_state(A11yState {
+                            value_now: Some(f64::from(self.pct) / 100.0),
+                            value_min: Some(0.0),
+                            value_max: Some(1.0),
+                            value_text: Some(format!("{}%", self.pct)),
+                            ..A11yState::default()
+                        })
+                        .with_live_region(LiveRegion::Polite),
+                );
+            }
+        }
+
+        let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+        let mut program = headless_program_with_config(ProgressModel { pct: 20 }, config);
+        program.dirty = true;
+        program.render_frame().expect("render initial progress");
+
+        program.model.pct = 65;
+        program.dirty = true;
+        program.render_frame().expect("render updated progress");
+        let announcements = program.accessibility_announcements();
+        assert!(
+            announcements.iter().any(|a| {
+                a.reason == AnnouncementReason::LiveContentChanged
+                    && a.urgency == LiveRegion::Polite
+                    && a.text.contains("65%")
+            }),
+            "expected polite LiveContentChanged announcement for 65%; got {announcements:?}"
+        );
+    }
+
+    #[test]
+    fn unchanged_frame_emits_no_announcement() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+        use ftui_core::geometry::Rect;
+
+        struct StaticModel;
+        impl Model for StaticModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(1, A11yRole::Button, Rect::new(0, 0, 10, 1))
+                        .with_name("Save")
+                        .with_state(A11yState {
+                            focused: true,
+                            ..A11yState::default()
+                        }),
+                );
+            }
+        }
+
+        let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+        let mut program = headless_program_with_config(StaticModel, config);
+        program.dirty = true;
+        program.render_frame().expect("first frame");
+        assert!(!program.accessibility_announcements().is_empty());
+
+        program.dirty = true;
+        program.render_frame().expect("unchanged second frame");
+        assert!(program.accessibility_announcements().is_empty());
+    }
+
+    #[test]
+    fn on_accessibility_tree_hook_receives_arc() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+        use ftui_a11y::tree::A11yTree;
+        use ftui_core::geometry::Rect;
+        use std::sync::Arc;
+
+        #[derive(Default)]
+        struct HookModel {
+            shared: Option<Arc<A11yTree>>,
+        }
+        impl Model for HookModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(7, A11yRole::Group, Rect::new(0, 0, 20, 4))
+                        .with_name("Panel"),
+                );
+            }
+            fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Event> {
+                self.shared = Some(Arc::new(a11y.tree.clone()));
+                Cmd::none()
+            }
+        }
+
+        let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+        let mut program = headless_program_with_config(HookModel::default(), config);
+        program.dirty = true;
+        program.render_frame().expect("render frame with hook");
+        let arc_tree = program.model.shared.as_ref().expect("hook received tree");
+        assert_eq!(arc_tree.node_count(), 1);
+        assert_eq!(arc_tree.node(7).unwrap().name.as_deref(), Some("Panel"));
+    }
+
+    #[test]
+    fn a11y_announcement_line_is_valid_json_with_registered_fields() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+        use ftui_core::geometry::Rect;
+
+        struct JsonModel;
+        impl Model for JsonModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(42, A11yRole::TextInput, Rect::new(0, 0, 16, 1))
+                        .with_name("Email")
+                        .with_state(A11yState {
+                            focused: true,
+                            ..A11yState::default()
+                        }),
+                );
+            }
+        }
+
+        let path = temp_evidence_path("a11y_json_fields");
+        let config = ProgramConfig::default()
+            .with_accessibility(ScreenReaderPolicy::default())
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&path));
+        let mut program = headless_program_with_config(JsonModel, config);
+        program.dirty = true;
+        program.render_frame().expect("render json model");
+
+        let contents = std::fs::read_to_string(&path).expect("read evidence file");
+        let announcement_rows: Vec<serde_json::Value> = contents
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("valid JSON line"))
+            .filter(|row: &serde_json::Value| row["event"] == "a11y_announcement")
+            .collect();
+        assert!(!announcement_rows.is_empty(), "expected a11y_announcement rows");
+        for row in &announcement_rows {
+            assert!(row.get("frame_idx").is_some());
+            assert!(row.get("node_id").is_some());
+            assert!(row.get("urgency").is_some());
+            assert!(row.get("reason").is_some());
+            assert!(row.get("text").is_some());
+            assert!(row.get("text_chars").is_some());
+        }
+    }
+
     const A11Y_PRIVACY_CANARY: &str = "A11Y_SECRET_450512_\"é\\\n日";
     // Screen-reader text already normalizes whitespace before delivery.
     const A11Y_NORMALIZED_CANARY: &str = "A11Y_SECRET_450512_\"é\\ 日";

@@ -36,11 +36,11 @@ fi
 
 # G09: PTY-backed proof that a running program builds the accessibility tree
 # and announces focus changes. Runs the showcase on the Forms & Input screen
-# (screen 7) under a PTY with the evidence sink enabled, moves the panel
-# focus with Ctrl+Right, and requires `a11y_tree` rows plus
-# `a11y_announcement` rows whose reason is `FocusChanged`. The evidence JSONL
-# and the PTY transcript stay in the log directory for diagnosis.
-run_pty_focus_announcements() {
+# under a PTY with the evidence sink enabled, moves the panel focus across
+# Form -> SearchInput -> PasswordInput -> SearchInput on separate frames, and
+# verifies the FocusChanged node_id sequence [id1, id2, id1] with id1 != id2
+# and no assertive urgency.
+a11y_focus_announcements_pty() {
     local bin="$1"
     local evidence="$E2E_LOG_DIR/a11y_focus_evidence.jsonl"
     local pty_out="$E2E_LOG_DIR/a11y_focus_pty.out"
@@ -54,17 +54,20 @@ run_pty_focus_announcements() {
         return 1
     fi
 
-    # Ctrl+Right (CSI 1;5C) twice after the first frames have rendered: the
-    # screen's panel focus moves Form -> Search input -> Password input, and
-    # each TextInput reports `focused` in its accessibility node, so the tree
-    # focus changes and the diff announces it. (Tab moves inside the Form
-    # widget, which has no accessibility nodes yet.)
+    local forms_screen="7"
+    if declare -f e2e_demo_screen >/dev/null 2>&1; then
+        forms_screen="$(e2e_demo_screen "$bin" "forms_input" 2>/dev/null || echo 7)"
+    fi
+
+    rm -f "$evidence" "$pty_out"
+
+    # Ctrl+Right (CSI 1;5C) at 500ms and 1000ms, then Ctrl+Left (CSI 1;5D) at 1500ms:
+    # panel focus moves Form -> SearchInput (id1) -> PasswordInput (id2) -> SearchInput (id1).
     FTUI_DEMO_EVIDENCE_JSONL="$evidence" \
     FTUI_DEMO_DETERMINISTIC=1 \
-    FTUI_DEMO_SCREEN=7 \
-    FTUI_DEMO_EXIT_AFTER_MS=2500 \
-    PTY_SEND=$'\e[1;5C\e[1;5C' \
-    PTY_SEND_DELAY_MS=700 \
+    FTUI_DEMO_SCREEN="$forms_screen" \
+    FTUI_DEMO_EXIT_AFTER_MS=2400 \
+    PTY_SEND_SEQUENCE='[{"delay_ms":500,"text":"\u001b[1;5C"},{"delay_ms":1000,"text":"\u001b[1;5C"},{"delay_ms":1500,"text":"\u001b[1;5D"}]' \
     PTY_TIMEOUT=8 \
     PTY_COLS=100 \
     PTY_ROWS=30 \
@@ -85,27 +88,116 @@ import sys
 path = sys.argv[1]
 trees = 0
 announcements = 0
-focus_changed = 0
+focus_rows = []
+assertive_rows = []
 with open(path, encoding="utf-8") as handle:
-    for line in handle:
+    for lineno, line in enumerate(handle, start=1):
         line = line.strip()
         if not line:
             continue
-        row = json.loads(line)
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"invalid JSON on line {lineno}: {exc}") from exc
         event = row.get("event")
         if event == "a11y_tree":
             trees += 1
         elif event == "a11y_announcement":
             announcements += 1
+            if row.get("urgency") == "assertive":
+                assertive_rows.append(row)
             if row.get("reason") == "FocusChanged":
-                focus_changed += 1
-print(f"a11y_tree={trees} a11y_announcement={announcements} focus_changed={focus_changed}")
+                focus_rows.append(row)
+
+post_initial_ids = [row.get("node_id") for row in focus_rows if int(row.get("frame_idx", 0)) > 0]
+print(
+    f"a11y_tree={trees} a11y_announcement={announcements} "
+    f"focus_changed={len(focus_rows)} post_initial_ids={post_initial_ids}"
+)
 if trees == 0:
     raise SystemExit("no a11y_tree rows: the runtime did not build an accessibility tree")
-if focus_changed == 0:
-    raise SystemExit("no FocusChanged announcements after Ctrl+Right panel switches")
+if assertive_rows:
+    raise SystemExit(f"unexpected assertive announcements during focus moves: {assertive_rows}")
+if len(post_initial_ids) < 3:
+    raise SystemExit(
+        f"expected >= 3 post-initial FocusChanged announcements [id1, id2, id1], got {post_initial_ids}"
+    )
+id1, id2, id3 = post_initial_ids[0], post_initial_ids[1], post_initial_ids[2]
+if id1 is None or id2 is None or id3 is None:
+    raise SystemExit(f"FocusChanged node_id must not be null: {post_initial_ids}")
+if id1 != id3:
+    raise SystemExit(f"expected first and third focus node_id to match ([id1, id2, id1]), got {post_initial_ids}")
+if id1 == id2:
+    raise SystemExit(f"expected second focus node_id to differ from first ([id1, id2, id1]), got {post_initial_ids}")
 PY
 }
+
+run_pty_focus_announcements() {
+    a11y_focus_announcements_pty "$@"
+}
+
+# G09: PTY-backed proof that the Accessibility Panel screen renders the live
+# accessibility tree with node count >= 1 and role lines.
+a11y_panel_shows_tree_pty() {
+    local bin="$1"
+    local pty_out="$E2E_LOG_DIR/a11y_panel_pty.out"
+
+    if [[ ! -x "$bin" ]]; then
+        echo "showcase binary not found: $bin" >&2
+        return 1
+    fi
+    if ! declare -f pty_run >/dev/null 2>&1; then
+        echo "tests/e2e/lib/pty.sh is required for the PTY scenario" >&2
+        return 1
+    fi
+
+    local panel_screen="42"
+    if declare -f e2e_demo_screen >/dev/null 2>&1; then
+        panel_screen="$(e2e_demo_screen "$bin" "accessibility_panel" 2>/dev/null || echo 42)"
+    fi
+
+    rm -f "$pty_out"
+
+    FTUI_DEMO_DETERMINISTIC=1 \
+    FTUI_DEMO_SCREEN="$panel_screen" \
+    FTUI_DEMO_EXIT_AFTER_MS=1500 \
+    PTY_TIMEOUT=6 \
+    PTY_COLS=100 \
+    PTY_ROWS=30 \
+        pty_run "$pty_out" "$bin" || {
+        echo "showcase exited abnormally on accessibility_panel under PTY (see $pty_out)" >&2
+        return 1
+    }
+
+    if [[ ! -s "$pty_out" ]]; then
+        echo "no PTY output captured in $pty_out" >&2
+        return 1
+    fi
+
+    "$E2E_PYTHON" - "$pty_out" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+raw = open(path, "rb").read().decode("utf-8", errors="replace")
+# Strip CSI and OSC escape sequences to inspect rendered screen text.
+clean = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", raw)
+clean = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", clean)
+
+match = re.search(r"nodes=(\d+)", clean)
+if not match:
+    raise SystemExit("Accessibility Tree header 'nodes=<n>' not found in PTY output")
+node_count = int(match.group(1))
+if node_count < 1:
+    raise SystemExit(f"expected nodes >= 1 in Accessibility Tree pane, got nodes={node_count}")
+
+roles = ("Group", "Button", "TextInput", "Label", "ProgressBar", "List", "Table", "Tab")
+if not any(role in clean for role in roles):
+    raise SystemExit("expected at least one accessibility role line in Accessibility Tree pane")
+print(f"accessibility_panel PTY verified: nodes={node_count}")
+PY
+}
+
 
 VERBOSE=false
 QUICK=false
@@ -239,8 +331,10 @@ SHOWCASE_TARGET_DIR=$(cargo metadata --format-version=1 -q 2>/dev/null \
     | "${E2E_PYTHON:-python3}" -c "import sys,json;print(json.load(sys.stdin)['target_directory'])" 2>/dev/null \
     || echo "$PROJECT_ROOT/target")
 SHOWCASE_BIN="$SHOWCASE_TARGET_DIR/debug/ftui-demo-showcase"
-run_step "pty_focus_announcements" \
-    run_pty_focus_announcements "$SHOWCASE_BIN"
+run_step "a11y_focus_announcements_pty" \
+    a11y_focus_announcements_pty "$SHOWCASE_BIN"
+run_step "a11y_panel_shows_tree_pty" \
+    a11y_panel_shows_tree_pty "$SHOWCASE_BIN"
 
 echo ""
 echo "=========================================="
