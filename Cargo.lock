@@ -1691,6 +1691,7 @@ name = "ftui-simd"
 version = "0.9.0"
 dependencies = [
  "criterion",
+ "proptest",
 ]
 
 [[package]]
