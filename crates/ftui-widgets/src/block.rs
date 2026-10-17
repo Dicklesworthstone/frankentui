@@ -338,6 +338,25 @@ impl<'a> Block<'a> {
             draw_text_span(frame, x, area.y, title, self.border_style, max_x);
         }
     }
+
+    /// Render this block into `area` and invoke `children` with `self.inner(area)`
+    /// inside an accessibility scope owned by this block's `Group` node.
+    pub fn render_with_children<F>(&self, area: Rect, frame: &mut Frame, children: F)
+    where
+        F: FnOnce(Rect, &mut Frame),
+    {
+        let inner = self.inner(area);
+        if !area.is_empty() && frame.a11y_enabled() {
+            crate::render_block_without_a11y(self, area, frame);
+            let mut nodes = ftui_a11y::Accessible::accessibility_nodes(self, area);
+            if let Some(container) = nodes.pop() {
+                frame.with_a11y_scope(container, |frame| children(inner, frame));
+                return;
+            }
+        }
+        self.render(area, frame);
+        children(inner, frame);
+    }
 }
 
 impl Widget for Block<'_> {
