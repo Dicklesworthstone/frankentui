@@ -497,9 +497,30 @@ pub struct FormState {
     initial_values: Option<Vec<FormValue>>,
     /// Per-field validation error display state (for animation/accessibility).
     error_states: Vec<ValidationErrorState>,
+    /// When `true`, another panel owns keyboard focus so this form does not
+    /// claim accessibility focus for its active field.
+    unfocused: bool,
 }
 
 impl FormState {
+    /// Whether this form panel currently owns keyboard focus (default `true`).
+    #[must_use]
+    pub const fn is_panel_focused(&self) -> bool {
+        !self.unfocused
+    }
+
+    /// Set whether this form panel currently owns keyboard focus.
+    pub fn set_panel_focused(&mut self, focused: bool) {
+        self.unfocused = !focused;
+    }
+
+    /// Builder-style setter for whether this form panel owns keyboard focus.
+    #[must_use]
+    pub const fn with_panel_focused(mut self, focused: bool) -> Self {
+        self.unfocused = !focused;
+        self
+    }
+
     /// Focus the next field.
     pub fn focus_next(&mut self, field_count: usize) {
         if field_count > 0 {
@@ -1248,7 +1269,7 @@ impl StatefulWidget for Form {
                             i,
                             field,
                             bounds,
-                            focus_for_field,
+                            focus_for_field && state.is_panel_focused(),
                             error_msg,
                         ));
                     }
