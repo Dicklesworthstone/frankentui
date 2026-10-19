@@ -584,6 +584,25 @@ impl RuntimeDiffConfig {
     }
 }
 
+#[inline]
+fn is_uncolored_blank(cell: &ftui_render::cell::Cell) -> bool {
+    use ftui_render::cell::{CellAttrs, CellContent, StyleFlags};
+    (cell.content.is_empty() || cell.content == CellContent::from_char(' '))
+        && cell.bg.a() == 0
+        && cell.attrs.link_id() == CellAttrs::LINK_ID_NONE
+        && !cell
+            .attrs
+            .flags()
+            .intersects(StyleFlags::UNDERLINE | StyleFlags::STRIKETHROUGH | StyleFlags::REVERSE)
+}
+
+fn row_occupied_width(buffer: &Buffer, y: u16) -> u16 {
+    let row = buffer.row_cells(y);
+    row.iter()
+        .rposition(|cell| !is_uncolored_blank(cell))
+        .map_or(0, |idx| (idx as u16).saturating_add(1))
+}
+
 /// Unified terminal output coordinator.
 ///
 /// Enforces the one-writer rule and implements inline mode correctly.
@@ -1062,6 +1081,9 @@ impl<W: Write> TerminalWriter<W> {
         // May emit a DECSTBM reset when a scroll region is active; keep it
         // inside the one-writer discipline (bd-kdn7n item 2).
         let _output_guard = terminal_output_lock();
+        if !self.inline_rows_reserved || (width, height) != (self.term_width, self.term_height) {
+            self.log_floor = None;
+        }
         self.term_width = width;
         self.term_height = height;
         if matches!(self.screen_mode, ScreenMode::InlineAuto { .. }) {
@@ -1070,7 +1092,6 @@ impl<W: Write> TerminalWriter<W> {
         // Clear prev_buffer to force full redraw after resize
         self.prev_buffer = None;
         self.stale_frame = None;
-        self.log_floor = None;
         // Old-geometry coordinates are meaningless after a resize: drop the
         // displayed-region cache so neither log positioning nor
         // clear_inline_region_diff acts on rows that no longer exist. The
@@ -2300,8 +2321,9 @@ impl<W: Write> TerminalWriter<W> {
                 // we must clear the entire UI region to prevent ghosting (e.g. if width shrank).
                 let dims_changed = self.prev_buffer.as_ref().map(|b| (b.width(), b.height()))
                     != Some((buffer.width(), buffer.height()));
+                let already_cleared = self.prev_buffer.is_none() || dims_changed;
 
-                if self.prev_buffer.is_none() || dims_changed {
+                if already_cleared {
                     self.clear_rows(ui_y_start, visible_height)?;
                 } else {
                     // If dimensions match but the buffer is shorter than the visible height,
@@ -2330,6 +2352,14 @@ impl<W: Write> TerminalWriter<W> {
                 }
                 diff_strategy = decision.strategy;
 
+                let render_height = buffer.height().min(visible_height);
+                let row_widths = self.bottom_addressed().then(|| {
+                    (0..render_height)
+                        .map(|y| row_occupied_width(buffer, y))
+                        .collect::<Vec<u16>>()
+                });
+                let mut el_rows: Vec<(u16, u16)> = Vec::new();
+
                 // Emit diff using Presenter
                 {
                     let _span = debug_span!(crate::telemetry_schema::span::RENDER_EMIT).entered();
@@ -2352,6 +2382,9 @@ impl<W: Write> TerminalWriter<W> {
                         // CUP past the physical bottom row, which real
                         // terminals clamp — corrupting the last visible row.
                         presenter.clip_runs_below(visible_height);
+                        if let Some(ref widths) = row_widths {
+                            presenter.trim_runs_to_row_widths(widths, Some(&mut el_rows));
+                        }
                         // Emit
                         presenter.emit_diff_runs(buffer, Some(&self.pool), Some(&self.links))?;
 
@@ -2361,9 +2394,14 @@ impl<W: Write> TerminalWriter<W> {
                         // Full redraw — clip to the visible terminal region and
                         // to the buffer's actual height. This avoids generating
                         // diff runs for rows that are outside `buffer`.
-                        let render_height = buffer.height().min(visible_height);
                         let full = BufferDiff::full(buffer.width(), render_height);
                         presenter.prepare_runs(&full);
+                        if let Some(ref widths) = row_widths {
+                            presenter.trim_runs_to_row_widths(
+                                widths,
+                                (!already_cleared).then_some(&mut el_rows),
+                            );
+                        }
                         presenter.emit_diff_runs(buffer, Some(&self.pool), Some(&self.links))?;
 
                         emit_stats.diff_cells = full.len();
@@ -2371,6 +2409,14 @@ impl<W: Write> TerminalWriter<W> {
                     }
 
                     presenter.finish_frame()?;
+                }
+
+                if !el_rows.is_empty() {
+                    self.writer().write_all(SGR_BG_DEFAULT)?;
+                    for (y, occ) in el_rows {
+                        self.move_to_row(ui_y_start.saturating_add(y), occ)?;
+                        self.writer().write_all(b"\x1b[K")?;
+                    }
                 }
             }
 
@@ -2999,7 +3045,7 @@ impl<W: Write> TerminalWriter<W> {
             }
             // `start >= term_height - height`, so these always scroll the
             // screen far enough that the last line ends just above the UI.
-            for _ in 1..height {
+            for _ in 0..height - 1 {
                 self.writer().write_all(b"\r\n")?;
             }
         } else {
@@ -3050,7 +3096,13 @@ impl<W: Write> TerminalWriter<W> {
         let Some(prev) = self.prev_buffer.as_ref().or(self.stale_frame.as_ref()) else {
             return Ok(());
         };
-        let full = BufferDiff::full(prev.width(), prev.height().min(height));
+        let render_height = prev.height().min(height);
+        let row_widths = self.bottom_addressed().then(|| {
+            (0..render_height)
+                .map(|y| row_occupied_width(prev, y))
+                .collect::<Vec<u16>>()
+        });
+        let full = BufferDiff::full(prev.width(), render_height);
         let bottom_rows = self
             .bottom_addressed()
             .then(|| self.term_height.saturating_sub(start));
@@ -3059,6 +3111,9 @@ impl<W: Write> TerminalWriter<W> {
         presenter.set_viewport_offset_y(start);
         presenter.set_viewport_bottom(bottom_rows);
         presenter.prepare_runs(&full);
+        if let Some(ref widths) = row_widths {
+            presenter.trim_runs_to_row_widths(widths, None);
+        }
         presenter.emit_diff_runs(prev, Some(&self.pool), Some(&self.links))?;
         presenter.finish_frame()
     }
@@ -9204,5 +9259,42 @@ mod tests {
         // (frame 0/resize paths still certify full work explicitly).
         assert_eq!(certificates[2], "none");
         assert_eq!(certificates[3], "none");
+    }
+
+    #[test]
+    fn bottom_addressed_inline_trims_trailing_blanks_and_clears_shortened_rows() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 2 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(40, 10);
+
+        let mut frame1 = Buffer::new(40, 2);
+        for (x, ch) in "status-long".chars().enumerate() {
+            frame1.set(x as u16, 0, ftui_render::cell::Cell::from_char(ch));
+        }
+        assert_eq!(row_occupied_width(&frame1, 0), 11);
+        assert_eq!(row_occupied_width(&frame1, 1), 0);
+        writer.present_ui_owned(frame1, None, false).unwrap();
+
+        let mut frame2 = Buffer::new(40, 2);
+        for (x, ch) in "brief".chars().enumerate() {
+            frame2.set(x as u16, 0, ftui_render::cell::Cell::from_char(ch));
+        }
+        assert_eq!(row_occupied_width(&frame2, 0), 5);
+        writer.present_ui_owned(frame2, None, false).unwrap();
+
+        let bytes = writer.into_inner().unwrap();
+        let output = String::from_utf8_lossy(&bytes);
+        assert!(
+            !output.contains("status-long "),
+            "full redraw must not pad trailing uncolored spaces: {output:?}"
+        );
+        assert!(
+            output.contains("brief") && output.contains("\x1b[K"),
+            "shortened incremental row must emit EL after occupied width: {output:?}"
+        );
     }
 }

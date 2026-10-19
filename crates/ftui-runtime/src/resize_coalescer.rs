@@ -1281,6 +1281,11 @@ impl ResizeCoalescer {
         self.pending_size.is_some()
     }
 
+    /// Immediately apply any pending resize (used before final inline frame on exit).
+    pub fn flush_pending(&mut self) -> CoalesceAction {
+        self.apply_pending_at(Instant::now(), false)
+    }
+
     /// Get the current regime.
     #[inline]
     pub fn regime(&self) -> Regime {

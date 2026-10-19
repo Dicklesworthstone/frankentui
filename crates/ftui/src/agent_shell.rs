@@ -1035,7 +1035,7 @@ impl Model for StreamingHarness {
     }
 
     fn view(&self, frame: &mut Frame) {
-        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let area = Rect::from_size(frame.buffer.width().min(80), frame.buffer.height());
 
         let chunks = if self.process_input.is_some() {
             Flex::vertical()

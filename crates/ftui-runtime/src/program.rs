@@ -6730,8 +6730,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 break;
             }
 
-            // Render if dirty
-            if self.dirty {
+            // Render if dirty and no resize is waiting in the coalescer
+            if self.dirty && !self.resize_coalescer.has_pending() {
                 self.render_frame()?;
             }
 
@@ -6739,6 +6739,24 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             if loop_count.is_multiple_of(1000) {
                 self.presenter.gc();
             }
+        }
+
+        // If a resize was still coalescing when the loop exited, apply it now
+        // so the final inline frame reflects the terminal's current geometry.
+        if termination_signal.is_none()
+            && self.resize_coalescer.has_pending()
+            && matches!(
+                self.presenter.screen_mode(),
+                ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
+            )
+            && let CoalesceAction::ApplyResize {
+                width,
+                height,
+                coalesce_time,
+                forced_by_deadline,
+            } = self.resize_coalescer.flush_pending()
+        {
+            self.apply_resize(width, height, coalesce_time, forced_by_deadline)?;
         }
 
         // A quit returned by update() ends the loop before that update's

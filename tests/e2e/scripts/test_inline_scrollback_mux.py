@@ -40,10 +40,8 @@ around a stdin prompt; the driver types a line, resizes the window 50 times
 history once, in order, as its visible text; the typed line, interrupt,
 restart and exits must be logged once; injections stay inert; the pane's
 modes are restored; the child's background process is gone; bytes per log
-line stay bounded. The first storm changes only the height and also requires
-no UI row in history. The second changes the width too, where tmux reflows
-full-width UI rows and part of a frame can overflow into history: those
-fragment rows are counted and reported, not failed.
+line stay bounded; and both the height-only storm and the width+height storm
+require zero UI fragment rows in history (bd-g00-root-epic-ewths.42.8).
 
 With `--showcase`, each multiplexer also starts `ftui-demo-showcase` in inline
 mode under 500 existing history lines: they must all remain, once and in
@@ -753,13 +751,13 @@ def main() -> int:
             finally:
                 driver.stop()
         # The flagship journeys run on their own tmux servers after the cases:
-        # a height-only resize storm (every check) and one that also changes
-        # the width (every check but the reflow fragments, which are reported).
+        # a height-only resize storm and a width+height resize storm, both
+        # requiring zero UI fragment rows in history.
         muxes = [m.strip() for m in args.mux.split(",") if m.strip()]
         if "tmux" in muxes and "tmux" not in out_of_scope and shutil.which("tmux"):
             for case, sizes, reflow in [
                 ("flagship_journey", JOURNEY_HEIGHT_STORM, False),
-                ("flagship_journey_width_resizes", JOURNEY_STORM, True),
+                ("flagship_journey_width_resizes", JOURNEY_STORM, False),
             ]:
                 started = time.monotonic()
                 row = {"mux": "tmux", "version": Tmux(out).version(), "case": case}

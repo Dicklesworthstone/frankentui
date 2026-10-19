@@ -789,6 +789,38 @@ impl<W: Write> Presenter<W> {
         self.runs_buf.retain(|run| run.y < max_rows);
     }
 
+    /// Trim prepared runs on each row `y` to the occupied width `row_widths[y]`,
+    /// omitting trailing uncolored blank cells (`x >= row_widths[y]`).
+    ///
+    /// When `el_rows` is `Some` (incremental diff or un-cleared full redraw),
+    /// any row where a run reached into `[row_widths[y], width)` is recorded as
+    /// `(y, row_widths[y])` so the caller can emit `EL` (`\x1b[K`) at the new
+    /// end of the row instead of writing trailing spaces that terminal
+    /// multiplexers reflow as occupied columns.
+    pub fn trim_runs_to_row_widths(
+        &mut self,
+        row_widths: &[u16],
+        mut el_rows: Option<&mut Vec<(u16, u16)>>,
+    ) {
+        self.runs_buf.retain_mut(|run| {
+            let Some(&occ) = row_widths.get(usize::from(run.y)) else {
+                return true;
+            };
+            if run.x1 >= occ {
+                if let Some(el) = el_rows.as_deref_mut()
+                    && el.last().map(|&(ry, _)| ry) != Some(run.y)
+                {
+                    el.push((run.y, occ));
+                }
+                if occ == 0 || run.x0 >= occ {
+                    return false;
+                }
+                run.x1 = occ - 1;
+            }
+            true
+        });
+    }
+
     /// Finish a frame by restoring neutral SGR state and closing any open link.
     ///
     /// Callers that drive emission manually through `emit_diff_runs` must
@@ -5414,5 +5446,36 @@ mod proptests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn trim_runs_to_row_widths_clips_trailing_blanks_and_records_el() {
+        let mut buffer = Buffer::new(20, 3);
+        for (x, ch) in "hello".chars().enumerate() {
+            buffer.set_raw(x as u16, 0, Cell::from_char(ch));
+        }
+        // Row 1 is completely blank (occupied width 0).
+        // Row 2 has text up to col 3.
+        for (x, ch) in "abc".chars().enumerate() {
+            buffer.set_raw(x as u16, 2, Cell::from_char(ch));
+        }
+
+        let diff = BufferDiff::full(20, 3);
+        let mut presenter = test_presenter();
+        presenter.prepare_runs(&diff);
+        let mut el_rows = Vec::new();
+        presenter.trim_runs_to_row_widths(&[5, 0, 3], Some(&mut el_rows));
+        presenter.emit_diff_runs(&buffer, None, None).unwrap();
+        presenter.finish_frame().unwrap();
+        let output = presenter.into_inner().unwrap();
+        let text = String::from_utf8_lossy(&output);
+
+        assert!(text.contains("hello"));
+        assert!(text.contains("abc"));
+        assert!(
+            !text.contains("hello "),
+            "trailing uncolored spaces must not be emitted: {text:?}"
+        );
+        assert_eq!(el_rows, vec![(0, 5), (1, 0), (2, 3)]);
     }
 }
