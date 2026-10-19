@@ -45,15 +45,27 @@ emit_skip_and_exit() {
   FINALIZE_DISABLED=1
   local missing_json
   missing_json="$(printf '%s\n' "${MISSING_RUNTIME_TOOLS[@]}" | jq -R . | jq -s .)"
-  local reason="missing runtime tools required for real-behavior e2e capture"
+  local allow_opt_out="${DOCTOR_E2E_ALLOW_MISSING_TOOLS:-0}"
+  local status="failed"
+  local exit_code=2
+  local reason="missing runtime tools required for real-behavior e2e capture (set DOCTOR_E2E_ALLOW_MISSING_TOOLS=1 to opt out)"
+  if [[ "${allow_opt_out}" == "1" ]]; then
+    status="skipped"
+    exit_code=0
+    reason="missing runtime tools required for real-behavior e2e capture (DOCTOR_E2E_ALLOW_MISSING_TOOLS=1 opt-out)"
+    echo "[e2e] DOCTOR_E2E_ALLOW_MISSING_TOOLS=1 opt-out active; skipping missing tools: ${MISSING_RUNTIME_TOOLS[*]}" >&2
+  else
+    echo "[e2e] error: missing required runtime tools (${MISSING_RUNTIME_TOOLS[*]}); set DOCTOR_E2E_ALLOW_MISSING_TOOLS=1 to opt out" >&2
+  fi
 
   : > "${STEP_RESULTS_TSV}"
   : > "${COMMAND_MANIFEST}"
   : > "${EVENTS_JSONL}"
 
   jq -n \
-    --arg status "skipped" \
+    --arg status "${status}" \
     --arg reason "${reason}" \
+    --arg opt_out "${allow_opt_out}" \
     --arg run_root "${RUN_ROOT}" \
     --arg events_jsonl "${EVENTS_JSONL}" \
     --arg validation_report "${EVENT_VALIDATION_REPORT_JSON}" \
@@ -61,6 +73,7 @@ emit_skip_and_exit() {
     '{
       status: $status,
       reason: $reason,
+      opt_out: ($opt_out == "1"),
       run_root: $run_root,
       events_jsonl: $events_jsonl,
       events_validation_report: $validation_report,
@@ -82,7 +95,7 @@ emit_skip_and_exit() {
     }' > "${ARTIFACT_MANIFEST_JSON}"
 
   jq -n \
-    --arg status "skipped" \
+    --arg status "${status}" \
     --argjson missing_tools "${missing_json}" \
     '{
       status: $status,
@@ -93,8 +106,9 @@ emit_skip_and_exit() {
     }' > "${EVENT_VALIDATION_REPORT_JSON}"
 
   {
-    echo "status=skipped"
+    echo "status=${status}"
     echo "reason=${reason}"
+    echo "opt_out=${allow_opt_out}"
     echo "run_root=${RUN_ROOT}"
     echo "missing_tools=$(IFS=,; echo "${MISSING_RUNTIME_TOOLS[*]}")"
     echo "summary_json=${SUMMARY_JSON}"
@@ -103,7 +117,7 @@ emit_skip_and_exit() {
   } > "${SUMMARY_TXT}"
 
   cat "${SUMMARY_TXT}"
-  exit 0
+  exit "${exit_code}"
 }
 
 require_command "cargo" "install Rust/Cargo toolchain"

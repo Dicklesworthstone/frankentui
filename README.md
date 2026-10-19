@@ -487,6 +487,7 @@ Prerequisites:
 - `python3`
 - `jq`
 - `rg` (ripgrep)
+- `vhs`, `ffmpeg`, and `ffprobe` (required by `doctor_frankentui_happy_e2e.sh` and `doctor_frankentui_failure_e2e.sh` for real VHS/frame media capture)
 - `cargo-llvm-cov` (`cargo install cargo-llvm-cov`)
 - Python TOML parser support:
   - Python `3.11+` (built-in `tomllib`), or
