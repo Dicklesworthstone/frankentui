@@ -54,6 +54,9 @@ pub use session_teardown::with_panic_cleanup_suppressed;
 /// Tracing target for input parser protocol events (DCS, APC, XTWINOPS, SGR-Pixels).
 pub const TARGET_INPUT_PARSER: &str = "ftui.input.parser";
 
+/// Tracing target for e-process throttle and budget gate decisions.
+pub const TARGET_EPROCESS: &str = "ftui.eprocess";
+
 pub mod shutdown_signal {
     //! Process-wide graceful-termination signal state shared by runtime and backends.
     //!

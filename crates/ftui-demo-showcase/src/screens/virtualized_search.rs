@@ -1449,7 +1449,7 @@ impl Screen for VirtualizedSearch {
         if matches!(event, Event::Mouse(_)) {
             self.handle_mouse(event);
             tracing::debug!(
-                target: "ftui.demo.vsearch",
+                target: crate::app::TARGET_VIRTUALIZED_SEARCH,
                 query_len = self.query.len(),
                 filtered = self.filtered_rows.len(),
                 selected = self.selected_index(),
@@ -1609,7 +1609,7 @@ impl Screen for VirtualizedSearch {
             }
         }
         tracing::debug!(
-            target: "ftui.demo.vsearch",
+            target: crate::app::TARGET_VIRTUALIZED_SEARCH,
             query_len = self.query.len(),
             filtered = self.filtered_rows.len(),
             selected = self.selected_index(),

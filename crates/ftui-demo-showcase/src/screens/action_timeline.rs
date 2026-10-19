@@ -803,7 +803,7 @@ impl ActionTimeline {
         }
 
         debug!(
-            target: "ftui.demo.timeline",
+            target: crate::app::TARGET_ACTION_TIMELINE,
             estimate = total_estimate,
             exact = stats.total_events,
             error_bound = error_bound,

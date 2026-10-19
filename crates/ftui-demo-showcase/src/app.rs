@@ -43,6 +43,10 @@ pub(crate) const TARGET_ACCESSIBILITY_PANEL: &str = "ftui.demo.a11y";
 
 /// Tracing target for the widget gallery's diagnostics section.
 pub(crate) const TARGET_WIDGET_GALLERY: &str = "ftui.demo.gallery";
+/// Tracing target for the virtualized search screen's telemetry.
+pub(crate) const TARGET_VIRTUALIZED_SEARCH: &str = "ftui.demo.vsearch";
+/// Tracing target for the action timeline screen's aggregate telemetry.
+pub(crate) const TARGET_ACTION_TIMELINE: &str = "ftui.demo.timeline";
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };

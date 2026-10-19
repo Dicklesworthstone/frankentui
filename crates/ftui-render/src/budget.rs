@@ -381,7 +381,7 @@ impl EProcessState {
 
         #[cfg(feature = "tracing")]
         trace!(
-            target: "ftui.eprocess",
+            target: ftui_core::TARGET_EPROCESS,
             lambda = self.lambda,
             e_value = self.e_value,
             residual,
