@@ -344,7 +344,8 @@ ftui = { version = "=0.9.0", default-features = false, features = ["runtime"] }
 
 Without a compiled terminal backend, `App::run()` returns an `Unsupported`
 error naming the feature to enable. The doctor, demo, and WASM showcase targets
-are repository-only applications.
+are repository-only applications. Maintainers cutting a new version follow
+[`docs/release-checklist.md`](docs/release-checklist.md).
 
 ---
 

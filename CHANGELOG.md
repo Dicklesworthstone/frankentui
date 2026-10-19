@@ -11,6 +11,8 @@ published on 2026-10-03. The latest published GitHub Release is
 [v0.9.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.9.0).
 `Release` below means a published GitHub Release; `Tag` means a git tag with
 no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
+For pre-release verification and publication steps, see
+[`docs/release-checklist.md`](docs/release-checklist.md).
 
 ## Version Timeline
 

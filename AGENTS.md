@@ -108,6 +108,8 @@ GitHub Actions was disabled in the repository settings on 2026-09-06; keep it di
   2026-09-11 executable A/B probe demonstrated stale output with the flag alone
   and correct rebuilding with both settings, including migration of an existing
   target directory. A successful command alone does not prove binary freshness.
+- Before cutting or tagging any release, run `scripts/release_preflight.sh vX.Y.Z --strict`
+  and follow [`docs/release-checklist.md`](docs/release-checklist.md).
 
 ### Key Dependencies
 

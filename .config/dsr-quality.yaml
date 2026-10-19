@@ -56,6 +56,8 @@ tools:
       # leave the audit green while every close sailed through. Builds a
       # throwaway beads project under the run root and never deletes it.
       - bash scripts/check_close_policy_e2e.sh "${DSR_CLOSE_POLICY_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_close_policy/dsr}"
+      # Release preflight gate self-tests (bd-g00-root-epic-ewths.10.1).
+      - bash scripts/release_preflight_test.sh
   # The AGENTS.md "Landing the Plane" gate set on the native host, without RCH
   # (forbidden until bd-g00-root-epic-ewths.6.24): `cargo` on this host's PATH
   # is an RCH shim, so every cargo line carries RCH_CARGO_WRAPPER_BYPASS=1, the
@@ -158,5 +160,12 @@ tools:
     language: rust
     required_checks:
       - RCH_CARGO_WRAPPER_BYPASS=1 FUZZ_DURATION_SECS="${FUZZ_DURATION_SECS:-60}" bash scripts/fuzz_campaign_e2e.sh
-
-
+  # Pre-release preflight verification gate (bd-g00-root-epic-ewths.10.1):
+  # runs the synthetic fixture tests plus strict 14-check preflight against the
+  # workspace version (or DSR_RELEASE_TAG).
+  frankentui-release-preflight:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - bash scripts/release_preflight_test.sh
+      - bash scripts/release_preflight.sh "${DSR_RELEASE_TAG:-v$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')}" --strict --out "${DSR_PREFLIGHT_OUT:-${TMPDIR:-/tmp}/ftui_release_preflight.jsonl}"
