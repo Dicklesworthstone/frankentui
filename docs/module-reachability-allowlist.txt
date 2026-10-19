@@ -53,14 +53,11 @@ doctor_frankentui::portfolio_governance_tests  # bd-g00-root-epic-ewths.28.3
 doctor_frankentui::tier_escalator_tests  # bd-g00-root-epic-ewths.28.3
 
 # ── ftui-web ─────────────────────────────────────────────────────────────
-# .29.1 asks the owner to decide the web host's scope.
-# Encodes the renderer tier order (dom/canvas/webgl/webgpu), browser support
+# .29.1 settled the text-host scope; .29.9 owns the browser renderer & release_readiness
+# scorecard proof. Encodes the renderer tier order (dom/canvas/webgl/webgpu), browser support
 # matrix and release criteria that the README's front-page browser claim rests
-# on - and nothing calls it, so none of that policy is enforced in-tree. Note
-# ftui-web "does not bind to wasm-bindgen yet" (lib.rs) and the actual
-# WebGPU/canvas2d rendering lives in the out-of-tree frankenterm-web bundle,
-# so this module is the only in-tree statement of that contract.
-ftui-web::release_readiness  # bd-g00-root-epic-ewths.29.1
+# on - and nothing calls it, so none of that policy is enforced in-tree.
+ftui-web::release_readiness  # bd-g00-root-epic-ewths.29.9
 
 # ── ftui-widgets ─────────────────────────────────────────────────────────
 # popover, pretty and receipt_verifier_panel were here with .11.3 as their
