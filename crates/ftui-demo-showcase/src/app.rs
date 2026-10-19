@@ -4587,10 +4587,7 @@ impl AppModel {
                         kind: KeyEventKind::Press,
                     };
                     let mut mapped_action = None;
-                    for dispatch in self
-                        .key_dispatcher
-                        .feed(&key_event, std::time::Instant::now())
-                    {
+                    for dispatch in self.key_dispatcher.feed(&key_event, Instant::now()) {
                         match dispatch {
                             Dispatch::Action { action, chord, .. } => {
                                 if action != AppAction::PassThrough {

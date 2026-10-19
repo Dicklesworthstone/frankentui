@@ -1489,7 +1489,7 @@ impl Screen for AdvancedTextEditor {
         ) = event
         {
             let mut chord_handled = false;
-            for dispatch in self.key_dispatcher.feed(key, std::time::Instant::now()) {
+            for dispatch in self.key_dispatcher.feed(key, web_time::Instant::now()) {
                 match dispatch {
                     Dispatch::Action { action, chord, .. } => {
                         crate::test_logging::emit_key_dispatch_jsonl(
@@ -1972,7 +1972,7 @@ impl Screen for AdvancedTextEditor {
     }
 
     fn tick(&mut self, _tick_count: u64) {
-        for dispatch in self.key_dispatcher.tick(std::time::Instant::now()) {
+        for dispatch in self.key_dispatcher.tick(web_time::Instant::now()) {
             if let Dispatch::Expired { prefix } = dispatch {
                 crate::test_logging::emit_key_dispatch_jsonl("expired", &prefix.to_string(), "");
             }

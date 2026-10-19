@@ -908,7 +908,7 @@ impl LogSearch {
     }
 
     fn handle_normal_key(&mut self, key: &KeyEvent) {
-        let dispatches = self.key_dispatcher.feed(key, std::time::Instant::now());
+        let dispatches = self.key_dispatcher.feed(key, web_time::Instant::now());
         for dispatch in dispatches {
             match dispatch {
                 Dispatch::Action { action, chord, .. } => {
@@ -1381,7 +1381,7 @@ impl Screen for LogSearch {
     fn tick(&mut self, tick_count: u64) {
         self.tick_count = tick_count;
 
-        for dispatch in self.key_dispatcher.tick(std::time::Instant::now()) {
+        for dispatch in self.key_dispatcher.tick(web_time::Instant::now()) {
             if let Dispatch::Expired { prefix } = dispatch {
                 crate::test_logging::emit_key_dispatch_jsonl("expired", &prefix.to_string(), "");
             }
