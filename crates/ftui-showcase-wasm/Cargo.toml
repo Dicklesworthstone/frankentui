@@ -50,6 +50,10 @@ getrandom = { version = "0.4.3", features = ["wasm_js"] }
 [dev-dependencies]
 pretty_assertions = "1.4.1"
 
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.78"
+
 [package.metadata.wasm-pack.profile.release]
 # Keep size optimization but avoid long-running converge passes.
 wasm-opt = ["-Oz"]
+

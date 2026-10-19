@@ -1685,6 +1685,7 @@ dependencies = [
  "pretty_assertions",
  "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
