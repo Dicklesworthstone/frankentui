@@ -551,7 +551,7 @@ fn build_update_arms(
             .cloned()
             .unwrap_or_else(|| format!("Unknown_{}", transition.event_id.0));
 
-        let mutations = build_mutations_from_transition(ir, transition);
+        let mutations = build_mutations_from_transition(ir, transition, diagnostics);
         let commands = build_commands_from_transition(transition, effects, diagnostics);
 
         arms.push(UpdateArm {
@@ -586,14 +586,33 @@ fn build_update_arms(
 fn build_mutations_from_transition(
     ir: &MigrationIr,
     transition: &EventTransition,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
 ) -> Vec<StateMutation> {
     let mut mutations = Vec::new();
 
     // If the transition targets a state variable, emit a mutation.
     if let Some(var) = ir.state_graph.variables.get(&transition.target_state) {
         let field = to_snake_case(&var.name);
+        let expression = match translate_action_snippet_checked(&transition.action_snippet, &field)
+        {
+            Ok(expr) => expr,
+            Err(reason) => {
+                diagnostics.push(TranslationDiagnostic {
+                    level: DiagnosticLevel::Error,
+                    message: format!(
+                        "Transition for event '{}' on field '{}' has untranslated action snippet ({}); emitted no-op fallback",
+                        transition.event_id, field, reason
+                    ),
+                    related_ids: vec![transition.event_id.clone(), transition.target_state.clone()],
+                });
+                format!(
+                    "model.{field}.clone() /* UNSUPPORTED: translate {} */",
+                    rust_comment_text(&reason)
+                )
+            }
+        };
         mutations.push(StateMutation {
-            expression: translate_action_snippet(&transition.action_snippet, &field),
+            expression,
             field,
             target_id: transition.target_state.clone(),
         });
@@ -974,28 +993,96 @@ fn default_for_type(rust_type: &str) -> String {
 
 /// The value assigned to `model.<field>` for a transition's action snippet.
 ///
-/// A setter call or dispatch has no value to assign, so its placeholder keeps
-/// the field as it is. The placeholder used to be the TODO comment alone, which
-/// left `model.x = /* TODO */;`. Setters such as `setCount(...)`, the form
-/// lowering records, were not recognised and were emitted as calls to an
-/// undefined function. Either kept the generated project from compiling.
+/// Translatable setter calls (such as `setCount(count + 1)` or `setCount(42)`)
+/// are lowered to Rust expressions (`model.count + 1`, `42`). Untranslatable
+/// setter calls, dispatch snippets, or empty snippets return an `Err(reason)`
+/// so callers record a `DiagnosticLevel::Error` diagnostic and emit an explicit
+/// `/* UNSUPPORTED: ... */` no-op fallback.
+#[cfg(test)]
 fn translate_action_snippet(snippet: &str, field: &str) -> String {
-    let trimmed = snippet.trim();
-    let todo = |what: &str| {
-        format!(
-            "model.{field}.clone() /* TODO: translate {} */",
-            rust_comment_text(what)
-        )
-    };
-    if trimmed.is_empty() {
-        todo(&format!("action for {field}"))
-    } else if is_setter_call(trimmed) {
-        todo(&format!("setState call: {trimmed}"))
-    } else if trimmed.contains("dispatch") {
-        todo(&format!("dispatch: {trimmed}"))
-    } else {
-        trimmed.to_string()
+    match translate_action_snippet_checked(snippet, field) {
+        Ok(expr) => expr,
+        Err(reason) => format!(
+            "model.{field}.clone() /* UNSUPPORTED: translate {} */",
+            rust_comment_text(&reason)
+        ),
     }
+}
+
+fn translate_action_snippet_checked(snippet: &str, field: &str) -> Result<String, String> {
+    let trimmed = snippet.trim();
+    if trimmed.is_empty() {
+        Err(format!("action for {field}"))
+    } else if is_setter_call(trimmed) {
+        try_translate_setter_call(trimmed, field).ok_or_else(|| format!("setState call: {trimmed}"))
+    } else if trimmed.contains("dispatch") {
+        Err(format!("dispatch: {trimmed}"))
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn try_translate_setter_call(snippet: &str, field: &str) -> Option<String> {
+    let open = snippet.find('(')?;
+    if !snippet.ends_with(')') {
+        return None;
+    }
+    let callee = snippet[..open].trim();
+    if callee.is_empty()
+        || !callee
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || !is_setter_call(callee)
+    {
+        return None;
+    }
+    let arg = snippet[open + 1..snippet.len() - 1].trim();
+    if arg.is_empty() || is_setter_call(arg) {
+        return None;
+    }
+
+    // Handle arrow updater: `prev => prev + 1` or `(prev) => !prev`
+    let (var_name, expr) = if let Some((param, body)) = arg.split_once("=>") {
+        let param = param
+            .trim()
+            .trim_start_matches('(')
+            .trim_end_matches(')')
+            .trim();
+        if param.is_empty() || !param.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        (param, body.trim())
+    } else {
+        (field, arg)
+    };
+
+    if expr == "true"
+        || expr == "false"
+        || expr.parse::<i64>().is_ok()
+        || expr.parse::<f64>().is_ok()
+    {
+        return Some(expr.to_string());
+    }
+    if let Some(s) = js_string_literal(expr) {
+        return Some(format!("{s:?}.to_string()"));
+    }
+    if let Some(negated) = expr.strip_prefix('!') {
+        let target = negated.trim();
+        if target == var_name || target == field {
+            return Some(format!("!model.{field}"));
+        }
+    }
+    for op in ["+", "-"] {
+        if let Some((lhs, rhs)) = expr.split_once(op) {
+            let lhs = lhs.trim();
+            let rhs = rhs.trim();
+            if (lhs == var_name || lhs == field) && rhs.parse::<i64>().is_ok() {
+                return Some(format!("model.{field} {op} {rhs}"));
+            }
+        }
+    }
+
+    None
 }
 
 /// Whether `snippet` calls a state setter: `setState`, `setCount` or `set_count`,
@@ -1390,25 +1477,45 @@ mod tests {
 
     #[test]
     fn setter_actions_become_placeholders_that_compile() {
+        // Translatable setter calls lower directly to Rust expressions.
+        assert_eq!(
+            translate_action_snippet("setCount(count + 1)", "count"),
+            "model.count + 1"
+        );
+        assert_eq!(
+            translate_action_snippet("setCount(prev => prev + 1)", "count"),
+            "model.count + 1"
+        );
+        assert_eq!(translate_action_snippet("setCount(42)", "count"), "42");
+        assert_eq!(
+            translate_action_snippet("setOpen(!open)", "open"),
+            "!model.open"
+        );
+        assert_eq!(
+            translate_action_snippet("setQuery('hello')", "query"),
+            "\"hello\".to_string()"
+        );
+
+        // Untranslatable setter/dispatch/empty snippets emit explicit UNSUPPORTED fallbacks.
         assert_eq!(
             translate_action_snippet("setSelected(setSelected)", "selected"),
-            "model.selected.clone() /* TODO: translate setState call: setSelected(setSelected) */"
+            "model.selected.clone() /* UNSUPPORTED: translate setState call: setSelected(setSelected) */"
         );
         assert_eq!(
             translate_action_snippet("this.setState({ a: 1 })", "a"),
-            "model.a.clone() /* TODO: translate setState call: this.setState({ a: 1 }) */"
+            "model.a.clone() /* UNSUPPORTED: translate setState call: this.setState({ a: 1 }) */"
         );
         assert_eq!(
             translate_action_snippet("", "count"),
-            "model.count.clone() /* TODO: translate action for count */"
+            "model.count.clone() /* UNSUPPORTED: translate action for count */"
         );
         assert_eq!(
             translate_action_snippet("dispatch({ type: 'inc' })", "count"),
-            "model.count.clone() /* TODO: translate dispatch: dispatch({ type: 'inc' }) */"
+            "model.count.clone() /* UNSUPPORTED: translate dispatch: dispatch({ type: 'inc' }) */"
         );
         assert_eq!(
             translate_action_snippet("set_x(1) /* x */ \n y", "x"),
-            "model.x.clone() /* TODO: translate setState call: set_x(1) / * x * /   y */"
+            "model.x.clone() /* UNSUPPORTED: translate setState call: set_x(1) / * x * /   y */"
         );
         // Not setters.
         assert_eq!(translate_action_snippet("offsetX + 1", "x"), "offsetX + 1");
@@ -1416,6 +1523,19 @@ mod tests {
         assert_eq!(
             translate_action_snippet(" count + 1 ", "count"),
             "count + 1"
+        );
+
+        // Verify that an untranslatable transition snippet emits a DiagnosticLevel::Error.
+        let mut ir = minimal_ir();
+        ir.event_catalog.transitions[0].action_snippet = "dispatch({ type: 'inc' })".to_string();
+        let result = translate_state_events(&ir, None);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.level == DiagnosticLevel::Error
+                    && d.message.contains("untranslated action snippet")),
+            "Untranslatable transition snippet must emit a DiagnosticLevel::Error"
         );
     }
 

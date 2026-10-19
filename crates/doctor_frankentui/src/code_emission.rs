@@ -250,11 +250,7 @@ pub fn emit_project(inputs: &EmissionInputs<'_>) -> EmissionPlan {
     // 3. Emit Cargo.toml
     let cargo_file = emit_cargo_toml(&scaffold);
 
-    // 4. Emit migration manifest
-    let manifest = build_manifest(inputs, &files);
-    let manifest_file = emit_manifest_file(&manifest);
-
-    // 5. Build module graph
+    // 4. Build module graph
     module_graph.push(ModuleDependency {
         from: "main".into(),
         to: "model".into(),
@@ -301,7 +297,7 @@ pub fn emit_project(inputs: &EmissionInputs<'_>) -> EmissionPlan {
         symbols: vec!["theme".into()],
     });
 
-    // 6. Collect files and compute stats
+    // 5. Collect source/config files and compute stats
     for file in [
         model_file,
         msg_file,
@@ -311,11 +307,16 @@ pub fn emit_project(inputs: &EmissionInputs<'_>) -> EmissionPlan {
         effects_file,
         main_file,
         cargo_file,
-        manifest_file,
     ] {
         update_stats(&file, &mut stats);
         files.insert(file.path.clone(), file);
     }
+
+    // 6. Build migration manifest with complete file map and diagnostics
+    let manifest = build_manifest(inputs, &files, &diagnostics);
+    let manifest_file = emit_manifest_file(&manifest);
+    update_stats(&manifest_file, &mut stats);
+    files.insert(manifest_file.path.clone(), manifest_file);
 
     stats.min_confidence = files
         .values()
@@ -324,9 +325,6 @@ pub fn emit_project(inputs: &EmissionInputs<'_>) -> EmissionPlan {
     if stats.min_confidence == f64::INFINITY {
         stats.min_confidence = 0.0;
     }
-
-    // Rebuild manifest with complete file map
-    let manifest = build_manifest(inputs, &files);
 
     EmissionPlan {
         version: CODE_EMISSION_VERSION.to_string(),
@@ -337,6 +335,26 @@ pub fn emit_project(inputs: &EmissionInputs<'_>) -> EmissionPlan {
         manifest,
         diagnostics,
         stats,
+    }
+}
+
+/// Emit a complete FrankenTUI project, failing if any error-level emission
+/// diagnostic (such as an untranslated command, mutation, or render condition)
+/// was recorded.
+pub fn emit_project_strict(
+    inputs: &EmissionInputs<'_>,
+) -> std::result::Result<EmissionPlan, Vec<EmissionDiagnostic>> {
+    let plan = emit_project(inputs);
+    let errors: Vec<EmissionDiagnostic> = plan
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == "error")
+        .cloned()
+        .collect();
+    if errors.is_empty() {
+        Ok(plan)
+    } else {
+        Err(errors)
     }
 }
 
@@ -646,6 +664,17 @@ fn emit_update_module(
 
         // Emit mutations
         for mutation in &arm.mutations {
+            if mutation.expression.contains("/* UNSUPPORTED:") {
+                diagnostics.push(EmissionDiagnostic {
+                    code: "CE006".into(),
+                    severity: "error".into(),
+                    message: format!(
+                        "Update arm '{}' on field '{}' contains untranslated mutation expression",
+                        arm.message_variant, mutation.field
+                    ),
+                    file_path: Some("src/update.rs".into()),
+                });
+            }
             lines.push(format!(
                 "            model.{} = {};",
                 mutation.field, mutation.expression
@@ -659,7 +688,7 @@ fn emit_update_module(
             let cmd = &arm.commands[0];
             lines.push(format!(
                 "            {} // {}",
-                emit_cmd_expression(cmd),
+                emit_cmd_expression(cmd, diagnostics, "src/update.rs"),
                 rust_comment_text(&cmd.description)
             ));
         } else {
@@ -667,7 +696,7 @@ fn emit_update_module(
             for cmd in &arm.commands {
                 lines.push(format!(
                     "                {}, // {}",
-                    emit_cmd_expression(cmd),
+                    emit_cmd_expression(cmd, diagnostics, "src/update.rs"),
                     rust_comment_text(&cmd.description)
                 ));
             }
@@ -720,33 +749,78 @@ fn message_variant_pattern(
     }
 }
 
-/// A placeholder that type-checks for a command whose code needs a message
-/// variant or closure the translation does not know.
+/// An explicit `UNSUPPORTED` fallback that type-checks for a command whose code
+/// needs a message variant or closure the translation does not know.
 ///
-/// This used to emit `Cmd::task("<description>")`, but `Cmd::task` takes a
-/// closure, and `Cmd::Msg(Msg::<description>)`, where the description is
-/// prose such as "Fire-and-forget message for 'save'". Either one kept the
-/// generated project from compiling, and the raw description could inject
-/// code.
-fn todo_cmd(kind: &str, description: &str) -> String {
+/// Callers also push a `CE005` error diagnostic so strict emission and
+/// `migration_manifest.json` report the gap instead of silently passing.
+fn unsupported_cmd(kind: &str, description: &str) -> String {
     format!(
-        "ftui_runtime::Cmd::None /* TODO({kind}): {} */",
+        "ftui_runtime::Cmd::None /* UNSUPPORTED({kind}): {} */",
         rust_comment_text(description)
     )
 }
 
-fn emit_cmd_expression(cmd: &crate::state_event_translator::CommandEmission) -> String {
+fn emit_cmd_expression(
+    cmd: &crate::state_event_translator::CommandEmission,
+    diagnostics: &mut Vec<EmissionDiagnostic>,
+    file_path: &str,
+) -> String {
     use crate::state_event_translator::CommandKind;
     match cmd.kind {
-        CommandKind::Task => todo_cmd("task", &cmd.description),
+        CommandKind::Task => {
+            diagnostics.push(EmissionDiagnostic {
+                code: "CE005".into(),
+                severity: "error".into(),
+                message: format!(
+                    "Unsupported CommandKind::Task ({}) emitted as Cmd::None fallback",
+                    cmd.description
+                ),
+                file_path: Some(file_path.into()),
+            });
+            unsupported_cmd("task", &cmd.description)
+        }
         CommandKind::Log => format!("ftui_runtime::Cmd::log({:?})", cmd.description),
         CommandKind::Quit => "ftui_runtime::Cmd::Quit".into(),
         CommandKind::Tick => {
             "ftui_runtime::Cmd::Tick(std::time::Duration::from_millis(100))".into()
         }
-        CommandKind::Msg => todo_cmd("msg", &cmd.description),
-        CommandKind::Batch => "ftui_runtime::Cmd::Batch(vec![]) /* TODO */".into(),
-        CommandKind::Sequence => "ftui_runtime::Cmd::Sequence(vec![]) /* TODO */".into(),
+        CommandKind::Msg => {
+            diagnostics.push(EmissionDiagnostic {
+                code: "CE005".into(),
+                severity: "error".into(),
+                message: format!(
+                    "Unsupported CommandKind::Msg ({}) emitted as Cmd::None fallback",
+                    cmd.description
+                ),
+                file_path: Some(file_path.into()),
+            });
+            unsupported_cmd("msg", &cmd.description)
+        }
+        CommandKind::Batch => {
+            diagnostics.push(EmissionDiagnostic {
+                code: "CE005".into(),
+                severity: "error".into(),
+                message: format!(
+                    "Unsupported empty CommandKind::Batch ({}) emitted",
+                    cmd.description
+                ),
+                file_path: Some(file_path.into()),
+            });
+            "ftui_runtime::Cmd::Batch(vec![]) /* UNSUPPORTED(batch): empty batch */".into()
+        }
+        CommandKind::Sequence => {
+            diagnostics.push(EmissionDiagnostic {
+                code: "CE005".into(),
+                severity: "error".into(),
+                message: format!(
+                    "Unsupported empty CommandKind::Sequence ({}) emitted",
+                    cmd.description
+                ),
+                file_path: Some(file_path.into()),
+            });
+            "ftui_runtime::Cmd::Sequence(vec![]) /* UNSUPPORTED(sequence): empty sequence */".into()
+        }
         CommandKind::SaveState => "ftui_runtime::Cmd::SaveState".into(),
         CommandKind::RestoreState => "ftui_runtime::Cmd::RestoreState".into(),
         CommandKind::SetMouseCapture => "ftui_runtime::Cmd::SetMouseCapture(true)".into(),
@@ -783,7 +857,7 @@ fn emit_view_module(
     for (i, root_id) in inputs.view.roots.iter().enumerate() {
         if let Some(widget) = inputs.view.widgets.get(root_id) {
             let start_line = lines.len() + 1;
-            emit_widget_tree(widget, inputs, &mut lines, 1);
+            emit_widget_tree(widget, inputs, &mut lines, diagnostics, 1);
             let end_line = lines.len();
             provenance_links.push(ProvenanceLink {
                 generated_lines: (start_line, end_line),
@@ -820,24 +894,36 @@ fn emit_widget_tree(
     widget: &crate::view_layout_translator::WidgetNode,
     inputs: &EmissionInputs<'_>,
     lines: &mut Vec<String>,
+    diagnostics: &mut Vec<EmissionDiagnostic>,
     depth: usize,
 ) {
     let indent = "    ".repeat(depth);
     let widget_expr = widget_type_to_constructor(&widget.widget_type, &widget.props);
 
-    // Conditional rendering. Conditions are source snippets such as
-    // `handler:setOpen`, `effect(() => ..., [count])` or a Suspense fallback,
-    // not Rust, and pasting one in as the `if` condition kept the generated
-    // project from compiling. The widget renders until one is translated.
     if let Some(cond) = &widget.condition {
-        lines.push(format!(
-            "{indent}if true /* TODO({}): {} */ {{",
-            rust_comment_text(&cond.kind),
-            rust_comment_text(&cond.expression)
-        ));
-        lines.push(format!("{indent}    let widget = {widget_expr};"));
-        lines.push(format!("{indent}    Widget::render(&widget, area, frame);"));
-        lines.push(format!("{indent}}}"));
+        if let Some(rust_cond) = translate_view_condition(cond, inputs) {
+            lines.push(format!("{indent}if {rust_cond} {{"));
+            lines.push(format!("{indent}    let widget = {widget_expr};"));
+            lines.push(format!("{indent}    Widget::render(&widget, area, frame);"));
+            lines.push(format!("{indent}}}"));
+        } else {
+            diagnostics.push(EmissionDiagnostic {
+                code: "CE007".into(),
+                severity: "error".into(),
+                message: format!(
+                    "Widget '{}' has untranslatable '{}' condition '{}'; rendering unconditionally",
+                    widget.id, cond.kind, cond.expression
+                ),
+                file_path: Some("src/view.rs".into()),
+            });
+            lines.push(format!(
+                "{indent}// UNSUPPORTED({}): {}",
+                rust_comment_text(&cond.kind),
+                rust_comment_text(&cond.expression)
+            ));
+            lines.push(format!("{indent}let widget = {widget_expr};"));
+            lines.push(format!("{indent}Widget::render(&widget, area, frame);"));
+        }
     } else {
         lines.push(format!("{indent}let widget = {widget_expr};"));
         lines.push(format!("{indent}Widget::render(&widget, area, frame);"));
@@ -846,8 +932,109 @@ fn emit_widget_tree(
     // Recurse into children
     for child_id in &widget.children {
         if let Some(child) = inputs.view.widgets.get(child_id) {
-            emit_widget_tree(child, inputs, lines, depth);
+            emit_widget_tree(child, inputs, lines, diagnostics, depth);
         }
+    }
+}
+
+/// Translate a `RenderConditionDecl` into a valid Rust boolean expression
+/// referencing `model` fields, or `None` if the condition is an untranslatable
+/// JS/effect/handler snippet.
+fn translate_view_condition(
+    cond: &crate::view_layout_translator::RenderConditionDecl,
+    inputs: &EmissionInputs<'_>,
+) -> Option<String> {
+    let expr = cond.expression.trim();
+    if expr.is_empty()
+        || expr.contains("=>")
+        || expr.starts_with("effect(")
+        || expr.starts_with("handler:")
+        || expr.contains("function")
+        || expr.contains("/*")
+        || expr.contains("*/")
+        || expr.contains("//")
+        || expr.contains('\n')
+        || expr.contains(['{', '}', '[', ']', ';', '?', ':'])
+    {
+        return None;
+    }
+
+    let find_field = |candidate: &str| -> Option<(&str, &str)> {
+        let stripped = candidate.strip_prefix("model.").unwrap_or(candidate).trim();
+        inputs
+            .runtime
+            .model
+            .fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.rust_type.as_str()))
+            .chain(
+                inputs
+                    .runtime
+                    .model
+                    .shared_fields
+                    .iter()
+                    .map(|f| (f.name.as_str(), f.access_path.as_str())),
+            )
+            .find(|(name, _)| *name == stripped)
+    };
+
+    // Binary comparison: `<field> <op> <literal>` or `model.<field> <op> <literal>`
+    for op in [">=", "<=", "==", "!=", ">", "<"] {
+        if let Some((lhs, rhs)) = expr.split_once(op) {
+            let lhs = lhs.trim();
+            let rhs = rhs.trim();
+            let (field_name, _) = find_field(lhs)?;
+            let rhs_valid = rhs == "true"
+                || rhs == "false"
+                || rhs.parse::<i64>().is_ok()
+                || rhs.parse::<f64>().is_ok()
+                || find_field(rhs).is_some();
+            if !rhs_valid {
+                return None;
+            }
+            let rhs_rust = if let Some((rhs_name, _)) = find_field(rhs) {
+                format!("model.{rhs_name}")
+            } else {
+                rhs.to_string()
+            };
+            return Some(format!("model.{field_name} {op} {rhs_rust}"));
+        }
+    }
+
+    // Unary / bare field reference: `ready`, `!ready`, `model.ready`, `!model.ready`
+    let (is_negated, target) = if let Some(rest) = expr.strip_prefix('!') {
+        (true, rest.trim())
+    } else {
+        (false, expr)
+    };
+    let (name, rust_type) = find_field(target)?;
+    match rust_type {
+        "bool" => Some(if is_negated {
+            format!("!model.{name}")
+        } else {
+            format!("model.{name}")
+        }),
+        "i64" | "i32" | "u64" | "u32" | "usize" | "f64" | "f32" => Some(if is_negated {
+            format!("model.{name} == 0")
+        } else {
+            format!("model.{name} != 0")
+        }),
+        "String" => Some(if is_negated {
+            format!("model.{name}.is_empty()")
+        } else {
+            format!("!model.{name}.is_empty()")
+        }),
+        t if t.starts_with("Vec<") => Some(if is_negated {
+            format!("model.{name}.is_empty()")
+        } else {
+            format!("!model.{name}.is_empty()")
+        }),
+        t if t.starts_with("Option<") => Some(if is_negated {
+            format!("model.{name}.is_none()")
+        } else {
+            format!("model.{name}.is_some()")
+        }),
+        _ => None,
     }
 }
 
@@ -1182,7 +1369,7 @@ fn emit_effects_module(
             let cmd = &inputs.runtime.init_commands[0];
             lines.push(format!(
                 "    {} // {}",
-                emit_init_cmd_expression(cmd),
+                emit_init_cmd_expression(cmd, diagnostics),
                 rust_comment_text(&cmd.description)
             ));
         } else {
@@ -1190,7 +1377,7 @@ fn emit_effects_module(
             for cmd in &inputs.runtime.init_commands {
                 lines.push(format!(
                     "        {}, // {}",
-                    emit_init_cmd_expression(cmd),
+                    emit_init_cmd_expression(cmd, diagnostics),
                     rust_comment_text(&cmd.description)
                 ));
             }
@@ -1224,15 +1411,40 @@ fn emit_effects_module(
     }
 }
 
-fn emit_init_cmd_expression(cmd: &crate::state_event_translator::InitCommand) -> String {
+fn emit_init_cmd_expression(
+    cmd: &crate::state_event_translator::InitCommand,
+    diagnostics: &mut Vec<EmissionDiagnostic>,
+) -> String {
     use crate::state_event_translator::CommandKind;
     match cmd.kind {
-        CommandKind::Task => todo_cmd("task", &cmd.description),
+        CommandKind::Task => {
+            diagnostics.push(EmissionDiagnostic {
+                code: "CE005".into(),
+                severity: "error".into(),
+                message: format!(
+                    "Unsupported init CommandKind::Task ({}) emitted as Cmd::None fallback",
+                    cmd.description
+                ),
+                file_path: Some("src/effects.rs".into()),
+            });
+            unsupported_cmd("task", &cmd.description)
+        }
         CommandKind::Tick => {
             "ftui_runtime::Cmd::Tick(std::time::Duration::from_millis(100))".into()
         }
         CommandKind::Log => format!("ftui_runtime::Cmd::log({:?})", cmd.description),
-        _ => todo_cmd("init", &cmd.description),
+        _ => {
+            diagnostics.push(EmissionDiagnostic {
+                code: "CE005".into(),
+                severity: "error".into(),
+                message: format!(
+                    "Unsupported init command {:?} ({}) emitted as Cmd::None fallback",
+                    cmd.kind, cmd.description
+                ),
+                file_path: Some("src/effects.rs".into()),
+            });
+            unsupported_cmd("init", &cmd.description)
+        }
     }
 }
 
@@ -1337,6 +1549,7 @@ fn emit_cargo_toml(scaffold: &ProjectScaffold) -> EmittedFile {
 fn build_manifest(
     inputs: &EmissionInputs<'_>,
     files: &BTreeMap<String, EmittedFile>,
+    diagnostics: &[EmissionDiagnostic],
 ) -> MigrationManifest {
     let mut strategy_links = Vec::new();
 
@@ -1381,8 +1594,11 @@ fn build_manifest(
         .map(|f| f.confidence)
         .fold(f64::INFINITY, f64::min);
 
+    let error_diag_count = diagnostics.iter().filter(|d| d.severity == "error").count();
+
     let requires_human_review = inputs.plan.stats.human_review > 0
         || inputs.plan.stats.rejected > 0
+        || error_diag_count > 0
         || overall_confidence < 0.7;
 
     MigrationManifest {
@@ -1395,7 +1611,7 @@ fn build_manifest(
         } else {
             overall_confidence
         },
-        gap_count: inputs.plan.gap_tickets.len(),
+        gap_count: inputs.plan.gap_tickets.len() + error_diag_count,
         requires_human_review,
     }
 }
@@ -2140,13 +2356,17 @@ mod tests {
         let plan = make_plan();
         let inputs = make_inputs(&ir, &runtime, &view, &style, &effects, &plan);
 
-        let emission = emit_project(&inputs);
+        let emission =
+            emit_project_strict(&inputs).expect("valid Rust condition must emit strictly");
         let view_file = &emission.files["src/view.rs"];
 
         assert!(
-            view_file
-                .content
-                .contains("if true /* TODO(guard): model.count > 0 */ {"),
+            view_file.content.contains("if model.count > 0 {"),
+            "{}",
+            view_file.content
+        );
+        assert!(
+            !view_file.content.contains("if true"),
             "{}",
             view_file.content
         );
@@ -2193,10 +2413,17 @@ mod tests {
         let view_file = &emission.files["src/view.rs"].content;
 
         assert!(
-            view_file
-                .contains("if true /* TODO(guard): effect(() => { a(); / * x * / }, [count]) */ {"),
+            view_file.contains("// UNSUPPORTED(guard): effect(() => { a(); / * x * / }, [count])"),
             "{view_file}"
         );
+        assert!(!view_file.contains("if true"), "{view_file}");
+        assert!(
+            emission
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "CE007" && d.severity == "error")
+        );
+        assert!(emit_project_strict(&inputs).is_err());
     }
 
     #[test]
@@ -2265,9 +2492,23 @@ mod tests {
         assert!(!update.contains("Cmd::task("), "{update}");
         assert!(!update.contains("Cmd::Msg("), "{update}");
         assert!(!effects_rs.contains("Cmd::task("), "{effects_rs}");
-        assert!(update.contains("ftui_runtime::Cmd::None /* TODO(task): Cmd::Task for 'load'"));
-        assert!(update.contains("ftui_runtime::Cmd::None /* TODO(msg): Fire-and-forget"));
-        assert!(effects_rs.contains("ftui_runtime::Cmd::None /* TODO(task): Init: fetch 'load'"));
+        assert!(
+            update.contains("ftui_runtime::Cmd::None /* UNSUPPORTED(task): Cmd::Task for 'load'")
+        );
+        assert!(update.contains("ftui_runtime::Cmd::None /* UNSUPPORTED(msg): Fire-and-forget"));
+        assert!(
+            effects_rs.contains("ftui_runtime::Cmd::None /* UNSUPPORTED(task): Init: fetch 'load'")
+        );
+        assert!(
+            emission
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == "CE005" && d.severity == "error")
+                .count()
+                == 3
+        );
+        assert!(emission.manifest.requires_human_review);
+        assert!(emit_project_strict(&inputs).is_err());
     }
 
     #[test]

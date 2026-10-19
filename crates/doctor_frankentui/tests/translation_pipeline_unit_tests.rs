@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use doctor_frankentui::code_emission::{
     EmissionInputs, EmissionPlan, EmittedFile, FileKind, ProjectScaffold, emit_project,
+    emit_project_strict,
 };
 use doctor_frankentui::codegen_optimize::{
     OptimizeConfig, PassKind, optimize, optimize_with_config,
@@ -703,7 +704,31 @@ fn run_translation_e2e_export(run_root: &Path, run_id: &str) -> serde_json::Valu
             "effects": &effects,
         }));
         let inputs = make_inputs(&lowered.ir, &runtime, &view, &style, &effects, &plan);
-        let emission = emit_project(&inputs);
+        let emission = emit_project_strict(&inputs)
+            .expect("fixture corpus must emit cleanly without unsupported error diagnostics");
+        for (path, file) in &emission.files {
+            assert!(
+                !file.content.contains("/* TODO"),
+                "fixture {} file {} emitted TODO placeholder: {}",
+                fixture.id,
+                path,
+                file.content
+            );
+            assert!(
+                !file.content.contains("Fixed(0)"),
+                "fixture {} file {} emitted zero-width Fixed(0): {}",
+                fixture.id,
+                path,
+                file.content
+            );
+            assert!(
+                !file.content.contains("if true"),
+                "fixture {} file {} emitted tautological if true: {}",
+                fixture.id,
+                path,
+                file.content
+            );
+        }
         let emission_hash = stable_json_hash(&emission);
         let optimized = optimize(emission);
         let optimized_hash = stable_json_hash(&optimized.plan);
