@@ -81,11 +81,13 @@ use std::time::{Duration, Instant};
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
 use ftui_core::geometry::Rect;
+use ftui_layout::pane_execution::{PaneExecutionEngine, PaneExecutionSample};
 use ftui_layout::{
     PANE_TREE_SCHEMA_VERSION, PaneCancelReason, PaneCommandEffect, PaneDragResizeEffect,
-    PaneDragResizeState, PaneFocusContext, PaneId, PaneInteractionTimeline, PaneLayout, PaneLeaf,
-    PaneNodeKind, PaneNodeRecord, PaneOperation, PanePlacement, PanePressureSnapProfile, PaneSplit,
-    PaneSplitRatio, PaneTree, PaneTreeSnapshot, SplitAxis,
+    PaneDragResizeState, PaneExecutionPolicy, PaneFocusContext, PaneId, PaneInteractionTimeline,
+    PaneLayout, PaneLeaf, PaneMemoryStrategy, PaneNodeKind, PaneNodeRecord, PaneOperation,
+    PanePlacement, PanePressureSnapProfile, PaneRetentionPolicy, PaneSplit, PaneSplitRatio,
+    PaneTree, PaneTreeSnapshot, SplitAxis,
 };
 use ftui_render::frame::Frame;
 use ftui_runtime::pane_keymap::{PaneKeyOutcome, PaneKeyboardController};
@@ -244,12 +246,23 @@ struct Shared {
     first_leaf: String,
     active_pane: String,
     maximized: bool,
+    engine_strategy: String,
+    engine_mode: String,
+    engine_applies: u64,
+    engine_persistent_applies: u64,
+    engine_checkpointed_applies: u64,
+    engine_conservative_applies: u64,
+    engine_switches: u64,
+    engine_fallbacks: u64,
+    engine_undos: u64,
+    engine_redos: u64,
     input_trace: Vec<String>,
 }
 
 struct Harness {
     tree: PaneTree,
-    timeline: PaneInteractionTimeline,
+    engine: PaneExecutionEngine,
+    observe_latency: bool,
     adapter: PaneTerminalAdapter,
     /// The production controller owns pane focus in both modes. Adapter mode
     /// routes Tab/BackTab here and resize/Escape through the pointer adapter.
@@ -292,6 +305,29 @@ impl From<Event> for Msg {
 impl Harness {
     fn with_shared<R>(&self, f: impl FnOnce(&mut Shared) -> R) -> Option<R> {
         self.shared.lock().ok().map(|mut guard| f(&mut guard))
+    }
+
+    fn cycle_engine_policy(&mut self) {
+        let retention = PaneRetentionPolicy::bounded(0, 64);
+        let policy = self.engine.policy();
+        let status = self.engine.status();
+        let next = match (
+            policy.forced_strategy,
+            status.conservative || policy.conservative,
+        ) {
+            (Some(PaneMemoryStrategy::Checkpointed), false) => {
+                PaneExecutionPolicy::adaptive(retention).forcing(PaneMemoryStrategy::Persistent)
+            }
+            (Some(PaneMemoryStrategy::Persistent), _) => {
+                PaneExecutionPolicy::adaptive(retention).conservative()
+            }
+            (_, true) => PaneExecutionPolicy::adaptive(retention),
+            (None, false) => {
+                PaneExecutionPolicy::adaptive(retention).forcing(PaneMemoryStrategy::Checkpointed)
+            }
+            _ => PaneExecutionPolicy::adaptive(retention).forcing(PaneMemoryStrategy::Persistent),
+        };
+        let _ = self.engine.set_policy(&self.tree, next);
     }
 
     /// Run one raw terminal event through the full production resize path.
@@ -383,15 +419,15 @@ impl Harness {
                         // Exercise the real retained undo/redo history after
                         // checking cancellation, leaving the final tree intact.
                         let before = self.tree.to_snapshot();
-                        let history = self.timeline.clone();
-                        let undone = self.timeline.undo(&mut self.tree).unwrap_or(false);
+                        let history = self.engine.timeline().clone();
+                        let undone = self.engine.undo(&mut self.tree).unwrap_or(false);
                         let changed = self.tree.to_snapshot() != before;
-                        let redone = undone && self.timeline.redo(&mut self.tree).unwrap_or(false);
+                        let redone = undone && self.engine.redo(&mut self.tree).unwrap_or(false);
                         let roundtrip = undone
                             && changed
                             && redone
                             && self.tree.to_snapshot() == before
-                            && self.timeline == history;
+                            && self.engine.timeline() == &history;
                         self.with_shared(|s| s.cancel_history_undo_redo = roundtrip);
                         self.record_state(false);
                         return Cmd::quit();
@@ -406,12 +442,39 @@ impl Harness {
                 }
             }
             Event::Key(key) => {
+                if key.kind != KeyEventKind::Release {
+                    match key.code {
+                        KeyCode::Char('e') => {
+                            self.cycle_engine_policy();
+                            self.record_state(false);
+                            return Cmd::none();
+                        }
+                        KeyCode::Char('u') => {
+                            let _ = self.engine.undo(&mut self.tree);
+                            self.record_state(false);
+                            return Cmd::none();
+                        }
+                        KeyCode::Char('r') => {
+                            let _ = self.engine.redo(&mut self.tree);
+                            self.record_state(false);
+                            return Cmd::none();
+                        }
+                        KeyCode::Char('p') => {
+                            self.engine.set_latency_envelope_ns(1);
+                            self.observe_latency = true;
+                            self.record_state(false);
+                            return Cmd::none();
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Harness affordances for the structural operations the production
                 // terminal adapter does not yet bind to input (bd-21pbi.2). These
                 // exercise operation -> render -> teardown over a real PTY.
                 if let Some(op) = affordance_operation(key) {
                     if self
-                        .timeline
+                        .engine
                         .apply_and_record(&mut self.tree, self.op_seed, self.op_seed, op)
                         .is_ok()
                     {
@@ -428,7 +491,7 @@ impl Harness {
                 let target = handles.first().map(|handle| handle.target);
                 let before_cancel = matches!(key.code, KeyCode::Escape).then(|| CancelSnapshot {
                     tree: self.tree.to_snapshot(),
-                    timeline: self.timeline.clone(),
+                    timeline: self.engine.timeline().clone(),
                     op_seed: self.op_seed,
                     focus: self.keyboard.focus(),
                     window_focused: self.adapter.window_focused(),
@@ -469,7 +532,7 @@ impl Harness {
 
     fn cancel_state_preserved(&self, snapshot: &CancelSnapshot) -> bool {
         self.tree.to_snapshot() == snapshot.tree
-            && self.timeline == snapshot.timeline
+            && self.engine.timeline() == &snapshot.timeline
             && self.op_seed == snapshot.op_seed
             && self.keyboard.focus() == snapshot.focus
             && self.adapter.window_focused() == snapshot.window_focused
@@ -486,11 +549,28 @@ impl Harness {
             .tree
             .operations_for_transition(transition, layout, FIXED_PRESSURE);
         for op in ops {
+            let local = matches!(op, PaneOperation::SetSplitRatio { .. });
+            let start = Instant::now();
             if self
-                .timeline
+                .engine
                 .apply_and_record(&mut self.tree, self.op_seed, self.op_seed, op)
                 .is_ok()
             {
+                if self.observe_latency {
+                    let elapsed_ns = u64::try_from(start.elapsed().as_nanos())
+                        .unwrap_or(u64::MAX)
+                        .max(2);
+                    let timestamp_ns =
+                        u64::try_from(self.started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    let _ = self.engine.observe(
+                        &self.tree,
+                        PaneExecutionSample {
+                            timestamp_ns,
+                            elapsed_ns,
+                            local,
+                        },
+                    );
+                }
                 self.op_seed += 1;
                 self.with_shared(|s| s.applied_ops += 1);
             }
@@ -503,8 +583,22 @@ impl Harness {
         let node_count = self.tree.nodes().count();
         let first_leaf = root_first_leaf_name(&self.tree);
         let valid = self.tree.validate().is_ok();
-        let history_entries = self.timeline.entries.len();
-        let history_cursor = self.timeline.applied_len();
+        let history_entries = self.engine.timeline().entries.len();
+        let history_cursor = self.engine.timeline().applied_len();
+        let status = self.engine.status();
+        let policy = self.engine.policy();
+        let engine_strategy = status.strategy.as_str().to_string();
+        let engine_mode = match (
+            policy.forced_strategy,
+            status.conservative || policy.conservative,
+        ) {
+            (_, true) => "conservative",
+            (None, false) => "adaptive",
+            (Some(PaneMemoryStrategy::Persistent), false) => "persistent",
+            (Some(PaneMemoryStrategy::Checkpointed), false) => "checkpointed",
+            (Some(PaneMemoryStrategy::Baseline), false) => "baseline",
+        }
+        .to_string();
         self.with_shared(|s| {
             if let Some(bps) = bps {
                 s.final_bps = bps;
@@ -514,6 +608,16 @@ impl Harness {
             s.tree_valid = valid;
             s.history_entries = history_entries;
             s.history_cursor = history_cursor;
+            s.engine_strategy = engine_strategy;
+            s.engine_mode = engine_mode;
+            s.engine_applies = status.applies;
+            s.engine_persistent_applies = status.persistent_applies;
+            s.engine_checkpointed_applies = status.checkpointed_applies;
+            s.engine_conservative_applies = status.conservative_applies;
+            s.engine_switches = status.switches;
+            s.engine_fallbacks = status.fallbacks;
+            s.engine_undos = status.undos;
+            s.engine_redos = status.redos;
             if committed {
                 s.committed = true;
             }
@@ -674,6 +778,16 @@ fn main() -> std::io::Result<()> {
         first_leaf,
         active_pane: initial_active,
         maximized: false,
+        engine_strategy: PaneMemoryStrategy::Checkpointed.as_str().to_string(),
+        engine_mode: "checkpointed".to_string(),
+        engine_applies: 0,
+        engine_persistent_applies: 0,
+        engine_checkpointed_applies: 0,
+        engine_conservative_applies: 0,
+        engine_switches: 0,
+        engine_fallbacks: 0,
+        engine_undos: 0,
+        engine_redos: 0,
         input_trace: Vec::new(),
     }));
 
@@ -681,7 +795,8 @@ fn main() -> std::io::Result<()> {
         .expect("valid pane terminal adapter config");
 
     let model = Harness {
-        timeline: PaneInteractionTimeline::with_baseline(&tree),
+        engine: PaneExecutionEngine::new(&tree),
+        observe_latency: false,
         tree,
         adapter,
         keyboard,
@@ -728,7 +843,7 @@ fn main() -> std::io::Result<()> {
         println!("{line}");
     }
     println!(
-        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={} node_count={} first_leaf={} canceled={} active_pane={} maximized={} cancel_preserved_state={} dragging_seen={} termios_restored={} backend={} recovered_bytes={} post_cancel_events={} post_cancel_preserved_state={} history_entries={} history_cursor={} cancel_history_undo_redo={} timed_out={}",
+        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={} node_count={} first_leaf={} canceled={} active_pane={} maximized={} cancel_preserved_state={} dragging_seen={} termios_restored={} backend={} recovered_bytes={} post_cancel_events={} post_cancel_preserved_state={} history_entries={} history_cursor={} cancel_history_undo_redo={} timed_out={} engine_strategy={} engine_mode={} engine_applies={} engine_persistent_applies={} engine_checkpointed_applies={} engine_conservative_applies={} engine_switches={} engine_fallbacks={} engine_undos={} engine_redos={}",
         snap.mode,
         snap.initial_bps,
         snap.final_bps,
@@ -752,6 +867,16 @@ fn main() -> std::io::Result<()> {
         snap.history_cursor,
         snap.cancel_history_undo_redo,
         snap.timed_out,
+        snap.engine_strategy,
+        snap.engine_mode,
+        snap.engine_applies,
+        snap.engine_persistent_applies,
+        snap.engine_checkpointed_applies,
+        snap.engine_conservative_applies,
+        snap.engine_switches,
+        snap.engine_fallbacks,
+        snap.engine_undos,
+        snap.engine_redos,
     );
     let _ = std::io::stdout().flush();
 

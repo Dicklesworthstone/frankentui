@@ -55,7 +55,7 @@
 //!    of size $S$ arrive at $t = 0$, all $N$ jobs age at the same rate $a \cdot t$ and the
 //!    $N$-th job waits $(N - 1) S$ before starting service. Total wait is bounded only in
 //!    combination with admission control (`max_queue_size` / `max_queue_depth`) or
-//!    subcritical arrival load $\rho = \lambda E[S] < 1$.
+//!    subcritical arrival load $\rho = \lambda E\[S\] < 1$.
 //! 3. **Simulator preemption vs. live non-preemptive `FnOnce` closures**:
 //!    In this discrete simulator, `preemptive: true` allows a newly arrived job with higher
 //!    priority to preempt `running` at `tick(dt)` boundaries. In the live runtime

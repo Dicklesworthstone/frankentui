@@ -12,7 +12,7 @@
 //! - [`VirtualizedStorage`] - Owned vs external storage abstraction
 //! - [`ItemHeight`] - Three height strategies:
 //!   - [`ItemHeight::Fixed`] — constant height per item (`O(1)` scroll indexing)
-//!   - [`ItemHeight::Fenwick`] — default for [`Virtualized::with_variable_heights`] and [`VirtualizedList::variable_heights`] (`O(log n)` prefix-sum offsets via [`crate::fenwick::FenwickHeightTracker`], optional per-category Bayesian height prediction via [`crate::height_predictor::HeightPredictor`], and Beta-VOI remeasurement via [`RemeasurePolicy`])
+//!   - [`ItemHeight::VariableFenwick`] — default for [`Virtualized::with_variable_heights`] and [`VirtualizedList::variable_heights`] (`O(log n)` prefix-sum offsets via [`crate::fenwick::FenwickTree`], optional per-category Bayesian height prediction via [`crate::height_predictor::HeightPredictor`], and Beta-VOI remeasurement via [`RemeasurePolicy`])
 //!   - [`ItemHeight::Variable`] — legacy [`HeightCache`] LRU cache with linear scan
 //! - [`RemeasurePolicy`] - Beta-posterior Value-of-Information policy scheduling remeasurement checks and emitting `voi_sample` evidence (`source: "virtualized_list"`)
 //!

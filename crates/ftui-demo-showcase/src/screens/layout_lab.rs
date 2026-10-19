@@ -4559,6 +4559,292 @@ mod tests {
         lab.clear_embedded_pane_workspace_bounds();
         assert!(!lab.pane_workspace_wants_mouse(0, 0));
     }
+
+    #[test]
+    fn pane_full_showcase_render_and_ansi_present_parity_across_policies_and_rollback() {
+        use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
+        use ftui_render::buffer::Buffer;
+        use ftui_render::diff::BufferDiff;
+        use ftui_render::presenter::Presenter;
+
+        struct Lane {
+            name: &'static str,
+            lab: LayoutLab,
+            prev: Buffer,
+            diff: BufferDiff,
+            ansi: Vec<u8>,
+        }
+
+        let cols = 140u16;
+        let rows = 40u16;
+        let area = Rect::new(0, 0, cols, rows);
+        let caps = TerminalCapabilities::builder()
+            .color_depth(ColorDepth::TrueColor)
+            .osc8_hyperlinks(true)
+            .build();
+        let budget = PaneRetentionPolicy::bounded(0, 64);
+        let policies = [
+            (
+                "checkpointed",
+                PaneExecutionPolicy::adaptive(budget).forcing(PaneMemoryStrategy::Checkpointed),
+            ),
+            (
+                "persistent",
+                PaneExecutionPolicy::adaptive(budget).forcing(PaneMemoryStrategy::Persistent),
+            ),
+            (
+                "conservative",
+                PaneExecutionPolicy::adaptive(budget).conservative(),
+            ),
+            ("adaptive", PaneExecutionPolicy::adaptive(budget)),
+        ];
+
+        let mut lanes: Vec<Lane> = policies
+            .into_iter()
+            .map(|(name, policy)| {
+                let mut lab = LayoutLab::new();
+                lab.pane_set_execution_policy(policy)
+                    .expect("install initial policy");
+                let mut prev = Buffer::new(cols, rows);
+                prev.clear_dirty();
+                Lane {
+                    name,
+                    lab,
+                    prev,
+                    diff: BufferDiff::new(),
+                    ansi: Vec::with_capacity(16384),
+                }
+            })
+            .collect();
+
+        let render_and_assert_parity = |lanes: &mut [Lane], step_label: &str| {
+            let mut step_hashes = Vec::with_capacity(lanes.len());
+            let mut step_snapshots = Vec::with_capacity(lanes.len());
+            let mut step_timelines = Vec::with_capacity(lanes.len());
+            let mut step_frame_checksums = Vec::with_capacity(lanes.len());
+            let mut step_ansi = Vec::with_capacity(lanes.len());
+
+            for lane in lanes.iter_mut() {
+                lane.lab.pane_execution_details = false;
+                let mut pool = GraphemePool::new();
+                let (frame_cksum, buf) = {
+                    let mut frame = Frame::new(cols, rows, &mut pool);
+                    lane.lab.view(&mut frame, area);
+                    let frame_cksum = checksum_frame(&frame);
+                    (frame_cksum, frame.buffer)
+                };
+                lane.diff.compute_dirty_into(&lane.prev, &buf);
+                lane.ansi.clear();
+                {
+                    let mut presenter = Presenter::new(&mut lane.ansi, caps);
+                    presenter
+                        .present_with_pool(&buf, &lane.diff, Some(&pool), None)
+                        .expect("present showcase frame to ANSI sink");
+                }
+                lane.prev = buf;
+
+                step_hashes.push((lane.name, lane.lab.pane_tree.state_hash()));
+                step_snapshots.push((lane.name, lane.lab.pane_tree.to_snapshot()));
+                step_timelines.push((lane.name, lane.lab.pane_timeline.timeline().clone()));
+                step_frame_checksums.push((lane.name, frame_cksum));
+                step_ansi.push((lane.name, lane.ansi.clone()));
+            }
+
+            for i in 1..lanes.len() {
+                assert_eq!(
+                    step_hashes[0].1, step_hashes[i].1,
+                    "{step_label}: state_hash mismatch between {} and {}",
+                    step_hashes[0].0, step_hashes[i].0
+                );
+                assert_eq!(
+                    step_snapshots[0].1, step_snapshots[i].1,
+                    "{step_label}: snapshot mismatch between {} and {}",
+                    step_snapshots[0].0, step_snapshots[i].0
+                );
+                assert_eq!(
+                    step_timelines[0].1.entries, step_timelines[i].1.entries,
+                    "{step_label}: timeline entries mismatch between {} and {}",
+                    step_timelines[0].0, step_timelines[i].0
+                );
+                assert_eq!(
+                    step_timelines[0].1.cursor, step_timelines[i].1.cursor,
+                    "{step_label}: timeline cursor mismatch between {} and {}",
+                    step_timelines[0].0, step_timelines[i].0
+                );
+                assert_eq!(
+                    step_frame_checksums[0].1, step_frame_checksums[i].1,
+                    "{step_label}: rendered Frame checksum mismatch between {} and {}",
+                    step_frame_checksums[0].0, step_frame_checksums[i].0
+                );
+                assert_eq!(
+                    step_ansi[0].1, step_ansi[i].1,
+                    "{step_label}: presented ANSI output mismatch between {} and {}",
+                    step_ansi[0].0, step_ansi[i].0
+                );
+            }
+        };
+
+        // Step 0: Initial frame render + ANSI presentation.
+        render_and_assert_parity(&mut lanes, "initial");
+
+        // Step 1: Keyboard intelligence mode sequence ('c', 'n', 'k').
+        for (key, label) in [
+            ('c', "mode_compare"),
+            ('n', "mode_monitor"),
+            ('k', "mode_compact"),
+        ] {
+            for lane in &mut lanes {
+                lane.lab.update(&press(KeyCode::Char(key)));
+            }
+            render_and_assert_parity(&mut lanes, label);
+        }
+
+        // Step 2: Real splitter drag gesture across all lanes.
+        let pane_area = lanes[0].lab.pane_preview.get();
+        let layout = lanes[0]
+            .lab
+            .pane_tree
+            .solve_layout(pane_area)
+            .expect("solve pane preview");
+        let splitter =
+            collect_splitter_primitives(&lanes[0].lab.pane_tree, &layout, pane_area, None, None)
+                .into_iter()
+                .find(|s| s.axis == ftui_layout::SplitAxis::Horizontal)
+                .expect("horizontal splitter");
+        let sx = splitter.handle_rect.x;
+        let sy = splitter.handle_rect.y;
+        for lane in &mut lanes {
+            lane.lab.handle_mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                sx,
+                sy,
+                Modifiers::NONE,
+            );
+            lane.lab.handle_mouse(
+                MouseEventKind::Drag(MouseButton::Left),
+                sx.saturating_add(4),
+                sy,
+                Modifiers::NONE,
+            );
+            lane.lab.handle_mouse(
+                MouseEventKind::Drag(MouseButton::Left),
+                sx.saturating_add(8),
+                sy,
+                Modifiers::NONE,
+            );
+            lane.lab.handle_mouse(
+                MouseEventKind::Up(MouseButton::Left),
+                sx.saturating_add(8),
+                sy,
+                Modifiers::NONE,
+            );
+        }
+        render_and_assert_parity(&mut lanes, "splitter_drag");
+
+        // Step 3: Off-head undo ('u' twice) and mid-history store migration.
+        for step in ["undo_1", "undo_2"] {
+            for lane in &mut lanes {
+                lane.lab.update(&press(KeyCode::Char('u')));
+            }
+            render_and_assert_parity(&mut lanes, step);
+        }
+        // Migrate checkpointed <-> persistent mid-history while redo tail is live.
+        lanes[0]
+            .lab
+            .pane_set_execution_policy(
+                PaneExecutionPolicy::adaptive(budget).forcing(PaneMemoryStrategy::Persistent),
+            )
+            .expect("migrate checkpointed lane to persistent off-head");
+        lanes[1]
+            .lab
+            .pane_set_execution_policy(
+                PaneExecutionPolicy::adaptive(budget).forcing(PaneMemoryStrategy::Checkpointed),
+            )
+            .expect("migrate persistent lane to checkpointed off-head");
+        render_and_assert_parity(&mut lanes, "mid_history_migration");
+
+        // Step 4: Redo one step ('y') then branch-after-undo ('c') to replace remaining redo tail.
+        for lane in &mut lanes {
+            lane.lab.update(&press(KeyCode::Char('y')));
+        }
+        render_and_assert_parity(&mut lanes, "redo_after_migration");
+        for lane in &mut lanes {
+            lane.lab.update(&press(KeyCode::Char('c')));
+        }
+        render_and_assert_parity(&mut lanes, "branch_after_undo");
+
+        // Step 5: Equal-budget history pruning to 2 retained units.
+        let tight = PaneRetentionPolicy::bounded(0, 2);
+        let tight_policies = [
+            PaneExecutionPolicy::adaptive(tight).forcing(PaneMemoryStrategy::Persistent),
+            PaneExecutionPolicy::adaptive(tight).forcing(PaneMemoryStrategy::Checkpointed),
+            PaneExecutionPolicy::adaptive(tight).conservative(),
+            PaneExecutionPolicy::adaptive(tight),
+        ];
+        for (lane, policy) in lanes.iter_mut().zip(tight_policies) {
+            lane.lab
+                .pane_set_execution_policy(policy)
+                .expect("tight retention policy");
+            assert_eq!(lane.lab.pane_timeline.timeline().entries.len(), 2);
+        }
+        render_and_assert_parity(&mut lanes, "pruned_to_2_units");
+
+        // Step 6: Atomic rollback on invalid policy & invalid workspace import, followed by continued input.
+        for lane in &mut lanes {
+            let before_snap = lane.lab.pane_tree.to_snapshot();
+            let before_cursor = lane.lab.pane_timeline.timeline().cursor;
+            assert!(
+                lane.lab
+                    .pane_set_execution_policy(
+                        PaneExecutionPolicy::adaptive(tight).forcing(PaneMemoryStrategy::Baseline),
+                    )
+                    .is_err(),
+                "Baseline policy without history must be rejected atomically"
+            );
+            assert!(
+                lane.lab
+                    .pane_import_workspace_snapshot_json("{corrupt-workspace-json")
+                    .is_err(),
+                "corrupt workspace import must be rejected atomically"
+            );
+            assert_eq!(lane.lab.pane_tree.to_snapshot(), before_snap);
+            assert_eq!(lane.lab.pane_timeline.timeline().cursor, before_cursor);
+        }
+        render_and_assert_parity(&mut lanes, "atomic_rollback_preserved");
+
+        // Continued input after rollback: undo, redo, replay, and new mode edit.
+        for (key, label) in [
+            ('u', "post_rollback_undo"),
+            ('y', "post_rollback_redo"),
+            ('R', "post_rollback_replay"),
+            ('n', "post_rollback_edit"),
+        ] {
+            for lane in &mut lanes {
+                lane.lab.update(&press(KeyCode::Char(key)));
+            }
+            render_and_assert_parity(&mut lanes, label);
+        }
+
+        // Verify executed strategy counters, modeled retained bytes, and diagnostic overlay rendering.
+        assert!(lanes[0].lab.pane_execution_status().checkpointed_applies > 0);
+        assert!(lanes[0].lab.pane_execution_status().persistent_applies > 0);
+        assert!(lanes[1].lab.pane_execution_status().persistent_applies > 0);
+        assert!(lanes[1].lab.pane_execution_status().checkpointed_applies > 0);
+        assert!(lanes[2].lab.pane_execution_status().conservative_applies > 0);
+        for lane in &mut lanes {
+            assert!(lane.lab.pane_execution_status().retained_bytes > 0);
+            lane.lab.pane_execution_details = true;
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(cols, rows, &mut pool);
+            lane.lab.view(&mut frame, area);
+            let text = frame_text(&frame);
+            assert!(
+                text.contains("Policy:") && text.contains("Modeled bytes:"),
+                "diagnostic overlay must render policy and modeled bytes for lane {}",
+                lane.name
+            );
+        }
+    }
 }
 
 #[test]

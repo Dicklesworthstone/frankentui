@@ -148,6 +148,68 @@ fn grow_tree(leaf_count: usize) -> PaneTree {
     tree
 }
 
+/// Grow a genuinely balanced binary split tree of `leaf_count` leaves using
+/// breadth-first leaf splitting, alternating `Horizontal` and `Vertical` axes
+/// by tree depth so a 255-leaf tree has depth 8 (`min_width <= 16`,
+/// `min_height <= 16`) and solves cleanly on a `240x80` viewport.
+fn grow_balanced_tree(leaf_count: usize) -> PaneTree {
+    let mut tree = PaneTree::singleton("root");
+    let mut queue = std::collections::VecDeque::from([(tree.root(), 0usize)]);
+    let mut id = 1u64;
+    while queue.len() < leaf_count {
+        let (target, depth) = queue.pop_front().expect("non-empty leaf queue");
+        let next_leaf_id = tree.next_id().checked_next().expect("leaf id");
+        tree.apply_operation(
+            id,
+            PaneOperation::SplitLeaf {
+                target,
+                axis: if depth.is_multiple_of(2) {
+                    SplitAxis::Horizontal
+                } else {
+                    SplitAxis::Vertical
+                },
+                ratio: PaneSplitRatio::new(1, 1).expect("ratio"),
+                placement: PanePlacement::ExistingFirst,
+                new_leaf: PaneLeaf::new(format!("leaf-{id}")),
+            },
+        )
+        .expect("balanced grow split");
+        queue.push_back((target, depth + 1));
+        queue.push_back((next_leaf_id, depth + 1));
+        id += 1;
+    }
+    tree
+}
+
+/// Grow a skewed deep-chain tree of `leaf_count` leaves that remains 100%
+/// feasible on a `240x80` viewport by biasing spine splits 3:1 toward the
+/// wider horizontal axis (`min_width <= 192 <= 240`, `min_height <= 64 <= 80`
+/// at 255 leaves, depth 254).
+fn grow_skewed_feasible_tree(leaf_count: usize) -> PaneTree {
+    let mut tree = PaneTree::singleton("root");
+    let mut id = 1u64;
+    while leaf_ids(&tree).len() < leaf_count {
+        let target = *leaf_ids(&tree).iter().min().expect("leaf");
+        tree.apply_operation(
+            id,
+            PaneOperation::SplitLeaf {
+                target,
+                axis: if id.is_multiple_of(4) {
+                    SplitAxis::Vertical
+                } else {
+                    SplitAxis::Horizontal
+                },
+                ratio: PaneSplitRatio::new(1, 1).expect("ratio"),
+                placement: PanePlacement::ExistingFirst,
+                new_leaf: PaneLeaf::new(format!("leaf-{id}")),
+            },
+        )
+        .expect("skewed feasible grow split");
+        id += 1;
+    }
+    tree
+}
+
 /// A pure `SetSplitRatio` workload over the fixed `base` tree's splits.
 fn resize_storm_ops(base: &PaneTree, op_count: usize, seed: u64) -> Vec<PaneOperation> {
     let splits = split_ids(base);
@@ -233,6 +295,133 @@ fn mixed_session_ops(base: &PaneTree, op_count: usize, seed: u64) -> Vec<PaneOpe
     ops
 }
 
+/// A mixed editing workload on a balanced starting tree where candidate
+/// structural operations are validated against `viewport` so every committed
+/// step remains 100% layout-feasible. Returns `(operations, retries)`.
+fn feasible_mixed_session_ops(
+    base: &PaneTree,
+    viewport: Rect,
+    op_count: usize,
+    seed: u64,
+) -> (Vec<PaneOperation>, usize) {
+    let mut tree = base.clone();
+    tree.solve_layout(viewport)
+        .expect("balanced base tree must solve on viewport");
+    let mut rng = Lcg::new(seed);
+    let mut ops = Vec::with_capacity(op_count);
+    let mut retries = 0usize;
+    for step in 0..op_count {
+        let leaves = leaf_ids(&tree);
+        let splits = split_ids(&tree);
+        let mut bag: Vec<u8> = Vec::new();
+        if !splits.is_empty() {
+            bag.extend([5, 5, 5, 5]);
+        }
+        if leaves.len() < 16 || splits.is_empty() {
+            bag.push(1);
+            bag.push(1);
+        } else if leaves.len() < 96 {
+            bag.push(1);
+        }
+        if leaves.len() > 4 {
+            bag.push(2);
+            bag.push(4);
+            bag.push(3);
+        }
+        let op = loop {
+            let candidate = match bag[rng.index(bag.len())] {
+                1 => PaneOperation::SplitLeaf {
+                    target: leaves[rng.index(leaves.len())],
+                    axis: axis(&mut rng),
+                    ratio: ratio(&mut rng),
+                    placement: placement(&mut rng),
+                    new_leaf: PaneLeaf::new(format!("bm{step}_{retries}")),
+                },
+                2 => PaneOperation::CloseNode {
+                    target: leaves[rng.index(leaves.len())],
+                },
+                3 => {
+                    let s = rng.index(leaves.len());
+                    let mut t = rng.index(leaves.len());
+                    while t == s {
+                        t = rng.index(leaves.len());
+                    }
+                    PaneOperation::MoveSubtree {
+                        source: leaves[s],
+                        target: leaves[t],
+                        axis: axis(&mut rng),
+                        ratio: ratio(&mut rng),
+                        placement: placement(&mut rng),
+                    }
+                }
+                4 => {
+                    let f = rng.index(leaves.len());
+                    let mut s = rng.index(leaves.len());
+                    while s == f {
+                        s = rng.index(leaves.len());
+                    }
+                    PaneOperation::SwapNodes {
+                        first: leaves[f],
+                        second: leaves[s],
+                    }
+                }
+                _ => PaneOperation::SetSplitRatio {
+                    split: splits[rng.index(splits.len())],
+                    ratio: ratio(&mut rng),
+                },
+            };
+            let mut probe = tree.clone();
+            if probe
+                .apply_operation((step as u64) + 1, candidate.clone())
+                .is_ok()
+                && probe.solve_layout(viewport).is_ok()
+            {
+                tree = probe;
+                break candidate;
+            }
+            retries += 1;
+        };
+        ops.push(op);
+    }
+    (ops, retries)
+}
+
+fn scenario_workload(
+    scenario: &'static str,
+    leaf_count: usize,
+    op_count: usize,
+    seed: u64,
+) -> (PaneTree, Vec<PaneOperation>, usize) {
+    let viewport = Rect::new(0, 0, 240, 80);
+    match scenario {
+        "balanced_resize_storm" => {
+            let base = grow_balanced_tree(leaf_count);
+            let ops = resize_storm_ops(&base, op_count, seed);
+            (base, ops, 0)
+        }
+        "skewed_feasible_resize_storm" => {
+            let base = grow_skewed_feasible_tree(leaf_count);
+            let ops = resize_storm_ops(&base, op_count, seed);
+            (base, ops, 0)
+        }
+        "balanced_mixed_session" => {
+            let base = grow_balanced_tree(leaf_count);
+            let (ops, retries) = feasible_mixed_session_ops(&base, viewport, op_count, seed);
+            (base, ops, retries)
+        }
+        "mixed_session" => {
+            let base = grow_tree(leaf_count);
+            let ops = mixed_session_ops(&base, op_count, seed);
+            (base, ops, 0)
+        }
+        _ => {
+            let base = grow_tree(leaf_count);
+            let ops = resize_storm_ops(&base, op_count, seed);
+            (base, ops, 0)
+        }
+    }
+}
+
 // --- measurement -------------------------------------------------------------
 
 fn net_bytes(region: &Region<System>) -> i64 {
@@ -283,12 +472,7 @@ fn run_scenario(
     op_count: usize,
     seed: u64,
 ) -> ScenarioResult {
-    let base = grow_tree(leaf_count);
-    let ops = if scenario == "resize_storm" {
-        resize_storm_ops(&base, op_count, seed)
-    } else {
-        mixed_session_ops(&base, op_count, seed)
-    };
+    let (base, ops, _retries) = scenario_workload(scenario, leaf_count, op_count, seed);
 
     // --- PERSISTENT: build, measure apply time and retained memory ----------
     let initial = VersionedPaneTree::from_pane_tree(&base);
@@ -782,6 +966,7 @@ struct LivePairResult {
     seed: u64,
     leaf_count: usize,
     operation_count: usize,
+    generator_retries: usize,
     retention: PaneRetentionPolicy,
     canonical: LiveRunReport,
     engine: LiveRunReport,
@@ -860,12 +1045,8 @@ fn run_live_pair(
     repetitions: usize,
 ) -> LivePairResult {
     let (scenario, leaf_count, operation_count, seed) = spec;
-    let base = grow_tree(leaf_count);
-    let operations = if scenario == "mixed_session" {
-        mixed_session_ops(&base, operation_count, seed)
-    } else {
-        resize_storm_ops(&base, operation_count, seed)
-    };
+    let (base, operations, generator_retries) =
+        scenario_workload(scenario, leaf_count, operation_count, seed);
     let mut canonical_metrics = LiveRun::default();
     let mut engine_metrics = LiveRun::default();
     let mut to_persistent = LivePhase::default();
@@ -977,12 +1158,22 @@ fn run_live_pair(
     }
     assert!(canonical_metrics.observation_tapes.is_empty());
     assert_eq!(engine_metrics.observation_tapes.len(), repetitions + 1);
-    if scenario == "resize_solve_control" {
+    if matches!(
+        scenario,
+        "resize_solve_control"
+            | "balanced_resize_storm"
+            | "skewed_feasible_resize_storm"
+            | "balanced_mixed_session"
+    ) {
         assert_eq!(
             engine_metrics.apply.solve_successes,
             operation_count * repetitions
         );
         assert!(engine_metrics.apply.solve_errors.is_empty());
+        assert!(engine_metrics.undo.solve_errors.is_empty());
+        assert!(engine_metrics.redo.solve_errors.is_empty());
+        assert!(to_persistent.solve_errors.is_empty());
+        assert!(to_checkpointed.solve_errors.is_empty());
     }
     LivePairResult {
         scenario,
@@ -990,6 +1181,7 @@ fn run_live_pair(
         seed,
         leaf_count,
         operation_count,
+        generator_retries,
         retention,
         canonical: canonical_metrics.report(),
         engine: engine_metrics.report(),
@@ -1034,6 +1226,10 @@ fn run_live_benchmark(
         ("resize_storm", 63, 512, 0x1111),
         ("resize_storm", 255, 512, 0x2222),
         ("mixed_session", 32, 256, 0x3333),
+        ("balanced_resize_storm", 63, 512, 0x5555),
+        ("balanced_resize_storm", 255, 512, 0x6666),
+        ("skewed_feasible_resize_storm", 255, 512, 0x7777),
+        ("balanced_mixed_session", 64, 256, 0x8888),
     ] {
         for units in [0, 64] {
             for mode in ["persistent", "checkpointed", "conservative", "adaptive"] {
@@ -1152,6 +1348,10 @@ fn main() {
         run_scenario("resize_storm", 63, 512, 0x1111),
         run_scenario("resize_storm", 255, 512, 0x2222),
         run_scenario("mixed_session", 32, 256, 0x3333),
+        run_scenario("balanced_resize_storm", 63, 512, 0x5555),
+        run_scenario("balanced_resize_storm", 255, 512, 0x6666),
+        run_scenario("skewed_feasible_resize_storm", 255, 512, 0x7777),
+        run_scenario("balanced_mixed_session", 64, 256, 0x8888),
     ];
 
     println!("pane_persistent_bench — persistent vs checkpointed replay\n");

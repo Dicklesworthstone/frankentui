@@ -2,7 +2,7 @@
 //!
 //! Predicts unseen row heights to pre-allocate scroll space and avoid
 //! scroll jumps when actual heights are measured lazily. Consumed by
-//! [`crate::fenwick::FenwickHeightTracker`], [`crate::virtualized::Virtualized::with_height_prediction`],
+//! [`crate::virtualized::VariableHeightsFenwick`], [`crate::virtualized::Virtualized::with_height_prediction`],
 //! and [`crate::virtualized::VirtualizedListState::with_predictor`] (grouped by
 //! [`crate::virtualized::RenderItem::category`]).
 //!
