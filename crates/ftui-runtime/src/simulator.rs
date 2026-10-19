@@ -2407,4 +2407,3 @@ mod tests {
         assert_eq!(row_after, "W=120xH=32");
     }
 }
-

@@ -9595,7 +9595,10 @@ mod tests {
 
     #[test]
     fn exit_after_env_parses_ms_and_rejects_garbage() {
-        assert_eq!(parse_exit_after_ms("1500"), Some(Duration::from_millis(1500)));
+        assert_eq!(
+            parse_exit_after_ms("1500"),
+            Some(Duration::from_millis(1500))
+        );
         assert_eq!(
             parse_exit_after_ms("  250 \n"),
             Some(Duration::from_millis(250))
@@ -9605,7 +9608,10 @@ mod tests {
         assert_eq!(parse_exit_after_ms("-50"), None);
         assert_eq!(parse_exit_after_ms("garbage"), None);
         assert_eq!(parse_exit_after_ms("1500ms"), None);
-        assert_eq!(exit_after_env("FTUI_NONEXISTENT_EXIT_AFTER_MS_TEST_VAR"), None);
+        assert_eq!(
+            exit_after_env("FTUI_NONEXISTENT_EXIT_AFTER_MS_TEST_VAR"),
+            None
+        );
     }
 
     #[test]

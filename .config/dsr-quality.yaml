@@ -46,7 +46,7 @@ tools:
       - python3 -B scripts/check_baseline_benches.py
       # Ensure standalone fuzz/Cargo.toml [workspace.lints.clippy] stays in sync
       # with the root Cargo.toml (bd-g00-root-epic-ewths.6.9 / .6.10).
-      - python3 -c 'import sys, tomllib; r = tomllib.load(open("Cargo.toml", "rb"))["workspace"]["lints"]["clippy"]; f = tomllib.load(open("fuzz/Cargo.toml", "rb"))["workspace"]["lints"]["clippy"]; sys.exit(0 if r == f else f"fuzz/Cargo.toml clippy lints drifted: {f} != {r}")'
+      - python3 -c 'import sys, tomllib; r = tomllib.load(open("Cargo.toml", "rb"))["workspace"]["lints"]["clippy"]; f = tomllib.load(open("fuzz/Cargo.toml", "rb"))["workspace"]["lints"]["clippy"]; sys.exit(0 if r == f else f"fuzz/Cargo.toml clippy lints drifted ({f} != {r})")'
       # The perf gate's own decisions, on synthetic fixtures. Nothing is
       # benchmarked or timed here, so it belongs with the stdlib gates rather
       # than in a perf lane.
@@ -169,3 +169,10 @@ tools:
     required_checks:
       - bash scripts/release_preflight_test.sh
       - bash scripts/release_preflight.sh "${DSR_RELEASE_TAG:-v$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')}" --strict --out "${DSR_PREFLIGHT_OUT:-${TMPDIR:-/tmp}/ftui_release_preflight.jsonl}"
+  # Windows cross-target and start/stop smoke verification (bd-g00-root-epic-ewths.6.5,
+  # bd-g00-root-epic-ewths.36.1, bd-g00-root-epic-ewths.36.2).
+  frankentui-windows-cross:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - bash scripts/cross_platform_e2e.sh --windows-smoke

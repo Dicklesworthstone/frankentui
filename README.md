@@ -1545,8 +1545,7 @@ It’s a kernel plus a large widget library plus a demo showcase with 45 screens
 
 ### Does it work on Windows?
 
-Windows support is tracked in `docs/WINDOWS.md` and the deferred native-backend
-strategy is documented in `docs/spec/frankenterm-architecture.md` (Section 13.5).
+Yes, with documented v1 limitations: on Windows, the `ftui` facade selects the Crossterm backend (`crossterm-compat`) by default (`ftui-tty` is Unix-only and returns `Unsupported` on non-Unix targets). Windows Terminal and ConHost are supported for raw-mode lifecycle, key/mouse/resize events, and 16/256/TrueColor output (DEC 2026 synchronized output and Kitty keyboard protocol are disabled on Windows). DSR `frankentui-windows-cross` validates `--target x86_64-pc-windows-gnu` workspace Clippy (`-D warnings`), example builds, and cross-platform capability/input/simulator tests; see [`docs/WINDOWS.md`](docs/WINDOWS.md), [`docs/adr/ADR-004-windows-v1-scope.md`](docs/adr/ADR-004-windows-v1-scope.md), and `docs/spec/frankenterm-architecture.md` (Section 13.5).
 
 ### Can I embed it in an existing CLI tool?
 
