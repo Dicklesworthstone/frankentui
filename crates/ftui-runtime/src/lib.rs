@@ -167,7 +167,10 @@ pub use program::{
     pane_terminal_target_from_hit, register_pane_terminal_splitter_hits,
     signal_termination_from_error,
 };
-pub use program::{DEFAULT_BACKEND, NO_BACKEND_MESSAGE};
+pub use program::{
+    DEFAULT_BACKEND, NO_BACKEND_MESSAGE, NOT_A_CONSOLE_MESSAGE, console_available, exit_after_env,
+    parse_exit_after_ms, validate_console_available,
+};
 pub use render_trace::{
     RENDER_TRACE_SCHEMA_VERSION, RenderTraceConfig, RenderTraceContext, RenderTraceFrame,
     RenderTraceRecorder,

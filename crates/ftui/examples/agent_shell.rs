@@ -30,7 +30,8 @@ fn main() -> std::io::Result<()> {
     let options = StreamingOptions::parse_agent_shell(
         std::env::args().skip(1),
         std::env::var_os("FTUI_AGENT_SHELL_LOG_MODE"),
-        std::env::var_os("FTUI_AGENT_SHELL_EXIT_AFTER_MS"),
+        std::env::var_os("FTUI_AGENT_SHELL_EXIT_AFTER_MS")
+            .or_else(|| std::env::var_os("FTUI_EXIT_AFTER_MS")),
     )?;
     let ui_height = options.ui_height();
     App::new(StreamingHarness::new(options))

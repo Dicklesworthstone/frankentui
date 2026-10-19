@@ -5644,6 +5644,48 @@ pub struct Program<
     shadow_frame_idx: u64,
 }
 
+/// Canonical error message returned when a live terminal session is opened
+/// with redirected stdin or stdout.
+pub const NOT_A_CONSOLE_MESSAGE: &str =
+    "stdin is not a console; run inside Windows Terminal, conhost, or use the headless simulator";
+
+/// Return `true` when both standard input and standard output are attached to a
+/// terminal/console handle.
+#[must_use]
+pub fn console_available() -> bool {
+    io::IsTerminal::is_terminal(&io::stdin()) && io::IsTerminal::is_terminal(&io::stdout())
+}
+
+/// Validate whether a live console is available, returning
+/// [`io::ErrorKind::Unsupported`] with [`NOT_A_CONSOLE_MESSAGE`] when `false`.
+pub fn validate_console_available(is_console: bool) -> io::Result<()> {
+    if is_console {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            NOT_A_CONSOLE_MESSAGE,
+        ))
+    }
+}
+
+/// Parse a positive millisecond string (such as `"1500"`) into a [`Duration`].
+///
+/// Rejects empty strings, zero, negative numbers, and non-numeric input.
+#[must_use]
+pub fn parse_exit_after_ms(raw: &str) -> Option<Duration> {
+    let ms = raw.trim().parse::<u64>().ok()?;
+    (ms > 0).then(|| Duration::from_millis(ms))
+}
+
+/// Read an environment variable (such as `"FTUI_EXIT_AFTER_MS"`) and parse a
+/// positive millisecond duration for deterministic smoke/test exit.
+#[must_use]
+pub fn exit_after_env(var_name: &str) -> Option<Duration> {
+    let raw = std::env::var(var_name).ok()?;
+    parse_exit_after_ms(&raw)
+}
+
 #[cfg(feature = "crossterm-compat")]
 impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
     /// Create a new program with default configuration.
@@ -5671,7 +5713,7 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
         };
         let initial_features =
             sanitize_backend_features_for_capabilities(requested_features, &capabilities);
-        let session = TerminalSession::new(SessionOptions {
+        let session = match TerminalSession::new(SessionOptions {
             alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
             mouse_capture: initial_features.mouse_capture,
             pixel_mouse: config.pixel_mouse,
@@ -5679,7 +5721,14 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
             focus_events: initial_features.focus_events,
             kitty_keyboard: initial_features.kitty_keyboard,
             intercept_signals: config.intercept_signals,
-        })?;
+        }) {
+            Ok(session) => session,
+            Err(_) if !console_available() => {
+                validate_console_available(false)?;
+                unreachable!()
+            }
+            Err(err) => return Err(err),
+        };
         let events = CrosstermEventSource::new(session, initial_features);
 
         // Raw mode is active now, so the terminal can answer probes; the
@@ -5789,6 +5838,8 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
         };
         tracing::info!(
             target: crate::telemetry_schema::TARGET_RUNTIME,
+            os = std::env::consts::OS,
+            console = console_available(),
             requested_lane = config.runtime_lane.label(),
             resolved_lane = resolved_lane.label(),
             task_backend = task_executor.kind_name_for_logs(),
@@ -5985,6 +6036,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         };
         tracing::info!(
             target: crate::telemetry_schema::TARGET_RUNTIME,
+            os = std::env::consts::OS,
+            console = console_available(),
             requested_lane = config.runtime_lane.label(),
             resolved_lane = resolved_lane.label(),
             task_backend = task_executor.kind_name_for_logs(),
@@ -6089,7 +6142,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 // Native TTY backend constructor (feature-gated)
 // =============================================================================
 
-#[cfg(any(feature = "crossterm-compat", feature = "native-backend"))]
+#[cfg(any(
+    feature = "crossterm-compat",
+    all(feature = "native-backend", unix),
+    test
+))]
 #[inline]
 const fn sanitize_backend_features_for_capabilities(
     requested: BackendFeatures,
@@ -6458,11 +6515,18 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             self.drain_startup_events()?;
         }
 
+        // Optional deterministic exit hook (FTUI_EXIT_AFTER_MS).
+        let exit_deadline = exit_after_env("FTUI_EXIT_AFTER_MS").map(|d| Instant::now() + d);
+
         // Main loop
         let mut loop_count: u64 = 0;
         while self.running {
             termination_signal = termination_signal.or_else(|| self.observed_termination_signal());
             if termination_signal.is_some() {
+                self.running = false;
+                break;
+            }
+            if exit_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 self.running = false;
                 break;
             }
@@ -6476,8 +6540,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 crate::debug_trace!("main loop heartbeat: iteration {}", loop_count);
             }
 
-            // Poll for input with tick timeout
-            let timeout = self.effective_timeout();
+            // Poll for input with tick timeout (capped by exit_deadline if active)
+            let mut timeout = self.effective_timeout();
+            if let Some(deadline) = exit_deadline {
+                timeout = timeout.min(deadline.saturating_duration_since(Instant::now()));
+            }
 
             // Poll for events with timeout
             let poll_result = self.events.poll_event(timeout)?;
@@ -9524,6 +9591,34 @@ mod tests {
         let config = ProgramConfig::default().with_mouse();
         assert_eq!(config.mouse_capture_policy, MouseCapturePolicy::On);
         assert!(config.resolved_mouse_capture());
+    }
+
+    #[test]
+    fn exit_after_env_parses_ms_and_rejects_garbage() {
+        assert_eq!(parse_exit_after_ms("1500"), Some(Duration::from_millis(1500)));
+        assert_eq!(
+            parse_exit_after_ms("  250 \n"),
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(parse_exit_after_ms("0"), None);
+        assert_eq!(parse_exit_after_ms(""), None);
+        assert_eq!(parse_exit_after_ms("-50"), None);
+        assert_eq!(parse_exit_after_ms("garbage"), None);
+        assert_eq!(parse_exit_after_ms("1500ms"), None);
+        assert_eq!(exit_after_env("FTUI_NONEXISTENT_EXIT_AFTER_MS_TEST_VAR"), None);
+    }
+
+    #[test]
+    fn with_config_reports_not_a_console_cleanly() {
+        assert!(validate_console_available(true).is_ok());
+        let err = validate_console_available(false)
+            .expect_err("non-console handle must report Unsupported");
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(err.to_string(), NOT_A_CONSOLE_MESSAGE);
+        assert!(err.to_string().contains("not a console"));
+        // Verify a non-terminal handle (anonymous file / pipe) is detected as false
+        let temp = tempfile::tempfile().expect("tempfile");
+        assert!(!io::IsTerminal::is_terminal(&temp));
     }
 
     #[cfg(feature = "native-backend")]
