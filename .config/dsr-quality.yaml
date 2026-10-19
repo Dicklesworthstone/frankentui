@@ -44,6 +44,9 @@ tools:
       - mkdir -p "${DSR_TRUTH_GATES_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_truth_gates/dsr}" && bv --robot-alerts > "${DSR_TRUTH_GATES_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_truth_gates/dsr}/bv_alerts.json"
       - python3 -B scripts/check_baseline_benches.py --self-test
       - python3 -B scripts/check_baseline_benches.py
+      # Ensure standalone fuzz/Cargo.toml [workspace.lints.clippy] stays in sync
+      # with the root Cargo.toml (bd-g00-root-epic-ewths.6.9 / .6.10).
+      - python3 -c 'import sys, tomllib; r = tomllib.load(open("Cargo.toml", "rb"))["workspace"]["lints"]["clippy"]; f = tomllib.load(open("fuzz/Cargo.toml", "rb"))["workspace"]["lints"]["clippy"]; sys.exit(0 if r == f else f"fuzz/Cargo.toml clippy lints drifted: {f} != {r}")'
       # The perf gate's own decisions, on synthetic fixtures. Nothing is
       # benchmarked or timed here, so it belongs with the stdlib gates rather
       # than in a perf lane.
@@ -144,4 +147,16 @@ tools:
     language: rust
     required_checks:
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --cargo-profile release --locked -p ftui-demo-showcase --test perf_hud_regression --test mermaid_perf_budget --test visual_effects_pty --no-fail-fast
+  # Scheduled and on-demand DSR fuzz campaign (bd-g00-root-epic-ewths.6.10,
+  # bd-g00-root-epic-ewths.8.1): builds all 12 declared cargo-fuzz targets with
+  # the pinned nightly toolchain and content fingerprints, runs the retained
+  # libFuzzer binaries directly against fuzz/corpus/<target>, emits JSONL
+  # execution/coverage/corpus_size evidence and corpus_stats.txt, and fails on
+  # any crash or incomplete target.
+  frankentui-fuzz-campaign:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - RCH_CARGO_WRAPPER_BYPASS=1 FUZZ_DURATION_SECS="${FUZZ_DURATION_SECS:-60}" bash scripts/fuzz_campaign_e2e.sh
+
 

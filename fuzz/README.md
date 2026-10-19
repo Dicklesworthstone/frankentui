@@ -39,12 +39,40 @@ for target in $(cargo fuzz list); do
 done
 ```
 
+## Cadence & DSR Verification
+
+Scheduled and on-demand fuzz campaigns run on the native DSR host via the
+`frankentui-fuzz-campaign` tool in `.config/dsr-quality.yaml` (invoking
+`scripts/fuzz_campaign_e2e.sh`):
+
+```bash
+# Run the DSR fuzz campaign (default 60s per target; customizable via FUZZ_DURATION_SECS)
+DSR_REPOS_FILE="$PWD/.config/dsr-quality.yaml" dsr quality --tool frankentui-fuzz-campaign -w "$PWD"
+
+# Or invoke the campaign script directly with a retained log directory
+RCH_CARGO_WRAPPER_BYPASS=1 FUZZ_DURATION_SECS=60 LOG_DIR=/data/tmp/fuzz_campaign_$(date +%s) ./scripts/fuzz_campaign_e2e.sh
+```
+
+Each campaign run:
+- Builds all 12 declared `[[bin]]` targets using the pinned nightly toolchain from `rust-toolchain.toml` and `CARGO_BUILD_FINGERPRINT=content` (`-Z checksum-freshness`).
+- Executes the retained libFuzzer binaries directly against `fuzz/corpus/<target>` so corpus inputs accumulate across runs without invoking `cargo fuzz run`'s deleting temporary-file wrapper.
+- Writes structured JSONL events (`env`, `target_start`, `target_end` with `runs`, `edges`, `peak_rss_mb`, `crashes`, `corpus_size`, and `run_end`) to `$LOG_DIR/fuzz_campaign_e2e.jsonl`, plus per-target corpus counts and sizes in `$LOG_DIR/corpus_stats.txt`.
+- Retains any crash/oom/timeout/leak inputs under `$FUZZ_ARTIFACT_ROOT/<target>/<run_id>/` and exits non-zero if any target crashes or fails to complete its requested duration.
+
+## Standalone Workspace
+
+`fuzz/Cargo.toml` declares its own `[workspace]` because the root `Cargo.toml`
+excludes `fuzz/`. It mirrors `[workspace.lints.clippy]` from the root manifest
+and inherits `[lints] workspace = true` locally; `frankentui-truth-gates` checks
+that the two lint tables stay in sync.
+
 ## Notes
 
 - `fuzz/target/` contains build artifacts (ignored by git).
 - `fuzz/artifacts/` contains crash reproducers (ignored by git).
+- `fuzz/corpus/` contains persistent per-target corpus inputs across campaigns (ignored by git).
 - `scripts/fuzz_campaign_e2e.sh` emits JSONL records with a run ID,
-  correlation IDs, target log paths, artifact paths, and replay commands.
+  correlation IDs, target log paths, corpus sizes, artifact paths, and replay commands.
 - Set `FUZZ_INJECT_CRASH_TARGET=<target>` and
   `FUZZ_ARTIFACT_ROOT=/tmp/frankentui-fuzz-artifacts` to validate the deliberate
   failure-injection path without polluting the repository.

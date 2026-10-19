@@ -322,7 +322,12 @@ directory -- 298 files on 2026-10-14, the largest being `ftui-runtime`
 **Not** in the repository-root `tests/`. That directory holds fixtures,
 baselines and captured artifacts, contains no `.rs` files, and could not run
 if it did: the root `Cargo.toml` is a virtual manifest with no `[package]`,
-so cargo never compiles a test target there.
+so cargo never compiles a test target there. To add a Rust integration test,
+create `crates/<crate>/tests/<name>.rs`; to add a PTY E2E scenario, add
+`tests/e2e/scripts/test_<name>.sh` (or `.py`) and register it in
+`tests/e2e/scripts/run_all.sh`. Scheduled and on-demand libFuzzer campaigns
+across the 12 targets in `fuzz/` run via `./scripts/fuzz_campaign_e2e.sh`
+(DSR tool `frankentui-fuzz-campaign`; see `fuzz/README.md`).
 
 ### Unit Tests
 

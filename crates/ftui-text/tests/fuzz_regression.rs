@@ -212,3 +212,34 @@ fn regression_emoji_zwj() {
     let _map = ClusterMap::from_text(text);
     let _layout = ShapedLineLayout::from_text(text);
 }
+
+#[test]
+fn regression_0x0b_and_trailing_zero_width() {
+    // Minimized fuzz reproducer 0x0b (VT) and trailing zero-width suffixes.
+    for text in [
+        "\x0b",
+        "2\u{03}\n",
+        "\u{200b}a\x0b",
+        "\u{4e16}\u{200b}\u{754c}\x0b",
+    ] {
+        let map = ClusterMap::from_text(text);
+        let total = map.total_cells();
+        for entry in map.entries() {
+            let cell = map.byte_to_cell(entry.byte_start as usize);
+            let back = map.cell_to_byte(cell);
+            if cell < total {
+                let first_owner = map
+                    .entries()
+                    .iter()
+                    .find(|e| e.cell_start == entry.cell_start)
+                    .unwrap();
+                assert_eq!(back, first_owner.byte_start as usize);
+                assert!(back <= entry.byte_start as usize);
+            } else {
+                assert_eq!(cell, total);
+                assert_eq!(entry.cell_width, 0);
+                assert_eq!(back, text.len());
+            }
+        }
+    }
+}
