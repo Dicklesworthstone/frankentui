@@ -1143,6 +1143,48 @@ mod tests {
     }
 
     #[test]
+    fn render_skips_min_width_scan_until_intrinsic_measure_requests_it() {
+        let paragraph = Paragraph::new("alpha beta supercalifragilistic");
+        let area = Rect::new(0, 0, 20, 2);
+        PARAGRAPH_CACHE.with(|cache| *cache.borrow_mut() = ParagraphCacheState::default());
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 2, &mut pool);
+        paragraph.render(area, &mut frame);
+
+        PARAGRAPH_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            let entry = cache
+                .metrics
+                .get(&paragraph.text_hash())
+                .expect("render should populate line-width metrics");
+            assert!(
+                !entry.min_width_computed,
+                "render must not compute min_width/widest_grapheme eagerly"
+            );
+            assert_eq!(entry.text_width, 31);
+        });
+
+        let measured = paragraph.measure(Size::new(20, 2));
+        assert_eq!(measured.min, Size::new(20, 1));
+        assert_eq!(measured.preferred, Size::new(31, 1));
+
+        PARAGRAPH_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            let entry = cache
+                .metrics
+                .get(&paragraph.text_hash())
+                .expect("metrics entry should remain cached");
+            assert!(
+                entry.min_width_computed,
+                "measure() must lazily populate min_width on the cached entry"
+            );
+            assert_eq!(entry.min_width, 20);
+            assert_eq!(entry.widest_grapheme, 1);
+        });
+    }
+
+    #[test]
     fn intrinsic_measurement_preserves_resolved_unicode_rendering() {
         let paragraph = Paragraph::new("e\u{301} 界");
         for render_first in [true, false] {

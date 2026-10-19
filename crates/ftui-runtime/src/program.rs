@@ -76,7 +76,6 @@ use ftui_backend::{BackendEventSource, BackendFeatures, BackendPresenter};
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-#[cfg(feature = "crossterm-compat")]
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 #[cfg(feature = "crossterm-compat")]
 use ftui_core::terminal_session::{SessionOptions, TerminalSession};

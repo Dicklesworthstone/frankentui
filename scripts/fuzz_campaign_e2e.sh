@@ -31,7 +31,8 @@ set -euo pipefail
 #   FUZZ_DURATION_SECS=3600 ./scripts/fuzz_campaign_e2e.sh  # 1 hour per job
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+PROJECT_ROOT="${FUZZ_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd -P)}"
+PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 FUZZ_DIR="$PROJECT_ROOT/fuzz"
 
 FUZZ_DURATION_SECS="${FUZZ_DURATION_SECS:-30}"

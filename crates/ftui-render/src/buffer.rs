@@ -439,6 +439,9 @@ impl Buffer {
                 u64::from(c.content.raw()) ^ (u64::from(c.fg.0) << 32)
             });
         self.advance_mutation_gen((u64::from(y) << 48) | (u64::from(self.width) << 32) ^ sample);
+        if self.dirty_all {
+            return;
+        }
         self.mark_dirty_row(y);
         if self.dirty_span_config.enabled
             && let Some(row) = self.dirty_spans.get_mut(y as usize)
@@ -475,6 +478,9 @@ impl Buffer {
         self.advance_mutation_gen(
             ((u64::from(y) << 48) | (u64::from(start) << 32) | u64::from(end)) ^ sample,
         );
+        if self.dirty_all {
+            return;
+        }
         self.mark_dirty_row(y);
         self.mark_dirty_bits_range(y, start, end);
 
@@ -4763,6 +4769,61 @@ mod tests {
         buf.mark_dirty_span(0, 5, 5);
         let spans = buf.dirty_span_row(0).unwrap().spans();
         assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn dirty_all_skips_redundant_bookkeeping_while_preserving_exact_state() {
+        let mut buf = Buffer::new(16, 4);
+        assert!(buf.dirty_all());
+        assert!(buf.is_dirty_witness_consistent());
+        let gen0 = buf.mutation_gen();
+
+        // Out-of-bounds and empty spans when dirty_all=true do not advance mutation_gen.
+        buf.mark_dirty_span(4, 0, 2);
+        buf.mark_dirty_span(0, 16, 18);
+        buf.mark_dirty_span(0, 5, 5);
+        assert_eq!(buf.mutation_gen(), gen0);
+
+        // In-bounds mutations when dirty_all=true advance mutation_gen and preserve full dirty state.
+        buf.set(3, 1, Cell::from_char('A'));
+        buf.fill(Rect::new(0, 2, 8, 1), Cell::from_char('B'));
+        let gen1 = buf.mutation_gen();
+        assert_ne!(gen1, gen0);
+        assert!(buf.dirty_all());
+        assert_eq!(buf.dirty_row_count(), 4);
+        assert_eq!(buf.dirty_cell_count(), 64);
+        assert_eq!(buf.dirty_span_stats().rows_full_dirty, 4);
+        assert_eq!(buf.dirty_span_stats().overflows, 0);
+        assert!(buf.is_dirty_witness_consistent());
+
+        // Clear dirty and perform sparse writes (false branch of dirty_all).
+        buf.clear_dirty();
+        assert!(!buf.dirty_all());
+        assert_eq!(buf.dirty_baseline_gen(), Some(gen1));
+        assert_eq!(buf.dirty_row_count(), 0);
+        assert_eq!(buf.dirty_cell_count(), 0);
+
+        buf.set(5, 2, Cell::from_char('C'));
+        assert!(!buf.dirty_all());
+        assert_eq!(buf.dirty_row_count(), 1);
+        assert_eq!(buf.dirty_cell_count(), 1);
+        assert_eq!(
+            buf.dirty_span_row(2).unwrap().spans(),
+            &[DirtySpan::new(5, 6)]
+        );
+        assert!(buf.is_dirty_witness_consistent());
+
+        // Transition back to dirty_all via clear() and verify config toggle + subsequent sparse writes.
+        buf.clear();
+        assert!(buf.dirty_all());
+        assert!(buf.is_dirty_witness_consistent());
+        buf.set_dirty_span_config(DirtySpanConfig::default().with_enabled(false));
+        buf.set(1, 0, Cell::from_char('D'));
+        assert!(buf.dirty_all());
+        assert!(buf.is_dirty_witness_consistent());
+        buf.set_dirty_span_config(DirtySpanConfig::default().with_enabled(true));
+        assert_eq!(buf.dirty_span_stats().rows_full_dirty, 4);
+        assert!(buf.is_dirty_witness_consistent());
     }
 
     #[test]
