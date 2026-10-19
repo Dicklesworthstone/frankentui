@@ -2646,6 +2646,7 @@ fn main() -> std::io::Result<()> {
 
     #[cfg(not(all(unix, feature = "native-backend")))]
     {
+        let _ = backend;
         let mut program = Program::with_config(model, config)?;
         program.run()?;
     }

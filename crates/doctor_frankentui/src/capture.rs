@@ -1420,6 +1420,7 @@ fn detach_vhs_log_pump_join(handle: thread::JoinHandle<()>, stream: &'static str
         });
 }
 
+#[cfg(any(unix, test))]
 fn parse_defunct_ttyd_from_ps(stdout: &[u8]) -> bool {
     String::from_utf8_lossy(stdout).lines().any(|line| {
         let mut parts = line.split_whitespace();

@@ -235,6 +235,7 @@ impl ProcessControl {
         Ok(())
     }
 
+    #[cfg(unix)]
     fn take_resize(&self) -> Option<(u16, u16)> {
         self.state
             .lock()

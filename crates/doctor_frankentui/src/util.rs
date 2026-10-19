@@ -563,14 +563,15 @@ mod tests {
     use crate::error::DoctorError;
 
     use super::{
-        OutputIntegration, append_line, bool_to_u8, command_exists,
-        copy_tree_snapshot_materialized, duration_literal, ensure_dir, ensure_executable,
-        ensure_exists, ensure_safe_path_component, exit_status_code, join_validated_child_path,
+        OutputIntegration, append_line, bool_to_u8, command_exists, duration_literal, ensure_dir,
+        ensure_executable, ensure_exists, ensure_safe_path_component, join_validated_child_path,
         normalize_http_path, output_for, parse_duration_value, relative_to, require_command,
         rust_comment_text, shell_single_quote, tape_escape, tmux_attach_command_literal,
         write_string,
     };
 
+    #[cfg(unix)]
+    use super::{copy_tree_snapshot_materialized, exit_status_code};
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
 

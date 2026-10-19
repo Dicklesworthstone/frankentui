@@ -795,6 +795,7 @@ fn run_suite_with_integration(args: SuiteArgs, integration: &OutputIntegration) 
 mod tests {
     use std::fs;
     use std::path::PathBuf;
+    #[cfg(unix)]
     use std::process::Command;
 
     use tempfile::tempdir;

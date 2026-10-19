@@ -1,8 +1,4 @@
 #![forbid(unsafe_code)]
-// Unix-first; Windows is deferred (see docs/WINDOWS.md). The whole backend is
-// compiled out on other targets so the crate stays a no-op dependency there
-// instead of a pile of dead, unix-only helpers that fail clippy on Windows.
-#![cfg(unix)]
 //! Native Unix terminal backend for FrankenTUI.
 //!
 //! This crate implements the `ftui-backend` traits for native Unix/macOS terminals.
@@ -20,6 +16,44 @@
 //! | Cursor show/hide  | `CSI ? 25 h`              | `CSI ? 25 l`              |
 //! | Sync output       | `CSI ? 2026 h`            | `CSI ? 2026 l`            |
 
+/// Whether the native Unix TTY backend is available on the target platform.
+pub const BACKEND_AVAILABLE: bool = cfg!(unix);
+
+#[cfg(not(unix))]
+mod non_unix_stub {
+    use std::io;
+
+    use ftui_backend::BackendFeatures;
+
+    /// Session configuration options (non-Unix stub).
+    #[derive(Debug, Clone, Default)]
+    pub struct TtySessionOptions {
+        pub alternate_screen: bool,
+        pub features: BackendFeatures,
+        pub intercept_signals: bool,
+        pub pixel_mouse: bool,
+    }
+
+    /// Non-Unix shell for [`TtyBackend`]; [`TtyBackend::open`] returns [`io::ErrorKind::Unsupported`].
+    #[derive(Debug)]
+    pub struct TtyBackend;
+
+    impl TtyBackend {
+        /// Always returns [`io::ErrorKind::Unsupported`] on non-Unix targets.
+        pub fn open(_width: u16, _height: u16, _options: TtySessionOptions) -> io::Result<Self> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "ftui-tty is unix-only; enable the crossterm-compat feature on non-Unix targets",
+            ))
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub use non_unix_stub::*;
+
+#[cfg(unix)]
+mod unix_impl {
 use core::time::Duration;
 use std::collections::VecDeque;
 use std::io::{self, BufWriter, Read, Write};
@@ -4156,3 +4190,32 @@ mod tests {
         }
     }
 }
+}
+
+#[cfg(unix)]
+pub use unix_impl::*;
+
+#[cfg(test)]
+mod platform_availability_tests {
+    use super::*;
+
+    #[test]
+    fn backend_available_matches_cfg() {
+        assert_eq!(BACKEND_AVAILABLE, cfg!(unix));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn non_unix_backend_reports_unsupported() {
+        let err = TtyBackend::open(80, 24, TtySessionOptions::default())
+            .expect_err("TtyBackend::open must fail on non-Unix targets");
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        let msg = err.to_string();
+        assert!(msg.contains("unix-only"), "unexpected error message: {msg}");
+        assert!(
+            msg.contains("crossterm-compat"),
+            "unexpected error message: {msg}"
+        );
+    }
+}
+
