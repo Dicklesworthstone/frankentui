@@ -1442,6 +1442,7 @@ version = "0.9.0"
 dependencies = [
  "ahash",
  "ftui-core",
+ "proptest",
 ]
 
 [[package]]

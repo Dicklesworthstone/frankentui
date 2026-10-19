@@ -59,8 +59,6 @@ a11y_focus_announcements_pty() {
         forms_screen="$(e2e_demo_screen "$bin" "forms_input" 2>/dev/null || echo 7)"
     fi
 
-    rm -f "$evidence" "$pty_out"
-
     # Ctrl+Right (CSI 1;5C) at 500ms and 1000ms, then Ctrl+Left (CSI 1;5D) at 1500ms:
     # panel focus moves Form -> SearchInput (id1) -> PasswordInput (id2) -> SearchInput (id1).
     FTUI_DEMO_EVIDENCE_JSONL="$evidence" \
@@ -109,7 +107,7 @@ with open(path, encoding="utf-8") as handle:
             if row.get("reason") == "FocusChanged":
                 focus_rows.append(row)
 
-post_initial_ids = [row.get("node_id") for row in focus_rows if int(row.get("frame_idx", 0)) > 0]
+post_initial_ids = [row.get("node_id") for row in focus_rows[1:]]
 print(
     f"a11y_tree={trees} a11y_announcement={announcements} "
     f"focus_changed={len(focus_rows)} post_initial_ids={post_initial_ids}"
@@ -156,8 +154,6 @@ a11y_panel_shows_tree_pty() {
         panel_screen="$(e2e_demo_screen "$bin" "accessibility_panel" 2>/dev/null || echo 42)"
     fi
 
-    rm -f "$pty_out"
-
     FTUI_DEMO_DETERMINISTIC=1 \
     FTUI_DEMO_SCREEN="$panel_screen" \
     FTUI_DEMO_EXIT_AFTER_MS=1500 \
@@ -180,13 +176,55 @@ import sys
 
 path = sys.argv[1]
 raw = open(path, "rb").read().decode("utf-8", errors="replace")
-# Strip CSI and OSC escape sequences to inspect rendered screen text.
-clean = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", raw)
-clean = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", clean)
+# Replay ANSI cursor movements onto a 2D cell grid so diff-updated spans
+# (e.g. "nod\x1b[2C=9" overwriting "(tree not yet built...") reconstruct the
+# actual visible terminal screen.
+rows, cols = 40, 140
+grid = [[" "] * cols for _ in range(rows)]
+r, c = 0, 0
+token_re = re.compile(r"\x1b\[([0-9;?]*)([ -/]*[@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]")
+pos = 0
+for m in token_re.finditer(raw):
+    chunk = raw[pos:m.start()]
+    for ch in chunk:
+        if ch == "\r":
+            c = 0
+        elif ch == "\n":
+            r = min(rows - 1, r + 1)
+        elif ord(ch) >= 32:
+            if 0 <= r < rows and 0 <= c < cols:
+                grid[r][c] = ch
+            c = min(cols - 1, c + 1)
+    params, final = m.group(1), m.group(2)
+    if final is not None:
+        if final in ("H", "f"):
+            parts = [int(p) if p.isdigit() else 1 for p in (params or "").split(";")]
+            r = max(0, min(rows - 1, (parts[0] if parts else 1) - 1))
+            c = max(0, min(cols - 1, (parts[1] if len(parts) > 1 else 1) - 1))
+        elif final == "C":
+            n = int(params) if (params and params.isdigit()) else 1
+            c = max(0, min(cols - 1, c + n))
+        elif final == "D":
+            n = int(params) if (params and params.isdigit()) else 1
+            c = max(0, c - n)
+        elif final == "J" and params == "2":
+            grid = [[" "] * cols for _ in range(rows)]
+            r, c = 0, 0
+    pos = m.end()
+for ch in raw[pos:]:
+    if ch == "\r":
+        c = 0
+    elif ch == "\n":
+        r = min(rows - 1, r + 1)
+    elif ord(ch) >= 32:
+        if 0 <= r < rows and 0 <= c < cols:
+            grid[r][c] = ch
+        c = min(cols - 1, c + 1)
 
+clean = "\n".join("".join(row).rstrip() for row in grid)
 match = re.search(r"nodes=(\d+)", clean)
 if not match:
-    raise SystemExit("Accessibility Tree header 'nodes=<n>' not found in PTY output")
+    raise SystemExit(f"Accessibility Tree header 'nodes=<n>' not found in PTY screen:\n{clean}")
 node_count = int(match.group(1))
 if node_count < 1:
     raise SystemExit(f"expected nodes >= 1 in Accessibility Tree pane, got nodes={node_count}")
@@ -201,15 +239,18 @@ PY
 
 VERBOSE=false
 QUICK=false
+PTY_ONLY=false
 
 for arg in "$@"; do
     case "$arg" in
         --verbose|-v) VERBOSE=true ;;
         --quick)      QUICK=true ;;
+        --pty-only)   QUICK=true; PTY_ONLY=true ;;
         --help|-h)
-            echo "Usage: $0 [--verbose] [--quick]"
-            echo "  --verbose  Show full output"
-            echo "  --quick    Skip compilation, run tests only"
+            echo "Usage: $0 [--verbose] [--quick] [--pty-only]"
+            echo "  --verbose   Show full output"
+            echo "  --quick     Skip compilation, run tests only"
+            echo "  --pty-only  Run only PTY accessibility scenarios using prebuilt binary"
             exit 0
             ;;
     esac
@@ -295,30 +336,36 @@ else
     skip_step "cargo_clippy"
 fi
 
-run_step "a11y_transition_tests" bash -c "
-    cd '$PROJECT_ROOT' &&
-    E2E_JSONL=1 \
-    E2E_JSONL_FILE='$E2E_CHILD_JSONL_DIR/a11y_transition_tests.jsonl' \
-    A11Y_TEST_SEED=\${A11Y_TEST_SEED:-0} \
-        cargo test -p ftui-demo-showcase --test a11y_snapshots -- a11y_transition --nocapture
-"
+if ! $PTY_ONLY; then
+    run_step "a11y_transition_tests" bash -c "
+        cd '$PROJECT_ROOT' &&
+        E2E_JSONL=1 \
+        E2E_JSONL_FILE='$E2E_CHILD_JSONL_DIR/a11y_transition_tests.jsonl' \
+        A11Y_TEST_SEED=\${A11Y_TEST_SEED:-0} \
+            cargo test -p ftui-demo-showcase --test a11y_snapshots -- a11y_transition --nocapture
+    "
 
-run_step "screen_reader_mirror_policy_tests" bash -c "
-    cd '$PROJECT_ROOT' &&
-    E2E_JSONL=1 \
-    E2E_JSONL_FILE='$E2E_CHILD_JSONL_DIR/screen_reader_mirror_policy_tests.jsonl' \
-    A11Y_TEST_SEED=\${A11Y_TEST_SEED:-0} \
-        cargo test -p ftui-a11y --test a11y_tests -- screen_reader --nocapture
-"
+    run_step "screen_reader_mirror_policy_tests" bash -c "
+        cd '$PROJECT_ROOT' &&
+        E2E_JSONL=1 \
+        E2E_JSONL_FILE='$E2E_CHILD_JSONL_DIR/screen_reader_mirror_policy_tests.jsonl' \
+        A11Y_TEST_SEED=\${A11Y_TEST_SEED:-0} \
+            cargo test -p ftui-a11y --test a11y_tests -- screen_reader --nocapture
+    "
 
-# bd-2vr05.7.4: reduced-motion / high-contrast preference behavior controls.
-run_step "a11y_preference_behavior_tests" bash -c "
-    cd '$PROJECT_ROOT' &&
-    E2E_JSONL=1 \
-    E2E_JSONL_FILE='$E2E_CHILD_JSONL_DIR/a11y_preference_behavior_tests.jsonl' \
-    A11Y_TEST_SEED=\${A11Y_TEST_SEED:-0} \
-        cargo test -p ftui-a11y -- preferences --nocapture
-"
+    # bd-2vr05.7.4: reduced-motion / high-contrast preference behavior controls.
+    run_step "a11y_preference_behavior_tests" bash -c "
+        cd '$PROJECT_ROOT' &&
+        E2E_JSONL=1 \
+        E2E_JSONL_FILE='$E2E_CHILD_JSONL_DIR/a11y_preference_behavior_tests.jsonl' \
+        A11Y_TEST_SEED=\${A11Y_TEST_SEED:-0} \
+            cargo test -p ftui-a11y -- preferences --nocapture
+    "
+else
+    skip_step "a11y_transition_tests"
+    skip_step "screen_reader_mirror_policy_tests"
+    skip_step "a11y_preference_behavior_tests"
+fi
 
 # G09: per-frame accessibility tree + focus announcements under a real PTY.
 if ! $QUICK; then

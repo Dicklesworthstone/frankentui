@@ -1461,3 +1461,182 @@ fn preferences_jsonl_round_trips_through_capability_profile() {
     assert!(line.contains("\"announcement_coalescing\":true"));
     assert!(line.contains("\"min_contrast_ratio_x100\":700"));
 }
+
+#[test]
+fn dump_text_indents_by_depth() {
+    let mut b = A11yTreeBuilder::new();
+    b.add_node(
+        A11yNodeInfo::new(1, A11yRole::Window, Rect::new(0, 0, 80, 24))
+            .with_name("Root")
+            .with_children(vec![2]),
+    );
+    b.add_node(
+        A11yNodeInfo::new(2, A11yRole::Group, Rect::new(0, 0, 40, 24))
+            .with_name("Panel")
+            .with_parent(1)
+            .with_children(vec![3]),
+    );
+    b.add_node(
+        A11yNodeInfo::new(3, A11yRole::List, Rect::new(1, 1, 38, 10))
+            .with_name("Items")
+            .with_parent(2)
+            .with_children(vec![4]),
+    );
+    b.add_node(
+        A11yNodeInfo::new(4, A11yRole::ListItem, Rect::new(1, 2, 38, 1))
+            .with_name("Row 1")
+            .with_parent(3),
+    );
+    b.set_root(1);
+    let tree = b.build();
+
+    let dump = tree.dump_text(&[1, 2, 3, 4]);
+    let lines: Vec<&str> = dump.lines().collect();
+    assert_eq!(lines.len(), 4);
+    assert!(lines[0].starts_with("Window \"Root\""), "{}", lines[0]);
+    assert!(lines[1].starts_with("  Group \"Panel\""), "{}", lines[1]);
+    assert!(lines[2].starts_with("    List \"Items\""), "{}", lines[2]);
+    assert!(
+        lines[3].starts_with("      ListItem \"Row 1\""),
+        "{}",
+        lines[3]
+    );
+}
+
+#[test]
+fn node_mut_returns_inserted_node() {
+    let mut b = A11yTreeBuilder::new();
+    assert!(b.node_mut(42).is_none());
+    b.add_node(A11yNodeInfo::new(42, A11yRole::Group, Rect::new(0, 0, 10, 1)).with_name("G"));
+    b.node_mut(42)
+        .expect("inserted node must be mutable")
+        .children
+        .push(99);
+    let tree = b.build();
+    assert_eq!(tree.node(42).unwrap().children, vec![99]);
+}
+
+#[test]
+fn diff_reports_focus_change_when_focused_state_flips() {
+    let mut b1 = A11yTreeBuilder::new();
+    b1.add_node(
+        A11yNodeInfo::new(1, A11yRole::TextInput, Rect::new(0, 0, 10, 1))
+            .with_name("First")
+            .with_state(A11yState {
+                focused: true,
+                ..A11yState::default()
+            }),
+    );
+    b1.add_node(
+        A11yNodeInfo::new(2, A11yRole::TextInput, Rect::new(0, 1, 10, 1)).with_name("Second"),
+    );
+    b1.set_root(1);
+    b1.set_focused(Some(1));
+    let t1 = b1.build();
+
+    let mut b2 = A11yTreeBuilder::new();
+    b2.add_node(
+        A11yNodeInfo::new(1, A11yRole::TextInput, Rect::new(0, 0, 10, 1)).with_name("First"),
+    );
+    b2.add_node(
+        A11yNodeInfo::new(2, A11yRole::TextInput, Rect::new(0, 1, 10, 1))
+            .with_name("Second")
+            .with_state(A11yState {
+                focused: true,
+                ..A11yState::default()
+            }),
+    );
+    b2.set_root(1);
+    b2.set_focused(Some(2));
+    let t2 = b2.build();
+
+    let diff = t2.diff(&t1);
+    assert_eq!(diff.focus_changed, Some((Some(1), Some(2))));
+}
+
+mod tree_diff_proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_role() -> impl Strategy<Value = A11yRole> {
+        prop_oneof![
+            Just(A11yRole::Window),
+            Just(A11yRole::Group),
+            Just(A11yRole::Button),
+            Just(A11yRole::TextInput),
+            Just(A11yRole::Label),
+            Just(A11yRole::List),
+            Just(A11yRole::ListItem),
+            Just(A11yRole::Checkbox),
+            Just(A11yRole::ProgressBar),
+        ]
+    }
+
+    fn arb_node_spec() -> impl Strategy<Value = (u64, A11yRole, String, bool)> {
+        (1u64..=32, arb_role(), "[a-zA-Z0-9 _]{0,12}", any::<bool>())
+    }
+
+    fn build_from_specs(
+        specs: &[(u64, A11yRole, String, bool)],
+        focus_idx: Option<usize>,
+    ) -> A11yTree {
+        let mut b = A11yTreeBuilder::new();
+        let mut ids = Vec::new();
+        for (id, role, name, disabled) in specs {
+            let mut node =
+                A11yNodeInfo::new(*id, *role, Rect::new((*id as u16) % 40, 0, 10, 1));
+            if !name.is_empty() {
+                node.name = Some(name.clone());
+            }
+            node.state.disabled = *disabled;
+            b.add_node(node);
+            ids.push(*id);
+        }
+        if let Some(&first) = ids.first() {
+            b.set_root(first);
+        }
+        if let Some(idx) = focus_idx
+            && !ids.is_empty()
+        {
+            let focused_id = ids[idx % ids.len()];
+            b.set_focused(Some(focused_id));
+        }
+        b.build()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn proptest_tree_diff_is_symmetric_on_swap(
+            specs_a in prop::collection::vec(arb_node_spec(), 0..20),
+            specs_b in prop::collection::vec(arb_node_spec(), 0..20),
+            focus_a in prop::option::of(0usize..20),
+            focus_b in prop::option::of(0usize..20),
+        ) {
+            let t1 = build_from_specs(&specs_a, focus_a);
+            let t2 = build_from_specs(&specs_b, focus_b);
+            let d12 = t2.diff(&t1);
+            let d21 = t1.diff(&t2);
+
+            prop_assert_eq!(&d12.added, &d21.removed);
+            prop_assert_eq!(&d12.removed, &d21.added);
+            let changed_12: Vec<u64> = d12.changed.iter().map(|(id, _)| *id).collect();
+            let changed_21: Vec<u64> = d21.changed.iter().map(|(id, _)| *id).collect();
+            prop_assert_eq!(changed_12, changed_21);
+            let swapped_focus = d21.focus_changed.map(|(old, new)| (new, old));
+            prop_assert_eq!(d12.focus_changed, swapped_focus);
+        }
+
+        #[test]
+        fn proptest_diff_of_identical_tree_is_empty(
+            specs in prop::collection::vec(arb_node_spec(), 0..20),
+            focus in prop::option::of(0usize..20),
+        ) {
+            let t1 = build_from_specs(&specs, focus);
+            let t2 = build_from_specs(&specs, focus);
+            let diff = t2.diff(&t1);
+            prop_assert!(diff.is_empty());
+        }
+    }
+}
