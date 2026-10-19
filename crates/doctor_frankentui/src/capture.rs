@@ -243,12 +243,14 @@ struct ResolvedCaptureConfig {
 
 impl ResolvedCaptureConfig {
     fn defaults(profile: &str) -> Self {
+        let project_dir = crate::util::default_project_dir();
+        let binary = crate::util::default_demo_showcase_binary(&project_dir);
         Self {
             profile: profile.to_string(),
             profile_description: "ad-hoc run".to_string(),
-            binary: PathBuf::from("/data/tmp/cargo-target/debug/ftui-demo-showcase"),
+            binary,
             app_command: Some("cargo run -q -p ftui-demo-showcase".to_string()),
-            project_dir: PathBuf::from("/data/projects/frankentui"),
+            project_dir,
             host: "127.0.0.1".to_string(),
             port: "8879".to_string(),
             http_path: "/mcp/".to_string(),

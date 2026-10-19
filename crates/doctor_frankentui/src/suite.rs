@@ -524,7 +524,7 @@ fn run_suite_with_integration(args: SuiteArgs, integration: &OutputIntegration) 
     );
     let project_dir = args
         .project_dir
-        .unwrap_or_else(|| PathBuf::from("/data/projects/frankentui"));
+        .unwrap_or_else(crate::util::default_project_dir);
     let run_root = args
         .run_root
         .unwrap_or_else(|| PathBuf::from("/tmp/doctor_frankentui/suites"));
