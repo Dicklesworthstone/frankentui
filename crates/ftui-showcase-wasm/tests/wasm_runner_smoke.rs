@@ -12,7 +12,7 @@ use ftui_showcase_wasm::ShowcaseRunner;
 use js_sys::{Reflect, Uint32Array};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
-use wasm_bindgen_test::{ console_log, wasm_bindgen_test, wasm_bindgen_test_configure };
+use wasm_bindgen_test::{console_log, wasm_bindgen_test, wasm_bindgen_test_configure};
 
 wasm_bindgen_test_configure!(run_in_node_experimental);
 
@@ -78,9 +78,9 @@ fn push_encoded_input_accepts_contract_json() {
     let initial_frame = runner.frame_idx();
 
     assert!(!runner.push_encoded_input("{not valid json"));
-    assert!(
-        runner.push_encoded_input(r#"{"kind":"key","phase":"down","code":"Tab","mods":0,"repeat":false}"#)
-    );
+    assert!(runner.push_encoded_input(
+        r#"{"kind":"key","phase":"down","code":"Tab","mods":0,"repeat":false}"#
+    ));
     let step = runner.step();
     assert_eq!(get_prop(&step, "rendered").as_bool(), Some(true));
     assert!(runner.frame_idx() > initial_frame);

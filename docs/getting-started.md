@@ -121,6 +121,15 @@ compositor pixels and retains screenshots and browser observations. Synthetic DO
 do not establish physical keyboard/IME/mobile behavior; inspect the recorded
 renderer backend before making GPU claims.
 
+For consumers that want a zero-dependency DOM `<pre>` text host without the
+WebGPU/Canvas2D renderer bundle, `crates/ftui-showcase-wasm/sdk/showcase-host.js`
+(paired with `showcase-host.css`) decodes `ShowcaseRunner.takeFlatPatches()` into
+a `<pre class="ftui-grid">` of `<span>` cells (rendering one Unicode codepoint per
+cell with `0x25A1` fallback for multi-codepoint graphemes, per
+`docs/spec/wasm-showcase-runner-contract.md`), encodes keyboard/mouse/wheel/paste/focus
+events, and drives DPR/zoom resize repaint boundaries. Run its pure-Node unit
+tests with `node --test crates/ftui-showcase-wasm/sdk/showcase-host.test.mjs`.
+
 ### 2. Initialize in a Next.js client component
 
 The snippet below assumes your website repo already contains a `FrankenTermWeb`

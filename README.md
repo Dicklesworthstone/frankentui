@@ -815,14 +815,14 @@ All runtime telemetry uses canonical targets and event names defined in `ftui_ru
 
 ## Web/WASM Backend
 
-FrankenTUI targets both native terminals and web browsers from a single Rust codebase:
+FrankenTUI targets both native terminals and web browsers from a single Rust codebase. `ftui-web` is a host-driven, deterministic-time patch producer implementing the `ftui-backend` traits (`WebBackend`, `WebPresenter`, `WebEventSource`, `DeterministicClock`); `ftui-showcase-wasm` exports `ShowcaseRunner` via `wasm-bindgen`; rendering and DPR/zoom measurement are performed by a browser host (either `crates/ftui-showcase-wasm/frankentui_showcase_demo.html` paired with the pinned `FrankenTermWeb` renderer built by `build-wasm.sh` and the verified DOM text bridge `crates/ftui-showcase-wasm/accessibility.mjs`, or the lightweight in-tree DOM `<pre>` text host `crates/ftui-showcase-wasm/sdk/showcase-host.js`):
 
 | Crate | Purpose |
 |-------|---------|
-| `ftui-web` | Web adapter with pointer/touch parity, DPR/zoom handling |
-| `ftui-showcase-wasm` | WASM build target for the demo showcase |
+| `ftui-web` | Host-driven web backend with pointer/touch parity (DPR/zoom handling in the JS browser hosts) |
+| `ftui-showcase-wasm` | WASM build target (`ShowcaseRunner`) for the demo showcase |
 
-The web adapter translates browser pointer events into the same `PaneSemanticInputEvent` stream used by the terminal backend, ensuring interaction parity across platforms.
+The web adapter translates browser pointer events into the same `PaneSemanticInputEvent` stream used by the terminal backend, ensuring interaction parity across platforms, and treats every `ShowcaseRunner::resize(cols, rows)` call (including same-geometry DPR/zoom transitions) as a full-repaint boundary.
 
 This checkout does **not** currently vendor local `crates/frankenterm-core` or
 `crates/frankenterm-web` workspace members. Those names still appear in specs and
@@ -1554,7 +1554,7 @@ Yes. Inline mode is designed for CLI + UI coexistence.
 
 ### Can it run in a browser?
 
-Yes. `ftui-web` provides a WASM adapter that renders through the same Rust core. `ftui-showcase-wasm` is the WASM build target for the demo showcase.
+Yes, reproducibly from this repository: run `bash build-wasm.sh /absolute/new-browser-build && python3 -m http.server --directory /absolute/new-browser-build/site 8080` to build and serve the complete showcase bundle (or mount `ShowcaseRunner` directly in the lightweight in-tree DOM `<pre>` text host `crates/ftui-showcase-wasm/sdk/showcase-host.js`). `ftui-web` provides the deterministic, host-driven WASM backend and `ftui-showcase-wasm` exports `ShowcaseRunner`.
 
 ### How do I update snapshot tests?
 

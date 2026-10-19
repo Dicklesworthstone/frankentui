@@ -1640,4 +1640,3 @@ mod tests {
         verify_exports_match_contract_doc(&contract_md, wasm_rs);
     }
 }
-
