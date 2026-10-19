@@ -1535,4 +1535,109 @@ mod tests {
             "pane trace should include timeline operations"
         );
     }
+
+    fn parse_showcase_runner_exports(source: &str) -> HashSet<String> {
+        let mut exports = HashSet::new();
+        let mut in_impl = false;
+        let mut pending_js_name: Option<String> = None;
+        let mut pending_constructor = false;
+
+        for raw_line in source.lines() {
+            let line = raw_line.trim();
+            if line.starts_with("impl ShowcaseRunner") {
+                in_impl = true;
+                continue;
+            }
+            if !in_impl {
+                continue;
+            }
+            if line == "#[wasm_bindgen(constructor)]" {
+                pending_constructor = true;
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("#[wasm_bindgen(js_name = ")
+                && let Some(name) = rest.strip_suffix(")]")
+            {
+                pending_js_name = Some(name.trim().trim_matches('"').to_string());
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("pub fn ")
+                && let Some((fn_name, _)) = rest.split_once('(')
+            {
+                let exported = if pending_constructor {
+                    "new".to_string()
+                } else if let Some(js_name) = pending_js_name.take() {
+                    js_name
+                } else {
+                    fn_name.trim().to_string()
+                };
+                pending_constructor = false;
+                pending_js_name = None;
+                exports.insert(exported);
+            }
+        }
+        exports
+    }
+
+    fn verify_exports_match_contract_doc(contract_md: &str, wasm_rs: &str) {
+        let section6 = contract_md
+            .split("## 6. ShowcaseRunner wasm-bindgen API")
+            .nth(1)
+            .and_then(|rest| rest.split("## 7.").next())
+            .expect("contract doc must contain Section 6");
+
+        let doc_exports = parse_showcase_runner_exports(section6);
+        let expected_section6: HashSet<String> = [
+            "new",
+            "init",
+            "advanceTime",
+            "setTime",
+            "pushEncodedInput",
+            "touchActionsJson",
+            "dragHandleAt",
+            "resize",
+            "step",
+            "takePendingInputTrace",
+            "takeFlatPatches",
+            "takeLogs",
+            "patchHash",
+            "patchStats",
+            "frameIdx",
+            "isRunning",
+            "destroy",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+        assert_eq!(
+            doc_exports, expected_section6,
+            "Section 6 of docs/spec/wasm-showcase-runner-contract.md drifted from expected core exports"
+        );
+
+        let impl_exports = parse_showcase_runner_exports(wasm_rs);
+        for required in &doc_exports {
+            assert!(
+                impl_exports.contains(required),
+                "wasm.rs is missing documented ShowcaseRunner export `{required}`"
+            );
+        }
+    }
+
+    #[test]
+    fn exports_match_contract_doc() {
+        let contract_md = include_str!("../../../docs/spec/wasm-showcase-runner-contract.md");
+        let wasm_rs = include_str!("wasm.rs");
+        verify_exports_match_contract_doc(contract_md, wasm_rs);
+    }
+
+    #[test]
+    #[should_panic(expected = "Section 6 of docs/spec/wasm-showcase-runner-contract.md drifted")]
+    fn exports_match_contract_doc_detects_missing_export() {
+        let contract_md = include_str!("../../../docs/spec/wasm-showcase-runner-contract.md")
+            .replace("takeFlatPatches", "removedExportForNegativeControl");
+        let wasm_rs = include_str!("wasm.rs");
+        verify_exports_match_contract_doc(&contract_md, wasm_rs);
+    }
 }
+
