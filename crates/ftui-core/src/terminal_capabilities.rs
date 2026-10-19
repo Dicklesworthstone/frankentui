@@ -2487,6 +2487,22 @@ mod tests {
         assert_eq!(caps.color_depth, ColorDepth::Ansi256);
     }
 
+    #[test]
+    fn wt_session_profile_matches_windows_doc() {
+        let mut env = make_env("", "", "");
+        env.wt_session = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
+        assert!(caps.supports_true_color());
+        assert!(caps.supports_256_colors());
+        assert!(caps.osc8_hyperlinks);
+        assert!(caps.mouse_sgr);
+        assert!(caps.bracketed_paste);
+        assert!(caps.focus_events);
+        assert!(!caps.sync_output);
+        assert!(!caps.kitty_keyboard);
+    }
+
     // ====== Capability Profiles (bd-k4lj.2) ======
 
     #[test]

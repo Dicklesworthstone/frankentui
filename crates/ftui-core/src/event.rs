@@ -1128,4 +1128,83 @@ mod tests {
 
         assert_eq!(Event::from_crossterm(ct_event), None);
     }
+
+    #[test]
+    fn crossterm_key_event_maps_to_ftui_key() {
+        let cases = [
+            (
+                ct_event::KeyCode::Up,
+                ct_event::KeyModifiers::NONE,
+                KeyCode::Up,
+                Modifiers::NONE,
+            ),
+            (
+                ct_event::KeyCode::Down,
+                ct_event::KeyModifiers::NONE,
+                KeyCode::Down,
+                Modifiers::NONE,
+            ),
+            (
+                ct_event::KeyCode::Left,
+                ct_event::KeyModifiers::SHIFT,
+                KeyCode::Left,
+                Modifiers::SHIFT,
+            ),
+            (
+                ct_event::KeyCode::Right,
+                ct_event::KeyModifiers::ALT,
+                KeyCode::Right,
+                Modifiers::ALT,
+            ),
+            (
+                ct_event::KeyCode::F(1),
+                ct_event::KeyModifiers::NONE,
+                KeyCode::F(1),
+                Modifiers::NONE,
+            ),
+            (
+                ct_event::KeyCode::F(12),
+                ct_event::KeyModifiers::CONTROL,
+                KeyCode::F(12),
+                Modifiers::CTRL,
+            ),
+            (
+                ct_event::KeyCode::Char('c'),
+                ct_event::KeyModifiers::CONTROL,
+                KeyCode::Char('c'),
+                Modifiers::CTRL,
+            ),
+            (
+                ct_event::KeyCode::Enter,
+                ct_event::KeyModifiers::NONE,
+                KeyCode::Enter,
+                Modifiers::NONE,
+            ),
+            (
+                ct_event::KeyCode::Backspace,
+                ct_event::KeyModifiers::NONE,
+                KeyCode::Backspace,
+                Modifiers::NONE,
+            ),
+        ];
+
+        for (ct_code, ct_mods, expected_code, expected_mods) in cases {
+            let ct = ct_event::Event::Key(ct_event::KeyEvent {
+                code: ct_code,
+                modifiers: ct_mods,
+                kind: ct_event::KeyEventKind::Press,
+                state: ct_event::KeyEventState::NONE,
+            });
+            let mapped = Event::from_crossterm(ct).expect("table key must map");
+            assert_eq!(
+                mapped,
+                Event::Key(KeyEvent {
+                    code: expected_code,
+                    modifiers: expected_mods,
+                    kind: KeyEventKind::Press,
+                })
+            );
+        }
+    }
 }
+

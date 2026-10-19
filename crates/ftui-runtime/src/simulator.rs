@@ -2371,4 +2371,40 @@ mod tests {
             "events after Quit must also be ignored"
         );
     }
+
+    #[test]
+    fn simulator_resize_reflows_view() {
+        use ftui_render::cell::Cell;
+
+        struct WidthEchoModel;
+        impl Model for WidthEchoModel {
+            type Message = Event;
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                let label = format!("W={}xH={}", frame.width(), frame.height());
+                for (i, ch) in label.chars().enumerate() {
+                    if (i as u16) < frame.width() {
+                        frame.buffer.set_raw(i as u16, 0, Cell::from_char(ch));
+                    }
+                }
+            }
+        }
+
+        let mut sim = ProgramSimulator::new(WidthEchoModel);
+        sim.init();
+        let buf_before = sim.capture_frame(40, 10);
+        let row_before: String = (0..9)
+            .filter_map(|x| buf_before.get(x, 0)?.content.as_char())
+            .collect();
+        assert_eq!(row_before, "W=40xH=10");
+
+        let buf_after = sim.capture_frame(120, 32);
+        let row_after: String = (0..10)
+            .filter_map(|x| buf_after.get(x, 0)?.content.as_char())
+            .collect();
+        assert_eq!(row_after, "W=120xH=32");
+    }
 }
+
