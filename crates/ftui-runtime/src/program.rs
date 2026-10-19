@@ -15399,7 +15399,9 @@ mod tests {
         let mut program = headless_program_with_config(SimpleA11yModel, config);
         program.dirty = true;
         program.render_frame().expect("render enabled a11y frame");
-        let tree = program.accessibility_tree().expect("tree built when enabled");
+        let tree = program
+            .accessibility_tree()
+            .expect("tree built when enabled");
         assert_eq!(tree.node_count(), 1);
         assert_eq!(tree.focused_id(), Some(10));
     }
@@ -15423,8 +15425,7 @@ mod tests {
             }
         }
 
-        let mut program =
-            headless_program_with_config(SimpleA11yModel, ProgramConfig::default());
+        let mut program = headless_program_with_config(SimpleA11yModel, ProgramConfig::default());
         program.dirty = true;
         program.render_frame().expect("render disabled a11y frame");
         assert!(program.accessibility_tree().is_none());
@@ -15448,12 +15449,16 @@ mod tests {
             fn view(&self, frame: &mut Frame) {
                 for (i, label) in ["First", "Second"].into_iter().enumerate() {
                     frame.push_a11y(
-                        A11yNodeInfo::new((i + 1) as u64, A11yRole::TextInput, Rect::new(0, i as u16, 12, 1))
-                            .with_name(label)
-                            .with_state(A11yState {
-                                focused: self.focused_idx == i,
-                                ..A11yState::default()
-                            }),
+                        A11yNodeInfo::new(
+                            (i + 1) as u64,
+                            A11yRole::TextInput,
+                            Rect::new(0, i as u16, 12, 1),
+                        )
+                        .with_name(label)
+                        .with_state(A11yState {
+                            focused: self.focused_idx == i,
+                            ..A11yState::default()
+                        }),
                     );
                 }
             }
@@ -15637,7 +15642,10 @@ mod tests {
             .map(|line| serde_json::from_str(line).expect("valid JSON line"))
             .filter(|row: &serde_json::Value| row["event"] == "a11y_announcement")
             .collect();
-        assert!(!announcement_rows.is_empty(), "expected a11y_announcement rows");
+        assert!(
+            !announcement_rows.is_empty(),
+            "expected a11y_announcement rows"
+        );
         for row in &announcement_rows {
             assert!(row.get("frame_idx").is_some());
             assert!(row.get("node_id").is_some());

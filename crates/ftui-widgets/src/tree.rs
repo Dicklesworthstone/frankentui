@@ -319,6 +319,12 @@ pub struct Tree {
     persistence_id: Option<String>,
     /// Optional hit ID for mouse interaction.
     hit_id: Option<HitId>,
+    /// Optional explicit accessibility root node ID.
+    accessibility_id: Option<u64>,
+    /// Optional currently selected visible row index.
+    selected_visible_index: Option<usize>,
+    /// Whether this tree currently owns keyboard focus.
+    focused: bool,
     /// Optional case-insensitive search query.
     search_query: Option<String>,
 }
@@ -337,6 +343,9 @@ impl Tree {
             root_style: Style::default(),
             persistence_id: None,
             hit_id: None,
+            accessibility_id: None,
+            selected_visible_index: None,
+            focused: false,
             search_query: None,
         }
     }
@@ -397,6 +406,28 @@ impl Tree {
         self
     }
 
+    /// Set an explicit accessibility root node ID that stays stable across
+    /// layout moves and resizes.
+    #[must_use]
+    pub fn with_accessibility_id(mut self, id: u64) -> Self {
+        self.accessibility_id = Some(id);
+        self
+    }
+
+    /// Set the currently selected visible row index for accessibility state.
+    #[must_use]
+    pub fn with_selected_visible_index(mut self, index: Option<usize>) -> Self {
+        self.selected_visible_index = index;
+        self
+    }
+
+    /// Set whether this tree currently owns keyboard focus.
+    #[must_use]
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
     /// Apply a case-insensitive search query filter.
     #[must_use]
     pub fn with_search_query(mut self, query: impl Into<String>) -> Self {
@@ -414,6 +445,35 @@ impl Tree {
     pub fn without_search_query(mut self) -> Self {
         self.search_query = None;
         self
+    }
+
+    fn accessibility_root_id(&self, area: Rect) -> u64 {
+        if let Some(id) = self.accessibility_id {
+            return id;
+        }
+        if let Some(hit) = self.hit_id {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            ("ftui.tree.hit", hit.id()).hash(&mut hasher);
+            return hasher.finish();
+        }
+        if let Some(ref pid) = self.persistence_id {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            ("ftui.tree.persist", pid.as_str()).hash(&mut hasher);
+            return hasher.finish();
+        }
+        crate::a11y_node_id(area)
+    }
+
+    /// Compute the stable accessibility node ID for a tree node at `path`
+    /// (canonical child indices from root; `&[]` for the root node itself).
+    #[must_use]
+    pub fn accessibility_item_id(root_id: u64, path: &[usize]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("ftui.tree.node", root_id, path).hash(&mut hasher);
+        hasher.finish()
     }
 
     #[cfg(feature = "tracing")]
@@ -467,6 +527,39 @@ impl Tree {
         &mut self.root
     }
 
+    fn build_a11y_item_node(
+        &self,
+        node: &TreeNode,
+        depth: usize,
+        row_idx: usize,
+        row_bounds: Rect,
+        root_id: u64,
+        path: &[usize],
+    ) -> ftui_a11y::node::A11yNodeInfo {
+        let item_id = Self::accessibility_item_id(root_id, path);
+        let mut item = ftui_a11y::node::A11yNodeInfo::new(
+            item_id,
+            ftui_a11y::node::A11yRole::ListItem,
+            row_bounds,
+        );
+        if !node.label.is_empty() {
+            item.name = Some(node.label.clone());
+        }
+        item.description = Some(match node.icon() {
+            Some(icon) if !icon.is_empty() => format!("level {}, icon {}", depth + 1, icon),
+            _ => format!("level {}", depth + 1),
+        });
+        let has_children = self
+            .get_node_at_path(path)
+            .map_or_else(|| node.has_children(), TreeNode::has_children);
+        if has_children {
+            item.state.expanded = Some(node.is_expanded());
+        }
+        item.state.selected = self.selected_visible_index == Some(row_idx);
+        item.state.focused = self.focused && self.selected_visible_index == Some(row_idx);
+        item
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_node(
         &self,
@@ -477,12 +570,14 @@ impl Tree {
         frame: &mut Frame,
         current_row: &mut usize,
         deg: ftui_render::budget::DegradationLevel,
+        a11y_root_id: u64,
     ) {
         if *current_row >= area.height as usize {
             return;
         }
 
-        let y = area.y.saturating_add(*current_row as u16);
+        let row_idx = *current_row;
+        let y = area.y.saturating_add(row_idx as u16);
         let mut x = area.x;
         let max_x = area.right();
 
@@ -543,26 +638,68 @@ impl Tree {
             draw_text_span(frame, x, y, &node.label, Style::default(), max_x);
         }
 
+        let row_area = Rect::new(area.x, y, area.width, 1);
+
         // Register hit region for the row
         if let Some(id) = self.hit_id {
-            let row_area = Rect::new(area.x, y, area.width, 1);
-            frame.register_hit(row_area, id, HitRegion::Content, *current_row as u64);
+            frame.register_hit(row_area, id, HitRegion::Content, row_idx as u64);
         }
+
+        let a11y_item = if frame.a11y_enabled() {
+            let row_bounds = row_area.intersection(&frame.buffer.current_scissor());
+            if row_bounds.is_empty() {
+                None
+            } else {
+                let path = self
+                    .find_path_indices_at_visible_index(row_idx)
+                    .unwrap_or_default();
+                Some(self.build_a11y_item_node(
+                    node,
+                    depth,
+                    row_idx,
+                    row_bounds,
+                    a11y_root_id,
+                    &path,
+                ))
+            }
+        } else {
+            None
+        };
 
         *current_row += 1;
 
-        if !node.expanded {
+        if !node.expanded || node.children.is_empty() || *current_row >= area.height as usize {
+            if let Some(item_node) = a11y_item {
+                frame.push_a11y(item_node);
+            }
             return;
         }
 
-        let child_count = node.children.len();
-        for (i, child) in node.children.iter().enumerate() {
-            if *current_row >= area.height as usize {
-                break;
+        let mut render_children = |frame: &mut Frame| {
+            let child_count = node.children.len();
+            for (i, child) in node.children.iter().enumerate() {
+                if *current_row >= area.height as usize {
+                    break;
+                }
+                is_last.push(i == child_count - 1);
+                self.render_node(
+                    child,
+                    depth + 1,
+                    is_last,
+                    area,
+                    frame,
+                    current_row,
+                    deg,
+                    a11y_root_id,
+                );
+                is_last.pop();
             }
-            is_last.push(i == child_count - 1);
-            self.render_node(child, depth + 1, is_last, area, frame, current_row, deg);
-            is_last.pop();
+        };
+
+        if let Some(item_node) = a11y_item {
+            frame.with_a11y_scope(item_node, render_children);
+        } else {
+            render_children(frame);
         }
     }
 }
@@ -742,7 +879,25 @@ impl Widget for Tree {
             Some(self.root.clone())
         };
 
+        let a11y_root_id = self.accessibility_root_id(area);
+        let a11y_bounds = area.intersection(&frame.buffer.current_scissor());
+        let tree_title = if self.root.label().trim().is_empty() {
+            "Tree"
+        } else {
+            self.root.label()
+        };
+
         if is_searching && filtered_root.is_none() {
+            if frame.a11y_enabled() && !a11y_bounds.is_empty() {
+                let root_node = ftui_a11y::node::A11yNodeInfo::new(
+                    a11y_root_id,
+                    ftui_a11y::node::A11yRole::List,
+                    a11y_bounds,
+                )
+                .with_name(tree_title)
+                .with_description("0 matching items");
+                frame.push_a11y(root_node);
+            }
             #[cfg(feature = "tracing")]
             {
                 let elapsed = render_start.elapsed();
@@ -759,26 +914,66 @@ impl Widget for Tree {
         let root_fallback = self.root.clone();
         let root = filtered_root.as_ref().unwrap_or(&root_fallback);
 
-        if self.show_root {
-            self.render_node(root, 0, &mut is_last, area, frame, &mut current_row, deg);
+        let visible_item_count = if self.show_root {
+            root.visible_count()
         } else if root.expanded {
-            // If root is hidden but expanded, render children as top-level nodes.
-            // We do NOT push to is_last for the root level, effectively shifting
-            // the hierarchy up by one level.
-            let child_count = root.children.len();
-            for (i, child) in root.children.iter().enumerate() {
-                is_last.push(i == child_count - 1);
+            root.children.iter().fold(0usize, |acc, child| {
+                acc.saturating_add(child.visible_count())
+            })
+        } else {
+            0
+        };
+
+        let mut render_tree_rows = |frame: &mut Frame| {
+            if self.show_root {
                 self.render_node(
-                    child,
-                    0, // Children become depth 0
+                    root,
+                    0,
                     &mut is_last,
                     area,
                     frame,
                     &mut current_row,
                     deg,
+                    a11y_root_id,
                 );
-                is_last.pop();
+            } else if root.expanded {
+                // If root is hidden but expanded, render children as top-level nodes.
+                // We do NOT push to is_last for the root level, effectively shifting
+                // the hierarchy up by one level.
+                let child_count = root.children.len();
+                for (i, child) in root.children.iter().enumerate() {
+                    is_last.push(i == child_count - 1);
+                    self.render_node(
+                        child,
+                        0, // Children become depth 0
+                        &mut is_last,
+                        area,
+                        frame,
+                        &mut current_row,
+                        deg,
+                        a11y_root_id,
+                    );
+                    is_last.pop();
+                }
             }
+        };
+
+        if frame.a11y_enabled() && !a11y_bounds.is_empty() {
+            let desc = if is_searching {
+                format!("{visible_item_count} matching items")
+            } else {
+                format!("{visible_item_count} visible items")
+            };
+            let root_node = ftui_a11y::node::A11yNodeInfo::new(
+                a11y_root_id,
+                ftui_a11y::node::A11yRole::List,
+                a11y_bounds,
+            )
+            .with_name(tree_title)
+            .with_description(desc);
+            frame.with_a11y_scope(root_node, render_tree_rows);
+        } else {
+            render_tree_rows(frame);
         }
 
         #[cfg(feature = "tracing")]
@@ -798,6 +993,30 @@ impl Widget for Tree {
 
     fn is_essential(&self) -> bool {
         false
+    }
+}
+
+impl ftui_a11y::Accessible for Tree {
+    fn accessibility_nodes(&self, area: Rect) -> Vec<ftui_a11y::node::A11yNodeInfo> {
+        if area.is_empty() {
+            return Vec::new();
+        }
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut builder = ftui_a11y::tree::A11yTreeBuilder::new();
+        let width = area.right().max(1);
+        let height = area.bottom().max(1);
+        let order = {
+            let mut frame = Frame::new(width, height, &mut pool);
+            frame.set_a11y(&mut builder);
+            Widget::render(self, area, &mut frame);
+            frame.finish_a11y();
+            frame.take_a11y_order()
+        };
+        let tree = builder.build();
+        order
+            .into_iter()
+            .filter_map(|id| tree.node(id).cloned())
+            .collect()
     }
 }
 
@@ -2448,5 +2667,191 @@ mod tests {
             snapshot.toggle_events >= 1,
             "expected tree.toggle debug event"
         );
+    }
+
+    #[test]
+    fn tree_accessibility_emits_nested_hierarchy_and_states() {
+        use ftui_a11y::node::A11yRole;
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let root_id = 0x72EE_0000_0000_0001;
+        let root_node = TreeNode::new("workspace")
+            .child(
+                TreeNode::new("src").child(TreeNode::new("main.rs")).child(
+                    TreeNode::new("nested_collapsed")
+                        .with_expanded(false)
+                        .child(TreeNode::new("hidden.rs")),
+                ),
+            )
+            .child(TreeNode::new("README.md"));
+
+        let tree_widget = Tree::new(root_node)
+            .with_accessibility_id(root_id)
+            .with_selected_visible_index(Some(2))
+            .with_focused(true);
+
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        let area = Rect::new(0, 0, 40, 10);
+        {
+            let mut frame = Frame::new(40, 10, &mut pool);
+            frame.set_a11y(&mut builder);
+            tree_widget.render(area, &mut frame);
+            frame.finish_a11y();
+        }
+        let a11y_tree = builder.build();
+
+        // Container List + 5 visible items (workspace, src, main.rs, nested_collapsed, README.md)
+        assert_eq!(a11y_tree.node_count(), 6);
+
+        let list_container = a11y_tree.node(root_id).expect("tree container node");
+        assert_eq!(list_container.role, A11yRole::List);
+        assert_eq!(list_container.name.as_deref(), Some("workspace"));
+        assert_eq!(
+            list_container.description.as_deref(),
+            Some("5 visible items")
+        );
+
+        let ws_id = Tree::accessibility_item_id(root_id, &[]);
+        let src_id = Tree::accessibility_item_id(root_id, &[0]);
+        let main_id = Tree::accessibility_item_id(root_id, &[0, 0]);
+        let collapsed_id = Tree::accessibility_item_id(root_id, &[0, 1]);
+        let readme_id = Tree::accessibility_item_id(root_id, &[1]);
+
+        let ws_node = a11y_tree.node(ws_id).expect("workspace item");
+        assert_eq!(ws_node.parent, Some(root_id));
+        assert_eq!(ws_node.state.expanded, Some(true));
+        assert_eq!(ws_node.children, vec![src_id, readme_id]);
+
+        let src_node = a11y_tree.node(src_id).expect("src item");
+        assert_eq!(src_node.parent, Some(ws_id));
+        assert_eq!(src_node.state.expanded, Some(true));
+        assert_eq!(src_node.children, vec![main_id, collapsed_id]);
+
+        let main_node = a11y_tree.node(main_id).expect("main.rs item");
+        assert_eq!(main_node.parent, Some(src_id));
+        assert_eq!(main_node.state.expanded, None);
+        assert!(main_node.state.selected);
+        assert!(main_node.state.focused);
+        assert_eq!(a11y_tree.focused().map(|n| n.id), Some(main_id));
+
+        let collapsed_node = a11y_tree.node(collapsed_id).expect("collapsed dir item");
+        assert_eq!(collapsed_node.parent, Some(src_id));
+        assert_eq!(collapsed_node.state.expanded, Some(false));
+        assert!(collapsed_node.children.is_empty());
+
+        let readme_node = a11y_tree.node(readme_id).expect("README.md item");
+        assert_eq!(readme_node.parent, Some(ws_id));
+        assert_eq!(readme_node.state.expanded, None);
+    }
+
+    #[test]
+    fn tree_accessibility_canonical_path_ids_survive_sibling_collapse_and_search() {
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let root_id = 0x72EE_0000_0000_0002;
+        let make_root = || {
+            TreeNode::new("root")
+                .child(
+                    TreeNode::new("alpha")
+                        .child(TreeNode::new("alpha_one"))
+                        .child(TreeNode::new("alpha_two")),
+                )
+                .child(TreeNode::new("beta").child(TreeNode::new("beta_target")))
+        };
+
+        let render_a11y = |tree: &Tree| {
+            let mut pool = GraphemePool::new();
+            let mut builder = A11yTreeBuilder::new();
+            let mut frame = Frame::new(40, 10, &mut pool);
+            frame.set_a11y(&mut builder);
+            tree.render(Rect::new(0, 0, 40, 10), &mut frame);
+            frame.finish_a11y();
+            builder.build()
+        };
+
+        let mut tree = Tree::new(make_root()).with_accessibility_id(root_id);
+        let expanded_a11y = render_a11y(&tree);
+        let beta_id = Tree::accessibility_item_id(root_id, &[1]);
+        let beta_target_id = Tree::accessibility_item_id(root_id, &[1, 0]);
+        assert!(expanded_a11y.node(beta_id).is_some());
+        assert!(expanded_a11y.node(beta_target_id).is_some());
+
+        // Collapse "alpha" at visible index 1; "beta" shifts from visible row 4 to row 2,
+        // but its canonical path &[1] and item ID remain identical.
+        assert!(tree.handle_key(&KeyEvent::new(KeyCode::Left), 1));
+        let collapsed_a11y = render_a11y(&tree);
+        let beta_after_collapse = collapsed_a11y
+            .node(beta_id)
+            .expect("beta retains canonical ID after sibling collapse");
+        assert_eq!(beta_after_collapse.name.as_deref(), Some("beta"));
+        assert!(collapsed_a11y.node(beta_target_id).is_some());
+
+        // Search filter for "beta_target" prunes "alpha" completely, yet "beta" (&[1]) and
+        // "beta_target" (&[1, 0]) still use their canonical tree path IDs.
+        let filtered_tree = Tree::new(make_root())
+            .with_accessibility_id(root_id)
+            .with_search_query("beta_target");
+        let filtered_a11y = render_a11y(&filtered_tree);
+        assert!(filtered_a11y.node(beta_id).is_some());
+        let target_node = filtered_a11y
+            .node(beta_target_id)
+            .expect("filtered target keeps canonical path ID");
+        assert_eq!(target_node.parent, Some(beta_id));
+    }
+
+    #[test]
+    fn tree_accessibility_focus_sync_delegates_to_selected_descendant() {
+        use crate::focus::{FocusManager, FocusNode};
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let root_id = 0x72EE_0000_0000_0003;
+        let tree_widget = Tree::new(simple_tree())
+            .with_accessibility_id(root_id)
+            .with_selected_visible_index(Some(3)) // "a2" at path &[0, 1]
+            .with_focused(false); // Even if widget flag wasn't set, FocusManager sync delegates
+
+        let mut fm = FocusManager::new();
+        fm.graph_mut()
+            .insert(FocusNode::new(root_id, Rect::new(0, 0, 40, 10)).with_tab_index(0));
+        let _ = fm.focus(root_id);
+        assert_eq!(fm.current(), Some(root_id));
+
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut frame = Frame::new(40, 10, &mut pool);
+            frame.set_a11y(&mut builder);
+            fm.sync_to_frame(&mut frame);
+            tree_widget.render(Rect::new(0, 0, 40, 10), &mut frame);
+            frame.finish_a11y();
+        }
+        let a11y_tree = builder.build();
+        let expected_item_id = Tree::accessibility_item_id(root_id, &[0, 1]);
+        assert_eq!(a11y_tree.focused().map(|n| n.id), Some(expected_item_id));
+        assert!(
+            a11y_tree
+                .node(expected_item_id)
+                .expect("a2 node")
+                .state
+                .focused
+        );
+    }
+
+    #[test]
+    fn tree_accessible_trait_matches_rendered_nodes() {
+        use ftui_a11y::Accessible;
+
+        let tree_widget = Tree::new(simple_tree())
+            .with_accessibility_id(0x72EE_0000_0000_0004)
+            .with_selected_visible_index(Some(1))
+            .with_focused(true);
+        let nodes = tree_widget.accessibility_nodes(Rect::new(0, 0, 40, 10));
+        // Container List + 5 items (root, a, a1, a2, b)
+        assert_eq!(nodes.len(), 6);
+        assert_eq!(nodes[0].name.as_deref(), Some("root"));
+        assert_eq!(nodes[2].name.as_deref(), Some("a"));
+        assert!(nodes[2].state.selected);
+        assert!(nodes[2].state.focused);
     }
 }

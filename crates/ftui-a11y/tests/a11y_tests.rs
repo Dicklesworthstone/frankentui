@@ -1583,8 +1583,7 @@ mod tree_diff_proptests {
         let mut b = A11yTreeBuilder::new();
         let mut ids = Vec::new();
         for (id, role, name, disabled) in specs {
-            let mut node =
-                A11yNodeInfo::new(*id, *role, Rect::new((*id as u16) % 40, 0, 10, 1));
+            let mut node = A11yNodeInfo::new(*id, *role, Rect::new((*id as u16) % 40, 0, 10, 1));
             if !name.is_empty() {
                 node.name = Some(name.clone());
             }

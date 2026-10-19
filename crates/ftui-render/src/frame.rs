@@ -536,6 +536,12 @@ pub struct Frame<'a> {
     /// Node ids that were taken when pushed, mapped to the id the node got
     /// instead (see [`Frame::push_a11y`]).
     a11y_rekeyed: std::collections::HashMap<u64, u64>,
+
+    /// Explicit focus owner set via [`Frame::set_a11y_focused`] (e.g., from
+    /// `FocusManager::sync_to_frame`). `None` derives focus from pushed
+    /// `A11yState::focused` flags; `Some(target)` enforces `target` (or its
+    /// focused active descendant) as the unique focused node in the built tree.
+    a11y_explicit_focus: Option<Option<u64>>,
 }
 
 /// The next id to try for an accessibility node whose id is taken: the
@@ -572,6 +578,7 @@ impl<'a> Frame<'a> {
             a11y_order: Vec::new(),
             a11y_children: Vec::new(),
             a11y_rekeyed: std::collections::HashMap::new(),
+            a11y_explicit_focus: None,
         }
     }
 
@@ -598,6 +605,7 @@ impl<'a> Frame<'a> {
             a11y_order: Vec::new(),
             a11y_children: Vec::new(),
             a11y_rekeyed: std::collections::HashMap::new(),
+            a11y_explicit_focus: None,
         }
     }
 
@@ -630,6 +638,7 @@ impl<'a> Frame<'a> {
             a11y_order: Vec::new(),
             a11y_children: Vec::new(),
             a11y_rekeyed: std::collections::HashMap::new(),
+            a11y_explicit_focus: None,
         }
     }
 
@@ -667,6 +676,7 @@ impl<'a> Frame<'a> {
             a11y_order: Vec::new(),
             a11y_children: Vec::new(),
             a11y_rekeyed: std::collections::HashMap::new(),
+            a11y_explicit_focus: None,
             text_direction: TextDirection::default(),
         }
     }
@@ -999,12 +1009,32 @@ impl<'a> Frame<'a> {
         std::mem::take(&mut self.a11y_order)
     }
 
+    /// Declare the application's authoritative focus target for this frame
+    /// (for example from `FocusManager::sync_to_frame`).
+    ///
+    /// When set, [`Frame::finish_a11y`] reconciles all pushed nodes so that at
+    /// most one node in the built tree has `A11yState::focused = true` and the
+    /// builder's focused ID matches it:
+    /// - If `focused` resolves to a composite container whose subtree contains
+    ///   a focused active descendant (e.g. a selected `ListItem`, `Tree` row,
+    ///   or `Dialog` button), that descendant retains focus while any focused
+    ///   flags outside the target subtree are cleared.
+    /// - If `focused` resolves to a leaf or container with no focused child,
+    ///   that node itself receives `state.focused = true`.
+    /// - If `focused` is `None` (blurred or host unfocused) or absent from the
+    ///   rendered frame, all `state.focused` flags are cleared and the tree
+    ///   has no focused node.
+    pub fn set_a11y_focused(&mut self, focused: Option<u64>) {
+        self.a11y_explicit_focus = Some(focused);
+    }
+
     /// Apply the collected parent/child links to the builder and, when no
     /// root was set, make the first parentless node the root. Call once
     /// after the view has rendered and before the tree is built; a no-op
     /// without a builder.
     pub fn finish_a11y(&mut self) {
-        self.a11y_rekeyed.clear();
+        let rekeyed = std::mem::take(&mut self.a11y_rekeyed);
+        let explicit_focus = self.a11y_explicit_focus.take();
         let Some(builder) = self.a11y.as_deref_mut() else {
             return;
         };
@@ -1023,10 +1053,51 @@ impl<'a> Frame<'a> {
         {
             builder.set_root(root);
         }
-        // Widgets report focus through `A11yState::focused`; unless the app
-        // set the tree focus explicitly, the first such node (reading order)
-        // is the focused node, so focus moves show up in the tree diff.
-        if builder.focused().is_none()
+        if let Some(target_opt) = explicit_focus {
+            let resolved_target = target_opt.and_then(|target| {
+                let mapped = rekeyed.get(&target).copied().unwrap_or(target);
+                builder.node(mapped).map(|_| mapped)
+            });
+            let active_focus = resolved_target.map(|target| {
+                let is_in_target_subtree = |builder: &A11yTreeBuilder, mut id: u64| -> bool {
+                    let mut steps = 0usize;
+                    loop {
+                        if id == target {
+                            return true;
+                        }
+                        let Some(parent) = builder.node(id).and_then(|n| n.parent) else {
+                            return false;
+                        };
+                        id = parent;
+                        steps += 1;
+                        if steps > 256 {
+                            return false;
+                        }
+                    }
+                };
+                self.a11y_order
+                    .iter()
+                    .copied()
+                    .find(|&id| {
+                        builder.node(id).is_some_and(|n| n.state.focused)
+                            && is_in_target_subtree(builder, id)
+                    })
+                    .or_else(|| {
+                        self.a11y_order.iter().copied().find(|&id| {
+                            id != target
+                                && builder.node(id).is_some_and(|n| n.state.selected)
+                                && is_in_target_subtree(builder, id)
+                        })
+                    })
+                    .unwrap_or(target)
+            });
+            for &id in &self.a11y_order {
+                if let Some(node) = builder.node_mut(id) {
+                    node.state.focused = Some(id) == active_focus;
+                }
+            }
+            builder.set_focused(active_focus);
+        } else if builder.focused().is_none()
             && let Some(&focused) = self
                 .a11y_order
                 .iter()

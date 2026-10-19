@@ -476,6 +476,75 @@ impl FocusManager {
         self.focus_change_count
     }
 
+    /// Synchronize this manager's authoritative focus state into `frame`'s
+    /// accessibility tree builder.
+    ///
+    /// Call once during `view()` (either before or after widgets render).
+    /// When [`ftui_render::frame::Frame::finish_a11y`] runs, the built
+    /// [`ftui_a11y::tree::A11yTree`] uses `self.current()` (when the host
+    /// window is focused) as the single focus truth source, delegating to an
+    /// active focused descendant when `self.current()` names a composite
+    /// container (`List`, `Tree`, `Form`, `Dialog`) and clearing stale
+    /// `focused` flags on all other nodes.
+    pub fn sync_to_frame(&self, frame: &mut ftui_render::frame::Frame<'_>) {
+        let target = if self.host_focused {
+            self.current
+        } else {
+            None
+        };
+        frame.set_a11y_focused(target);
+    }
+
+    /// Apply this manager's authoritative focus state directly to an
+    /// [`ftui_a11y::tree::A11yTreeBuilder`] and reading-order slice.
+    pub fn apply_to_a11y(&self, builder: &mut ftui_a11y::tree::A11yTreeBuilder, order: &[u64]) {
+        let resolved_target = if self.host_focused {
+            self.current.filter(|id| builder.node(*id).is_some())
+        } else {
+            None
+        };
+        let active_focus = resolved_target.map(|target| {
+            let is_in_target_subtree =
+                |builder: &ftui_a11y::tree::A11yTreeBuilder, mut id: u64| -> bool {
+                    let mut steps = 0usize;
+                    loop {
+                        if id == target {
+                            return true;
+                        }
+                        let Some(parent) = builder.node(id).and_then(|n| n.parent) else {
+                            return false;
+                        };
+                        id = parent;
+                        steps += 1;
+                        if steps > 256 {
+                            return false;
+                        }
+                    }
+                };
+            order
+                .iter()
+                .copied()
+                .find(|&id| {
+                    builder.node(id).is_some_and(|n| n.state.focused)
+                        && is_in_target_subtree(builder, id)
+                })
+                .or_else(|| {
+                    order.iter().copied().find(|&id| {
+                        id != target
+                            && builder.node(id).is_some_and(|n| n.state.selected)
+                            && is_in_target_subtree(builder, id)
+                    })
+                })
+                .unwrap_or(target)
+        });
+        for &id in order {
+            if let Some(node) = builder.node_mut(id) {
+                node.state.focused = Some(id) == active_focus;
+            }
+        }
+        builder.set_focused(active_focus);
+    }
+
     #[cfg(test)]
     #[must_use]
     pub(crate) fn group_count(&self) -> usize {
@@ -1976,5 +2045,125 @@ mod tests {
         assert!(fm.focus_back());
         assert_eq!(fm.current(), Some(1));
         assert_eq!(fm.focus_change_count(), 3);
+    }
+
+    #[test]
+    fn sync_to_frame_enforces_single_focus_truth_and_modal_trap_restoration() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+        use ftui_a11y::tree::A11yTreeBuilder;
+        use ftui_render::frame::Frame;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut fm = FocusManager::new();
+        fm.graph_mut().insert(node(10, 0));
+        fm.graph_mut().insert(node(20, 1));
+        fm.graph_mut().insert(node(30, 2));
+        fm.create_group(1, vec![30]);
+        fm.focus(10);
+
+        let build_frame_tree = |fm: &FocusManager| {
+            let mut pool = GraphemePool::new();
+            let mut builder = A11yTreeBuilder::new();
+            {
+                let mut frame = Frame::new(40, 10, &mut pool);
+                frame.set_a11y(&mut builder);
+                fm.sync_to_frame(&mut frame);
+                // Even if widget 20 claims local focus, FocusManager is authoritative.
+                let stale_focused = A11yState {
+                    focused: true,
+                    ..Default::default()
+                };
+                frame.push_a11y(A11yNodeInfo::new(
+                    10,
+                    A11yRole::TextInput,
+                    Rect::new(0, 0, 10, 1),
+                ));
+                frame.push_a11y(
+                    A11yNodeInfo::new(20, A11yRole::TextInput, Rect::new(0, 1, 10, 1))
+                        .with_state(stale_focused),
+                );
+                frame.push_a11y(A11yNodeInfo::new(
+                    30,
+                    A11yRole::Button,
+                    Rect::new(0, 2, 10, 1),
+                ));
+                frame.finish_a11y();
+            }
+            builder.build()
+        };
+
+        let tree1 = build_frame_tree(&fm);
+        assert_eq!(tree1.focused().map(|n| n.id), Some(10));
+        assert!(tree1.node(10).unwrap().state.focused);
+        assert!(!tree1.node(20).unwrap().state.focused);
+        assert!(!tree1.node(30).unwrap().state.focused);
+
+        // Push modal trap on group 1 (widget 30) -> accessibility focus moves to 30.
+        assert!(fm.push_trap(1));
+        let tree_trapped = build_frame_tree(&fm);
+        assert_eq!(tree_trapped.focused().map(|n| n.id), Some(30));
+        assert!(!tree_trapped.node(10).unwrap().state.focused);
+        assert!(!tree_trapped.node(20).unwrap().state.focused);
+        assert!(tree_trapped.node(30).unwrap().state.focused);
+
+        // Pop modal trap -> accessibility focus restores to 10.
+        assert!(fm.pop_trap());
+        let tree_restored = build_frame_tree(&fm);
+        assert_eq!(tree_restored.focused().map(|n| n.id), Some(10));
+        assert!(tree_restored.node(10).unwrap().state.focused);
+        assert!(!tree_restored.node(30).unwrap().state.focused);
+
+        // Host window loses focus -> accessibility tree focus clears completely.
+        assert!(fm.apply_host_focus(false));
+        let tree_blurred = build_frame_tree(&fm);
+        assert_eq!(tree_blurred.focused().map(|n| n.id), None);
+        assert!(!tree_blurred.node(10).unwrap().state.focused);
+        assert!(!tree_blurred.node(20).unwrap().state.focused);
+        assert!(!tree_blurred.node(30).unwrap().state.focused);
+    }
+
+    #[test]
+    fn sync_to_frame_delegates_to_focused_descendant_of_composite_container() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+        use ftui_a11y::tree::A11yTreeBuilder;
+        use ftui_render::frame::Frame;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut fm = FocusManager::new();
+        fm.graph_mut().insert(node(100, 0));
+        fm.focus(100);
+
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut frame = Frame::new(40, 10, &mut pool);
+            frame.set_a11y(&mut builder);
+            fm.sync_to_frame(&mut frame);
+            let focused_state = A11yState {
+                focused: true,
+                selected: true,
+                ..Default::default()
+            };
+            frame.with_a11y_scope(
+                A11yNodeInfo::new(100, A11yRole::List, Rect::new(0, 0, 20, 4)),
+                |f| {
+                    f.push_a11y(A11yNodeInfo::new(
+                        101,
+                        A11yRole::ListItem,
+                        Rect::new(0, 0, 20, 1),
+                    ));
+                    f.push_a11y(
+                        A11yNodeInfo::new(102, A11yRole::ListItem, Rect::new(0, 1, 20, 1))
+                            .with_state(focused_state),
+                    );
+                },
+            );
+            frame.finish_a11y();
+        }
+        let tree = builder.build();
+        assert_eq!(tree.focused().map(|n| n.id), Some(102));
+        assert!(!tree.node(100).unwrap().state.focused);
+        assert!(!tree.node(101).unwrap().state.focused);
+        assert!(tree.node(102).unwrap().state.focused);
     }
 }

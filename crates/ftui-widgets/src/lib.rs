@@ -1663,7 +1663,10 @@ mod tests {
         let i_id = a11y_node_id(i_area);
         let block_node = tree.node(block_id).expect("block node");
         assert_eq!(block_node.children, vec![p_id, i_id]);
-        assert_eq!(tree.node(p_id).expect("paragraph node").parent, Some(block_id));
+        assert_eq!(
+            tree.node(p_id).expect("paragraph node").parent,
+            Some(block_id)
+        );
         assert_eq!(tree.node(i_id).expect("input node").parent, Some(block_id));
     }
 

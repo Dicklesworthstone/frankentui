@@ -122,6 +122,8 @@ const SAMPLE_JSON: &str = r#"{
 
 pub struct FileBrowser {
     focus: Panel,
+    tree: Tree,
+    tree_selected: usize,
     picker: FilePicker,
     highlighter: SyntaxHighlighter,
     preview_theme_generation: u64,
@@ -142,6 +144,10 @@ impl Default for FileBrowser {
 
 impl FileBrowser {
     pub fn new() -> Self {
+        let tree = Tree::new(build_project_tree())
+            .with_accessibility_id(0xF11E_BA55_0000_0002)
+            .with_guides(TreeGuides::Unicode)
+            .with_show_root(true);
         let entries = simulated_entries();
         let mut picker = FilePicker::new(entries.clone());
         picker.set_accessibility_id(Some(0xF11E_BA55_0000_0001));
@@ -157,6 +163,8 @@ impl FileBrowser {
 
         Self {
             focus: Panel::FilePicker,
+            tree,
+            tree_selected: 0,
             picker,
             highlighter,
             preview_theme_generation: 0,
@@ -362,22 +370,22 @@ impl FileBrowser {
             .title_alignment(Alignment::Center)
             .style(border_style);
 
-        let inner = block.inner(area);
-        block.render(area, frame);
+        block.render_with_children(area, frame, |inner, frame| {
+            if inner.is_empty() {
+                return;
+            }
 
-        if inner.is_empty() {
-            return;
-        }
+            let tree_widget = self
+                .tree
+                .clone()
+                .with_selected_visible_index(Some(self.tree_selected))
+                .with_focused(self.focus == Panel::FileTree)
+                .with_label_style(Style::new().fg(theme::fg::PRIMARY))
+                .with_root_style(Style::new().fg(theme::accent::INFO))
+                .with_guide_style(Style::new().fg(theme::fg::MUTED));
 
-        let tree = build_project_tree();
-        let tree_widget = Tree::new(tree)
-            .with_guides(TreeGuides::Unicode)
-            .with_show_root(true)
-            .with_label_style(Style::new().fg(theme::fg::PRIMARY))
-            .with_root_style(Style::new().fg(theme::accent::INFO))
-            .with_guide_style(Style::new().fg(theme::fg::MUTED));
-
-        tree_widget.render(inner, frame);
+            tree_widget.render(inner, frame);
+        });
     }
 
     fn render_picker_panel(&self, frame: &mut Frame, area: Rect) {
@@ -399,102 +407,101 @@ impl FileBrowser {
             .title_alignment(Alignment::Center)
             .style(border_style);
 
-        let inner = block.inner(area);
-        block.render(area, frame);
-
-        if inner.is_empty() {
-            return;
-        }
-        let content_width = inner.width.max(1);
-
-        // FilePicker::render needs &mut self, but view() has &self.
-        // We work around by re-rendering manually with Paragraph lines.
-        let selected_idx = self.picker.selected_index();
-        let entries = self.visible_entries();
-        let count = entries.len();
-
-        // We'll render a simple list view since FilePicker::render needs &mut.
-        let visible = inner.height as usize;
-        let scroll = if selected_idx >= visible {
-            selected_idx - visible + 1
-        } else {
-            0
-        };
-
-        // Render breadcrumbs
-        let path_area = Rect::new(inner.x, inner.y, inner.width, 1);
-        Paragraph::new(fit_to_width(
-            &format_breadcrumbs(self.current_path()),
-            content_width,
-        ))
-        .style(
-            Style::new()
-                .fg(theme::fg::SECONDARY)
-                .bg(theme::alpha::SURFACE),
-        )
-        .render(path_area, frame);
-
-        // Column header
-        let header_area = Rect::new(inner.x, inner.y.saturating_add(1), inner.width, 1);
-        Paragraph::new(format_entry_header(content_width))
-            .style(Style::new().fg(theme::fg::MUTED))
-            .render(header_area, frame);
-
-        // Render entries
-        let list_area = Rect::new(
-            inner.x,
-            inner.y.saturating_add(2),
-            inner.width,
-            inner.height.saturating_sub(2),
-        );
-
-        self.picker.push_accessibility_window(
-            list_area,
-            frame,
-            self.focus == Panel::FilePicker,
-            scroll,
-        );
-
-        let mut rendered_rows = 0u16;
-        for (row, i) in (scroll..count.min(scroll + list_area.height as usize)).enumerate() {
-            let Some(entry) = entries.get(i) else {
-                break;
-            };
-            let y = list_area.y.saturating_add(row as u16);
-            if y >= list_area.bottom() {
-                break;
+        block.render_with_children(area, frame, |inner, frame| {
+            if inner.is_empty() {
+                return;
             }
+            let content_width = inner.width.max(1);
 
-            let line = format_entry_line(entry, content_width);
+            // FilePicker::render needs &mut self, but view() has &self.
+            // We work around by re-rendering manually with Paragraph lines.
+            let selected_idx = self.picker.selected_index();
+            let entries = self.visible_entries();
+            let count = entries.len();
 
-            let style = if i == selected_idx {
-                Style::new()
-                    .fg(theme::fg::PRIMARY)
-                    .bg(theme::alpha::HIGHLIGHT)
-            } else if entry.is_dir() {
-                Style::new().fg(theme::accent::INFO)
-            } else if entry.kind == FileKind::Symlink {
-                Style::new().fg(theme::accent::SECONDARY)
+            // We'll render a simple list view since FilePicker::render needs &mut.
+            let visible = inner.height as usize;
+            let scroll = if selected_idx >= visible {
+                selected_idx - visible + 1
             } else {
-                Style::new().fg(theme::fg::PRIMARY)
+                0
             };
 
-            let row_area = Rect::new(list_area.x, y, list_area.width, 1);
-            Paragraph::new(&*line).style(style).render(row_area, frame);
-            rendered_rows = rendered_rows.saturating_add(1);
-        }
+            // Render breadcrumbs
+            let path_area = Rect::new(inner.x, inner.y, inner.width, 1);
+            Paragraph::new(fit_to_width(
+                &format_breadcrumbs(self.current_path()),
+                content_width,
+            ))
+            .style(
+                Style::new()
+                    .fg(theme::fg::SECONDARY)
+                    .bg(theme::alpha::SURFACE),
+            )
+            .render(path_area, frame);
 
-        if rendered_rows < list_area.height {
-            let blank = " ".repeat(list_area.width as usize);
-            for row in rendered_rows..list_area.height {
-                let y = list_area.y.saturating_add(row);
+            // Column header
+            let header_area = Rect::new(inner.x, inner.y.saturating_add(1), inner.width, 1);
+            Paragraph::new(format_entry_header(content_width))
+                .style(Style::new().fg(theme::fg::MUTED))
+                .render(header_area, frame);
+
+            // Render entries
+            let list_area = Rect::new(
+                inner.x,
+                inner.y.saturating_add(2),
+                inner.width,
+                inner.height.saturating_sub(2),
+            );
+
+            self.picker.push_accessibility_window(
+                list_area,
+                frame,
+                self.focus == Panel::FilePicker,
+                scroll,
+            );
+
+            let mut rendered_rows = 0u16;
+            for (row, i) in (scroll..count.min(scroll + list_area.height as usize)).enumerate() {
+                let Some(entry) = entries.get(i) else {
+                    break;
+                };
+                let y = list_area.y.saturating_add(row as u16);
                 if y >= list_area.bottom() {
                     break;
                 }
+
+                let line = format_entry_line(entry, content_width);
+
+                let style = if i == selected_idx {
+                    Style::new()
+                        .fg(theme::fg::PRIMARY)
+                        .bg(theme::alpha::HIGHLIGHT)
+                } else if entry.is_dir() {
+                    Style::new().fg(theme::accent::INFO)
+                } else if entry.kind == FileKind::Symlink {
+                    Style::new().fg(theme::accent::SECONDARY)
+                } else {
+                    Style::new().fg(theme::fg::PRIMARY)
+                };
+
                 let row_area = Rect::new(list_area.x, y, list_area.width, 1);
-                Paragraph::new(&*blank).render(row_area, frame);
+                Paragraph::new(&*line).style(style).render(row_area, frame);
+                rendered_rows = rendered_rows.saturating_add(1);
             }
-        }
+
+            if rendered_rows < list_area.height {
+                let blank = " ".repeat(list_area.width as usize);
+                for row in rendered_rows..list_area.height {
+                    let y = list_area.y.saturating_add(row);
+                    if y >= list_area.bottom() {
+                        break;
+                    }
+                    let row_area = Rect::new(list_area.x, y, list_area.width, 1);
+                    Paragraph::new(&*blank).render(row_area, frame);
+                }
+            }
+        });
     }
 
     fn render_preview_panel(&self, frame: &mut Frame, area: Rect) {
@@ -520,23 +527,22 @@ impl FileBrowser {
             .title_alignment(Alignment::Center)
             .style(border_style);
 
-        let inner = block.inner(area);
-        block.render(area, frame);
+        block.render_with_children(area, frame, |inner, frame| {
+            if inner.is_empty() {
+                return;
+            }
 
-        if inner.is_empty() {
-            return;
-        }
+            let header_body = Flex::vertical()
+                .constraints([Constraint::Fixed(3), Constraint::Min(1)])
+                .split(inner);
 
-        let header_body = Flex::vertical()
-            .constraints([Constraint::Fixed(3), Constraint::Min(1)])
-            .split(inner);
+            let meta = preview_metadata(self.current_path(), self.picker.selected_entry());
+            Paragraph::new(meta)
+                .style(Style::new().fg(theme::fg::SECONDARY))
+                .render(header_body[0], frame);
 
-        let meta = preview_metadata(self.current_path(), self.picker.selected_entry());
-        Paragraph::new(meta)
-            .style(Style::new().fg(theme::fg::SECONDARY))
-            .render(header_body[0], frame);
-
-        self.render_highlighted_preview(frame, header_body[1]);
+            self.render_highlighted_preview(frame, header_body[1]);
+        });
     }
 }
 
@@ -1001,7 +1007,41 @@ impl Screen for FileBrowser {
                     }
                 }
             }
-            Panel::FileTree => {}
+            Panel::FileTree => {
+                if let Event::Key(
+                    key @ KeyEvent {
+                        code,
+                        kind: KeyEventKind::Press,
+                        modifiers,
+                        ..
+                    },
+                ) = event
+                {
+                    let visible = self.tree.root().visible_count().max(1);
+                    match code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.tree_selected = self.tree_selected.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.tree_selected = (self.tree_selected + 1).min(visible - 1);
+                        }
+                        KeyCode::Home | KeyCode::Char('g')
+                            if !modifiers.contains(Modifiers::SHIFT) =>
+                        {
+                            self.tree_selected = 0;
+                        }
+                        KeyCode::End | KeyCode::Char('G') => {
+                            self.tree_selected = visible - 1;
+                        }
+                        KeyCode::Enter | KeyCode::Char(' ') => {
+                            let _ = self.tree.handle_key(key, self.tree_selected);
+                            let new_visible = self.tree.root().visible_count().max(1);
+                            self.tree_selected = self.tree_selected.min(new_visible - 1);
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
 
         Cmd::None
@@ -1364,5 +1404,56 @@ mod tests {
             "symlink icon width"
         );
         assert!(!sym_icon.contains('\u{FE0F}'), "symlink icon contains VS16");
+    }
+
+    #[test]
+    fn file_browser_exposes_tree_and_picker_accessibility_with_panel_focus() {
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let mut screen = FileBrowser::new();
+        let render_tree = |screen: &FileBrowser| {
+            let mut pool = GraphemePool::new();
+            let mut builder = A11yTreeBuilder::new();
+            let mut frame = Frame::new(120, 40, &mut pool);
+            frame.set_a11y(&mut builder);
+            screen.view(&mut frame, Rect::new(0, 0, 120, 40));
+            frame.finish_a11y();
+            builder.build()
+        };
+
+        // Initially focus is on FilePicker (0xF11E_BA55_0000_0001).
+        let initial_a11y = render_tree(&screen);
+        assert!(initial_a11y.node(0xF11E_BA55_0000_0001).is_some());
+        assert!(initial_a11y.node(0xF11E_BA55_0000_0002).is_some());
+        let initial_focused = initial_a11y.focused().expect("picker item focused");
+        assert_eq!(initial_focused.parent, Some(0xF11E_BA55_0000_0001));
+
+        // Switch focus left to FileTree (0xF11E_BA55_0000_0002) and move down to "src" (index 1).
+        screen.update(&press(KeyCode::Char('h')));
+        assert_eq!(screen.focus, Panel::FileTree);
+        screen.update(&press(KeyCode::Down));
+        assert_eq!(screen.tree_selected, 1);
+
+        let tree_focused_a11y = render_tree(&screen);
+        let src_item_id = Tree::accessibility_item_id(0xF11E_BA55_0000_0002, &[0]);
+        assert_eq!(
+            tree_focused_a11y.focused().map(|n| n.id),
+            Some(src_item_id),
+            "FileTree focus should move to the selected Tree item"
+        );
+        let src_node = tree_focused_a11y.node(src_item_id).expect("src tree item");
+        assert_eq!(src_node.state.expanded, Some(true));
+
+        // Collapse "src" via Enter and verify its expanded state becomes Some(false).
+        screen.update(&press(KeyCode::Enter));
+        let collapsed_a11y = render_tree(&screen);
+        assert_eq!(
+            collapsed_a11y
+                .node(src_item_id)
+                .expect("src tree item")
+                .state
+                .expanded,
+            Some(false)
+        );
     }
 }
