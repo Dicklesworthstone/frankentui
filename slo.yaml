@@ -126,6 +126,12 @@ metrics:
     max_ratio: 1.25
     safe_mode_trigger: false
 
+  virtualized_scroll_to_100k_p99_ns:
+    metric_type: latency
+    max_value: 1.0
+    max_ratio: 1.15
+    safe_mode_trigger: false
+
   # ===========================================================================
   # Data Plane: Buffer Allocation and Cell Comparison
   # ===========================================================================

@@ -304,5 +304,5 @@ fn apply_evidence_config(mut config: ProgramConfig) -> ProgramConfig {
             config.resize_coalescer = config.resize_coalescer.with_logging(true);
         }
     }
-    config
+    config.with_env_overrides()
 }

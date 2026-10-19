@@ -434,6 +434,20 @@ impl Cell {
         self.attrs = attrs;
         self
     }
+
+    /// Encode this cell's 16 bytes (content, fg, bg, attrs) in little-endian order.
+    #[inline]
+    #[must_use]
+    pub const fn to_le_bytes(&self) -> [u8; 16] {
+        let content = self.content.raw().to_le_bytes();
+        let fg = self.fg.0.to_le_bytes();
+        let bg = self.bg.0.to_le_bytes();
+        let attrs = self.attrs.raw().to_le_bytes();
+        [
+            content[0], content[1], content[2], content[3], fg[0], fg[1], fg[2], fg[3], bg[0],
+            bg[1], bg[2], bg[3], attrs[0], attrs[1], attrs[2], attrs[3],
+        ]
+    }
 }
 impl Default for Cell {
     fn default() -> Self {
@@ -686,6 +700,13 @@ impl CellAttrs {
     #[inline]
     pub fn has_flag(self, flag: StyleFlags) -> bool {
         self.flags().contains(flag)
+    }
+
+    /// Raw packed u32 value (bits 31..24 flags, bits 23..0 link_id).
+    #[inline]
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        self.0
     }
 }
 

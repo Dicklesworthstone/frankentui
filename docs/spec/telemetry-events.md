@@ -777,6 +777,15 @@ Written when the bounded task executor queue rejects or drops a submitted task d
 Required fields:
 - `backend` (string), `action` (`drop`), `queue_length`, `max_queue_size` (usize), `total_rejected` (u64)
 
+#### Event: `shadow_frame`
+
+Written after each presented frame when `ProgramConfig::rollout_policy` is `RolloutPolicy::Shadow`.
+
+Required fields:
+- `frame` (u64, 0-based presented frame counter), `checksum` (16-hex-digit FNV-1a buffer checksum from `ftui_render::buffer::buffer_checksum`)
+- `lane` (`legacy` | `structured` | `asupersync`), `requested_lane` (`legacy` | `structured` | `asupersync`), `rollout_policy` (`shadow`), `task_backend` (`spawned` | `queued` | `asupersync`)
+- `cols`, `rows` (u16), `ts_ns` (u128)
+
 ---
 
 ## 10) Implementation Notes

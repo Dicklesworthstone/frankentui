@@ -764,50 +764,10 @@ pub fn assert_outputs_match(a: &LabOutput, b: &LabOutput) {
 // FNV-1a checksum (matches trace_replay.rs)
 // ============================================================================
 
-const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-const FNV_PRIME: u64 = 0x100000001b3;
-
-/// FNV-1a checksum over buffer cell data.
+/// FNV-1a checksum over buffer cell data (delegates to [`ftui_render::buffer::buffer_checksum`]).
+#[inline]
 fn fnv1a_buffer(buf: &Buffer) -> u64 {
-    let mut hash = FNV_OFFSET;
-    for y in 0..buf.height() {
-        for x in 0..buf.width() {
-            if let Some(cell) = buf.get(x, y) {
-                if cell.is_continuation() {
-                    hash ^= 0x01u64;
-                    hash = hash.wrapping_mul(FNV_PRIME);
-                    continue;
-                }
-                if cell.is_empty() {
-                    hash ^= 0x00u64;
-                    hash = hash.wrapping_mul(FNV_PRIME);
-                } else if let Some(c) = cell.content.as_char() {
-                    hash ^= 0x02u64;
-                    hash = hash.wrapping_mul(FNV_PRIME);
-                    for b in (c as u32).to_le_bytes() {
-                        hash ^= b as u64;
-                        hash = hash.wrapping_mul(FNV_PRIME);
-                    }
-                } else {
-                    // grapheme reference
-                    hash ^= 0x03u64;
-                    hash = hash.wrapping_mul(FNV_PRIME);
-                }
-                // fg (PackedRgba inner u32)
-                hash ^= cell.fg.0 as u64;
-                hash = hash.wrapping_mul(FNV_PRIME);
-                // bg
-                hash ^= cell.bg.0 as u64;
-                hash = hash.wrapping_mul(FNV_PRIME);
-                // attrs: combine flags (u8) and link_id (u32)
-                hash ^= cell.attrs.flags().bits() as u64;
-                hash = hash.wrapping_mul(FNV_PRIME);
-                hash ^= cell.attrs.link_id() as u64;
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-        }
-    }
-    hash
+    ftui_render::buffer::buffer_checksum(buf)
 }
 
 /// Human-readable label for an event kind.

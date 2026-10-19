@@ -726,6 +726,8 @@ let config = ProgramConfig::default()
     .with_env_overrides(); // FTUI_RUNTIME_LANE, FTUI_ROLLOUT_POLICY
 ```
 
+When `RolloutPolicy::Shadow` is active alongside an `EvidenceSink`, `Program` emits one `shadow_frame` JSONL line per presented frame containing the 64-bit FNV-1a cell buffer checksum (`checksum`), frame index (`frame`), resolved runtime lane (`lane`), and task executor backend (`task_backend`). Two recorded shadow runs can be compared offline via `ftui_harness::ShadowRun::compare_recorded(&a, &b)` or the CLI tool `cargo run -p ftui-harness --bin shadow_compare -- a.jsonl b.jsonl`, and live dual-lane runs (with external effects recorded once via `ShadowEffectLog` and replayed on the candidate lane) can be compared via `ShadowRun::compare_lanes`.
+
 | Environment Variable | Values | Default | Purpose |
 |---------------------|--------|---------|---------|
 | `FTUI_RUNTIME_LANE` | `legacy`, `structured`, `asupersync` | `structured` | Select execution backend |
@@ -2870,9 +2872,9 @@ The `i18n_demo` screen switches live between English, Spanish, French, German, R
 
 ## Queueing-Theoretic Scheduler (Deep Dive)
 
-The effect queue scheduler (2,800+ lines in `queueing_scheduler.rs`) implements multiple scheduling disciplines from queueing theory.
+The effect queue scheduler (3,020 lines in `queueing_scheduler.rs`) implements multiple scheduling disciplines from queueing theory.
 
-**Where it runs:** opt-in via `EffectQueueConfig { scheduler_enabled: true, .. }` (`EffectQueueConfig::default()` sets `scheduler_enabled: false`, executing tasks in FIFO arrival order unless the queueing scheduler is enabled).
+**Where it runs:** opt-in via `EffectQueueConfig::default().with_backend(TaskExecutorBackend::EffectQueue)` and `EffectQueueConfig { scheduler_enabled: true, .. }`. By default, `DEFAULT_TASK_BACKEND` is `TaskExecutorBackend::Spawned` for `RuntimeLane::Structured` and `RuntimeLane::Legacy` so blocking polling tasks cannot serialize interactive echo tasks on a single worker thread (see `docs/perf/effect_backend_2026-10-19.md`).
 
 ### SRPT (Shortest Remaining Processing Time)
 

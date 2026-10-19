@@ -151,3 +151,7 @@ harness = false
 name = "render_frame_bench"
 harness = false
 
+[[bench]]
+name = "effect_backend_bench"
+harness = false
+

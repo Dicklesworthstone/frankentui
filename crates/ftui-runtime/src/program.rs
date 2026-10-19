@@ -65,14 +65,8 @@ use crate::render_trace::RenderTraceConfig;
 use crate::resize_coalescer::{CoalesceAction, CoalescerConfig, ResizeCoalescer};
 use crate::state_persistence::StateRegistry;
 use crate::subscription::SubscriptionManager;
-use crate::terminal_presenter::TerminalPresenter;
-#[cfg(any(
-    feature = "crossterm-compat",
-    all(feature = "native-backend", unix),
-    test
-))]
-use crate::terminal_writer::TerminalWriter;
-use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, UiAnchor};
+pub use crate::terminal_presenter::TerminalPresenter;
+use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, TerminalWriter, UiAnchor};
 use crate::voi_sampling::{VoiConfig, VoiSampler};
 use crate::{BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor, ConformalStatus};
 #[cfg(feature = "asupersync-executor")]
@@ -2372,6 +2366,12 @@ pub enum TaskExecutorBackend {
     Asupersync,
 }
 
+/// Default task executor backend for [`RuntimeLane::Legacy`] and [`RuntimeLane::Structured`].
+///
+/// Benchmarked in `benches/effect_backend_bench.rs` and documented in
+/// `docs/perf/effect_backend_2026-10-19.md`.
+pub const DEFAULT_TASK_BACKEND: TaskExecutorBackend = TaskExecutorBackend::Spawned;
+
 #[derive(Debug, Clone)]
 pub struct EffectQueueConfig {
     /// Whether effect queue scheduling is enabled.
@@ -2405,8 +2405,8 @@ impl Default for EffectQueueConfig {
             ..Default::default()
         };
         Self {
-            enabled: false,
-            backend: TaskExecutorBackend::Spawned,
+            enabled: matches!(DEFAULT_TASK_BACKEND, TaskExecutorBackend::EffectQueue),
+            backend: DEFAULT_TASK_BACKEND,
             scheduler,
             max_queue_depth: 0,
             explicit_backend: false,
@@ -2456,7 +2456,7 @@ impl EffectQueueConfig {
 
     #[must_use]
     fn uses_legacy_default_backend(&self) -> bool {
-        !self.explicit_backend && !self.enabled && self.backend == TaskExecutorBackend::Spawned
+        !self.explicit_backend && !self.enabled && self.backend == DEFAULT_TASK_BACKEND
     }
 }
 
@@ -3147,14 +3147,14 @@ impl RuntimeLane {
     /// (the lane default only applies when the app uses the legacy default
     /// backend — see `EffectQueueConfig::uses_legacy_default_backend`).
     #[must_use]
-    fn task_executor_backend(self) -> TaskExecutorBackend {
+    pub fn task_executor_backend(self) -> TaskExecutorBackend {
         #[cfg(feature = "asupersync-executor")]
         if self == Self::Asupersync {
             return TaskExecutorBackend::Asupersync;
         }
         // Structured cancellation does not serialize tasks. An unavailable
         // Asupersync lane resolves to Structured before backend selection.
-        TaskExecutorBackend::Spawned
+        DEFAULT_TASK_BACKEND
     }
 
     /// Read the lane from the `FTUI_RUNTIME_LANE` environment variable.
@@ -3809,11 +3809,19 @@ impl ProgramConfig {
     /// are ignored. Unrecognized values emit a `tracing::warn` and are
     /// ignored (the programmatic default or prior builder value is retained).
     #[must_use]
-    pub fn with_env_overrides(mut self) -> Self {
-        if let Some(lane) = RuntimeLane::from_env() {
+    pub fn with_env_overrides(self) -> Self {
+        self.with_env_values(
+            std::env::var("FTUI_RUNTIME_LANE").ok().as_deref(),
+            std::env::var("FTUI_ROLLOUT_POLICY").ok().as_deref(),
+        )
+    }
+
+    #[must_use]
+    fn with_env_values(mut self, lane: Option<&str>, rollout_policy: Option<&str>) -> Self {
+        if let Some(lane) = lane.and_then(RuntimeLane::parse) {
             self.runtime_lane = lane;
         }
-        if let Some(policy) = RolloutPolicy::from_env() {
+        if let Some(policy) = rollout_policy.and_then(RolloutPolicy::parse) {
             self.rollout_policy = policy;
         }
         self
@@ -4906,6 +4914,39 @@ impl FairnessDecisionEvidence {
 }
 
 #[derive(Debug, Clone)]
+struct ShadowFrameEvidence {
+    frame: u64,
+    checksum: u64,
+    lane: &'static str,
+    requested_lane: &'static str,
+    rollout_policy: &'static str,
+    task_backend: &'static str,
+    cols: u16,
+    rows: u16,
+    ts_ns: u128,
+}
+
+impl ShadowFrameEvidence {
+    #[must_use]
+    fn to_jsonl(&self) -> String {
+        format!(
+            r#"{{"schema_version":"{}","event":"{}","frame":{},"checksum":"{:016x}","lane":"{}","requested_lane":"{}","rollout_policy":"{}","task_backend":"{}","cols":{},"rows":{},"ts_ns":{}}}"#,
+            crate::evidence_sink::EVIDENCE_SCHEMA_VERSION,
+            crate::telemetry_schema::EVENT_SHADOW_FRAME,
+            self.frame,
+            self.checksum,
+            self.lane,
+            self.requested_lane,
+            self.rollout_policy,
+            self.task_backend,
+            self.cols,
+            self.rows,
+            self.ts_ns,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
 struct WidgetRefreshEntry {
     widget_id: u64,
     essential: bool,
@@ -5309,12 +5350,114 @@ impl BackendEventSource for HeadlessEventSource {
     }
 }
 
+impl<M: Model> Program<M, HeadlessEventSource, TerminalPresenter<Vec<u8>>> {
+    /// Construct a headless program backed by an in-memory `TerminalPresenter<Vec<u8>>`.
+    pub fn new_headless(model: M, config: ProgramConfig) -> io::Result<Self> {
+        let (width, height) = config.forced_size.unwrap_or((80, 24));
+        let features = BackendFeatures::default();
+        let events = HeadlessEventSource::new(width, height, features);
+        let writer = TerminalWriter::with_diff_config(
+            Vec::new(),
+            config.screen_mode,
+            config.ui_anchor,
+            TerminalCapabilities::basic(),
+            config.diff_config.clone(),
+        );
+        Self::with_event_source(
+            model,
+            events,
+            features,
+            TerminalPresenter::new(writer),
+            config,
+        )
+    }
+}
+
 impl<M: Model, P: BackendPresenter<Error = io::Error>> Program<M, HeadlessEventSource, P> {
     /// Step a single headless frame through the full budget, conformal, render,
     /// present, and evidence pipeline.
     pub fn step_headless_frame(&mut self) -> io::Result<()> {
         self.dirty = true;
         self.render_frame()
+    }
+
+    /// Initialize the model, execute its initial command, drain any spawned
+    /// background tasks, and render the initial frame.
+    pub fn init_headless(&mut self, task_timeout: Duration) -> io::Result<()> {
+        let cmd = self.model.init();
+        self.execute_cmd(cmd)?;
+        self.drain_headless_tasks(task_timeout)?;
+        if self.running {
+            self.reconcile_subscriptions();
+            self.process_subscription_failures(false)?;
+            if self.running {
+                self.render_frame()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Deliver a single event to the headless program and submit any resulting
+    /// commands without waiting for background tasks to drain or rendering.
+    pub fn enqueue_headless_event(&mut self, event: Event) -> io::Result<()> {
+        if !self.running {
+            return Ok(());
+        }
+        self.handle_event(event)
+    }
+
+    /// Deliver a single event to the headless program, drain all resulting
+    /// background tasks up to `task_timeout`, and render if dirty.
+    pub fn step_headless_event(&mut self, event: Event, task_timeout: Duration) -> io::Result<()> {
+        if !self.running {
+            return Ok(());
+        }
+        self.handle_event(event)?;
+        self.drain_headless_tasks(task_timeout)?;
+        if self.running && self.dirty {
+            self.render_frame()?;
+        }
+        Ok(())
+    }
+
+    /// Drain all in-flight background tasks on the active task executor up to `timeout`.
+    pub fn drain_headless_tasks(&mut self, timeout: Duration) -> io::Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.process_task_results()?;
+            self.reap_finished_tasks();
+            if self.task_executor.in_flight() == 0 {
+                self.process_task_results()?;
+                self.reap_finished_tasks();
+                if self.task_executor.in_flight() == 0 {
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "headless task drain timed out with {} tasks still in flight on {}",
+                        self.task_executor.in_flight(),
+                        self.task_executor.kind_name_for_logs()
+                    ),
+                ));
+            }
+            thread::yield_now();
+        }
+        Ok(())
+    }
+
+    /// Return the active task executor backend label (`"spawned"`, `"queued"`, or `"asupersync"`).
+    #[must_use]
+    pub fn task_backend_name(&self) -> &'static str {
+        self.task_executor.kind_name_for_logs()
+    }
+
+    /// Return the resolved runtime lane.
+    #[must_use]
+    pub fn resolved_runtime_lane(&self) -> RuntimeLane {
+        self.resolved_lane
     }
 }
 
@@ -5492,6 +5635,14 @@ pub struct Program<
     tick_strategy: Option<Box<dyn crate::tick_strategy::TickStrategy>>,
     /// Last active screen observed by the tick strategy dispatch path.
     last_active_screen_for_strategy: Option<String>,
+    /// Requested runtime lane from `ProgramConfig`.
+    requested_lane: RuntimeLane,
+    /// Effective runtime lane after feature-gated fallback resolution.
+    resolved_lane: RuntimeLane,
+    /// Rollout policy controlling shadow evidence recording.
+    rollout_policy: RolloutPolicy,
+    /// Monotonic 0-based counter of frames presented under `RolloutPolicy::Shadow`.
+    shadow_frame_idx: u64,
 }
 
 #[cfg(feature = "crossterm-compat")]
@@ -5629,12 +5780,21 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
         let guardrails = FrameGuardrails::new(config.guardrails);
 
         // Log runtime lane and rollout policy at startup (bd-2crbt)
+        let shadow_evidence_path = if config.rollout_policy.is_shadow() {
+            evidence_sink
+                .as_ref()
+                .and_then(EvidenceSink::path)
+                .map(|p| p.display().to_string())
+        } else {
+            None
+        };
         tracing::info!(
             target: crate::telemetry_schema::TARGET_RUNTIME,
             requested_lane = config.runtime_lane.label(),
             resolved_lane = resolved_lane.label(),
             task_backend = task_executor.kind_name_for_logs(),
             rollout_policy = config.rollout_policy.label(),
+            evidence_path = shadow_evidence_path.as_deref(),
             "runtime startup: lane={}, rollout={}",
             resolved_lane.label(),
             config.rollout_policy.label(),
@@ -5722,6 +5882,10 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
                 .tick_strategy
                 .map(|strategy| Box::new(strategy) as Box<dyn crate::tick_strategy::TickStrategy>),
             last_active_screen_for_strategy: None,
+            requested_lane: config.runtime_lane,
+            resolved_lane,
+            rollout_policy: config.rollout_policy,
+            shadow_frame_idx: 0,
         })
     }
 }
@@ -5812,12 +5976,21 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 
         let guardrails = FrameGuardrails::new(config.guardrails);
 
+        let shadow_evidence_path = if config.rollout_policy.is_shadow() {
+            evidence_sink
+                .as_ref()
+                .and_then(EvidenceSink::path)
+                .map(|p| p.display().to_string())
+        } else {
+            None
+        };
         tracing::info!(
             target: crate::telemetry_schema::TARGET_RUNTIME,
             requested_lane = config.runtime_lane.label(),
             resolved_lane = resolved_lane.label(),
             task_backend = task_executor.kind_name_for_logs(),
             rollout_policy = config.rollout_policy.label(),
+            evidence_path = shadow_evidence_path.as_deref(),
             "runtime startup: lane={}, rollout={}",
             resolved_lane.label(),
             config.rollout_policy.label(),
@@ -5905,6 +6078,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 .tick_strategy
                 .map(|strategy| Box::new(strategy) as Box<dyn crate::tick_strategy::TickStrategy>),
             last_active_screen_for_strategy: None,
+            requested_lane: config.runtime_lane,
+            resolved_lane,
+            rollout_policy: config.rollout_policy,
+            shadow_frame_idx: 0,
         })
     }
 }
@@ -7785,6 +7962,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 
         // --- Present phase ---
         if !self.budget.exhausted() {
+            let shadow_checksum = if self.rollout_policy.is_shadow() && self.evidence_sink.is_some()
+            {
+                Some(ftui_render::buffer::buffer_checksum(&buffer))
+            } else {
+                None
+            };
             let present_start = Instant::now();
             {
                 let _present_span =
@@ -7794,6 +7977,27 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             }
             presented = true;
             present_elapsed = present_start.elapsed();
+
+            if let (Some(checksum), Some(sink)) = (shadow_checksum, self.evidence_sink.as_ref()) {
+                let frame = self.shadow_frame_idx;
+                self.shadow_frame_idx = self.shadow_frame_idx.saturating_add(1);
+                let ts_ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let evidence = ShadowFrameEvidence {
+                    frame,
+                    checksum,
+                    lane: self.resolved_lane.label(),
+                    requested_lane: self.requested_lane.label(),
+                    rollout_policy: self.rollout_policy.label(),
+                    task_backend: self.task_executor.kind_name_for_logs(),
+                    cols: self.width,
+                    rows: frame_height,
+                    ts_ns,
+                };
+                let _ = sink.write_jsonl(&evidence.to_jsonl());
+            }
 
             let present_budget = self.budget.phase_budgets().present;
             if present_elapsed > present_budget {
@@ -13423,8 +13627,8 @@ mod tests {
     where
         M::Message: Send + 'static,
     {
-        let effect_queue_config =
-            config.resolved_effect_queue_config(config.runtime_lane.resolve());
+        let resolved_lane = config.runtime_lane.resolve();
+        let effect_queue_config = config.resolved_effect_queue_config(resolved_lane);
         let capabilities = TerminalCapabilities::basic();
         let mut writer = TerminalWriter::with_diff_config(
             Vec::new(),
@@ -13579,6 +13783,10 @@ mod tests {
                 .tick_strategy
                 .map(|strategy| Box::new(strategy) as Box<dyn crate::tick_strategy::TickStrategy>),
             last_active_screen_for_strategy: None,
+            requested_lane: config.runtime_lane,
+            resolved_lane,
+            rollout_policy: config.rollout_policy,
+            shadow_frame_idx: 0,
         }
     }
 
@@ -20493,6 +20701,234 @@ mod tests {
     #[test]
     fn rollout_policy_parse_unrecognized() {
         assert_eq!(RolloutPolicy::parse("bogus"), None);
+    }
+
+    #[test]
+    fn structured_and_legacy_lanes_keep_default_backend() {
+        for lane in [RuntimeLane::Legacy, RuntimeLane::Structured] {
+            let resolved_lane = lane.resolve();
+            assert_eq!(resolved_lane, lane);
+            assert_eq!(resolved_lane.task_executor_backend(), DEFAULT_TASK_BACKEND);
+            let resolved_config = ProgramConfig::default()
+                .with_lane(lane)
+                .resolved_effect_queue_config(resolved_lane);
+            assert_eq!(resolved_config.backend, DEFAULT_TASK_BACKEND);
+        }
+    }
+
+    #[test]
+    fn env_override_lane_asupersync_round_trips() {
+        let direct = ProgramConfig::default().with_env_values(Some("asupersync"), Some("shadow"));
+        assert_eq!(direct.runtime_lane, RuntimeLane::Asupersync);
+        assert_eq!(direct.rollout_policy, RolloutPolicy::Shadow);
+
+        if std::env::var("FTUI_TEST_ENV_OVERRIDE_CHILD").is_ok() {
+            let via_env = ProgramConfig::default().with_env_overrides();
+            assert_eq!(via_env.runtime_lane, RuntimeLane::Asupersync);
+            assert_eq!(via_env.rollout_policy, RolloutPolicy::Shadow);
+            return;
+        }
+
+        let exe = std::env::current_exe().expect("current test executable");
+        let output = std::process::Command::new(exe)
+            .arg("--exact")
+            .arg("program::tests::env_override_lane_asupersync_round_trips")
+            .arg("--nocapture")
+            .env("FTUI_TEST_ENV_OVERRIDE_CHILD", "1")
+            .env("FTUI_RUNTIME_LANE", "asupersync")
+            .env("FTUI_ROLLOUT_POLICY", "shadow")
+            .output()
+            .expect("spawn child test");
+        assert!(
+            output.status.success(),
+            "child test failed: stdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    struct ShadowVisibleModel {
+        value: i32,
+    }
+
+    impl Model for ShadowVisibleModel {
+        type Message = TestMsg;
+
+        fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+            if let TestMsg::Increment = msg {
+                self.value += 1;
+            }
+            Cmd::none()
+        }
+
+        fn view(&self, frame: &mut Frame) {
+            let text = format!("value={}", self.value);
+            for (col, ch) in text.chars().enumerate() {
+                if (col as u16) < frame.width() {
+                    frame
+                        .buffer
+                        .set_raw(col as u16, 0, ftui_render::cell::Cell::from_char(ch));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shadow_policy_writes_shadow_frame_evidence() {
+        let path = std::env::temp_dir().join(format!(
+            "ftui_shadow_frame_evidence_{}_{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let config = ProgramConfig::fullscreen()
+            .with_lane(RuntimeLane::Structured)
+            .with_rollout_policy(RolloutPolicy::Shadow)
+            .with_evidence_sink(crate::evidence_sink::EvidenceSinkConfig::enabled_file(
+                &path,
+            ))
+            .with_signal_interception(false);
+
+        let mut program =
+            headless_program_with_resolved_config(ShadowVisibleModel { value: 0 }, config);
+        for i in 0..5 {
+            program.model_mut().value = i;
+            program.render_frame().expect("render shadow frame");
+        }
+
+        let contents = std::fs::read_to_string(&path).expect("read shadow evidence");
+        let shadow_lines: Vec<serde_json::Value> = contents
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|v| v.get("event").and_then(|e| e.as_str()) == Some("shadow_frame"))
+            .collect();
+        if shadow_lines.len() != 5 {
+            eprintln!("captured evidence:\n{contents}");
+        }
+        assert_eq!(shadow_lines.len(), 5);
+        for (expected_idx, row) in shadow_lines.iter().enumerate() {
+            assert_eq!(
+                row.get("frame").and_then(|v| v.as_u64()),
+                Some(expected_idx as u64)
+            );
+            let checksum = row
+                .get("checksum")
+                .and_then(|v| v.as_str())
+                .expect("checksum string");
+            assert_eq!(checksum.len(), 16, "checksum={checksum}");
+            assert!(
+                checksum
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                "checksum must be 16 lowercase hex digits: {checksum}"
+            );
+            assert_eq!(row.get("lane").and_then(|v| v.as_str()), Some("structured"));
+            assert_eq!(
+                row.get("requested_lane").and_then(|v| v.as_str()),
+                Some("structured")
+            );
+            assert_eq!(
+                row.get("rollout_policy").and_then(|v| v.as_str()),
+                Some("shadow")
+            );
+            assert_eq!(
+                row.get("task_backend").and_then(|v| v.as_str()),
+                Some("spawned")
+            );
+            assert_eq!(row.get("cols").and_then(|v| v.as_u64()), Some(80));
+            assert_eq!(row.get("rows").and_then(|v| v.as_u64()), Some(24));
+            assert!(row.get("ts_ns").and_then(|v| v.as_u64()).is_some());
+        }
+    }
+
+    #[test]
+    fn off_and_enabled_policies_write_no_shadow_frames() {
+        for policy in [RolloutPolicy::Off, RolloutPolicy::Enabled] {
+            let path = std::env::temp_dir().join(format!(
+                "ftui_no_shadow_frames_{}_{}_{}.jsonl",
+                policy.label(),
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            let config = ProgramConfig::fullscreen()
+                .with_lane(RuntimeLane::Structured)
+                .with_rollout_policy(policy)
+                .with_evidence_sink(crate::evidence_sink::EvidenceSinkConfig::enabled_file(
+                    &path,
+                ))
+                .with_signal_interception(false);
+
+            let mut program =
+                headless_program_with_resolved_config(ShadowVisibleModel { value: 0 }, config);
+            for i in 0..5 {
+                program.model_mut().value = i;
+                program.render_frame().expect("render frame");
+            }
+
+            let contents = std::fs::read_to_string(&path).unwrap_or_default();
+            let shadow_count = contents
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|v| v.get("event").and_then(|e| e.as_str()) == Some("shadow_frame"))
+                .count();
+            assert_eq!(
+                shadow_count, 0,
+                "policy {:?} must not write shadow_frame lines:\n{contents}",
+                policy
+            );
+        }
+    }
+
+    #[test]
+    fn shadow_frame_checksum_is_deterministic_for_identical_frames() {
+        let mut checksums_per_run = Vec::new();
+        for run_idx in 0..2 {
+            let path = std::env::temp_dir().join(format!(
+                "ftui_shadow_det_{}_{}_{}.jsonl",
+                run_idx,
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            let config = ProgramConfig::fullscreen()
+                .with_lane(RuntimeLane::Structured)
+                .with_rollout_policy(RolloutPolicy::Shadow)
+                .with_evidence_sink(crate::evidence_sink::EvidenceSinkConfig::enabled_file(
+                    &path,
+                ))
+                .with_signal_interception(false);
+
+            let mut program =
+                headless_program_with_resolved_config(ShadowVisibleModel { value: 0 }, config);
+            for step in [10, 20, 30, 40, 50] {
+                program.model_mut().value = step;
+                program.render_frame().expect("render frame");
+            }
+
+            let contents = std::fs::read_to_string(&path).expect("read shadow evidence");
+            let checksums: Vec<String> = contents
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|v| v.get("event").and_then(|e| e.as_str()) == Some("shadow_frame"))
+                .map(|v| {
+                    v.get("checksum")
+                        .and_then(|c| c.as_str())
+                        .expect("checksum")
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(checksums.len(), 5);
+            checksums_per_run.push(checksums);
+        }
+        assert_eq!(checksums_per_run[0], checksums_per_run[1]);
+        assert_ne!(checksums_per_run[0][0], checksums_per_run[0][1]);
     }
 
     // =========================================================================

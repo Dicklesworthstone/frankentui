@@ -188,6 +188,8 @@
 
   "runtime_effect_queue_drain": {
     "description": "Time to drain effect queue after shutdown signal",
+    "criterion_name": "runtime/effect_queue_drain/spawned",
+    "bench_file": "effect_backend_bench",
     "category": "user-visible",
     "crate": "ftui-runtime",
     "slo_metric": "runtime_effect_queue_drain_p99_us",

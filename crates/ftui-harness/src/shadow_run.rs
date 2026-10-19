@@ -32,11 +32,18 @@
 //! assert_eq!(result.verdict, ShadowVerdict::Match);
 //! ```
 
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::determinism::{JsonValue, TestJsonlLogger};
-use crate::lab_integration::{Lab, LabConfig, LabOutput, LabSession};
-use ftui_runtime::program::Model;
+use crate::lab_integration::{FrameRecord, Lab, LabConfig, LabOutput, LabSession};
+use ftui_runtime::evidence_sink::EvidenceSinkConfig;
+use ftui_runtime::program::{
+    EffectQueueConfig, HeadlessEventSource, Model, Program, ProgramConfig, RolloutPolicy,
+    RuntimeLane, TaskExecutorBackend, TerminalPresenter,
+};
 use tracing::info_span;
 
 /// Global counter for shadow runs executed.
@@ -47,6 +54,149 @@ static SHADOW_RUNS_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub fn shadow_runs_total() -> u64 {
     SHADOW_RUNS_TOTAL.load(Ordering::Relaxed)
 }
+
+// ============================================================================
+// Effect-once record/replay log for dual-lane shadow comparison
+// ============================================================================
+
+#[derive(Debug)]
+struct ShadowEffectLogInner<R> {
+    recorded: Vec<R>,
+    cursor: usize,
+    replay_mode: bool,
+    executions: usize,
+}
+
+/// Shared effect-once record/replay log for [`ShadowRun::compare_lanes`].
+///
+/// During the baseline lane execution, [`ShadowEffectLog::run_once`] executes
+/// the side-effect closure, records its result, and increments the execution
+/// counter. Before the candidate lane runs, [`ShadowEffectLog::rewind_for_replay`]
+/// switches the log to replay mode so the candidate lane receives the recorded
+/// outputs in order without re-executing external side effects.
+#[derive(Debug, Clone)]
+pub struct ShadowEffectLog<R> {
+    inner: Arc<Mutex<ShadowEffectLogInner<R>>>,
+}
+
+impl<R: Clone + Send + 'static> Default for ShadowEffectLog<R> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<R: Clone + Send + 'static> ShadowEffectLog<R> {
+    /// Create a new empty effect log in record mode.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ShadowEffectLogInner {
+                recorded: Vec::new(),
+                cursor: 0,
+                replay_mode: false,
+                executions: 0,
+            })),
+        }
+    }
+
+    /// Execute `effect` during recording, or return the recorded result at the
+    /// current cursor during candidate replay.
+    pub fn run_once<F>(&self, effect: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.replay_mode && guard.cursor < guard.recorded.len() {
+            let idx = guard.cursor;
+            guard.cursor += 1;
+            return guard.recorded[idx].clone();
+        }
+        drop(guard);
+        let value = effect();
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.executions += 1;
+        guard.recorded.push(value.clone());
+        guard.cursor = guard.recorded.len();
+        value
+    }
+
+    /// Switch the log into replay mode and reset the cursor to the first effect.
+    pub fn rewind_for_replay(&self) {
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.replay_mode = true;
+        guard.cursor = 0;
+    }
+
+    /// Number of times an underlying side-effect closure was actually executed.
+    #[must_use]
+    pub fn executions(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .executions
+    }
+
+    /// Snapshot of all recorded effect outputs in execution order.
+    #[must_use]
+    pub fn recorded(&self) -> Vec<R> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .recorded
+            .clone()
+    }
+}
+
+/// Execution lane specification for [`ShadowRun::compare_lanes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShadowLaneSpec {
+    /// Requested runtime lane.
+    pub lane: RuntimeLane,
+    /// Optional explicit task executor backend override.
+    pub task_backend_override: Option<TaskExecutorBackend>,
+}
+
+impl ShadowLaneSpec {
+    /// Construct a lane specification using the lane's default task backend.
+    #[must_use]
+    pub const fn new(lane: RuntimeLane) -> Self {
+        Self {
+            lane,
+            task_backend_override: None,
+        }
+    }
+
+    /// Override the task executor backend for this lane.
+    #[must_use]
+    pub const fn with_task_backend(mut self, backend: TaskExecutorBackend) -> Self {
+        self.task_backend_override = Some(backend);
+        self
+    }
+
+    /// Apply this lane specification to a [`ProgramConfig`].
+    #[must_use]
+    pub fn apply_to(self, config: ProgramConfig) -> ProgramConfig {
+        let config = config.with_lane(self.lane);
+        match self.task_backend_override {
+            Some(backend) => {
+                config.with_effect_queue(EffectQueueConfig::default().with_backend(backend))
+            }
+            None => config,
+        }
+    }
+}
+
+/// Headless [`Program`] type alias used by [`ShadowRun::compare_lanes`].
+pub type ShadowHeadlessProgram<M> = Program<M, HeadlessEventSource, TerminalPresenter<Vec<u8>>>;
 
 // ============================================================================
 // Configuration
@@ -196,6 +346,57 @@ impl ShadowRunResult {
     }
 }
 
+#[derive(Debug, Clone)]
+struct RecordedShadowFile {
+    frames: Vec<FrameRecord>,
+    lane_label: String,
+}
+
+fn parse_recorded_shadow_file(path: &Path, default_label: &str) -> RecordedShadowFile {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let mut frames = Vec::new();
+    let mut lane_label: Option<String> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if value.get("event").and_then(|v| v.as_str()) != Some("shadow_frame") {
+            continue;
+        }
+        if lane_label.is_none()
+            && let Some(lane) = value.get("lane").and_then(|v| v.as_str())
+        {
+            lane_label = Some(lane.to_string());
+        }
+        let index = value
+            .get("frame")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(frames.len() as u64) as usize;
+        let checksum = value
+            .get("checksum")
+            .and_then(|v| v.as_str())
+            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+            .unwrap_or(0);
+        let timestamp_ms = value.get("ts_ns").and_then(|v| v.as_u64()).unwrap_or(0) / 1_000_000;
+
+        frames.push(FrameRecord {
+            index,
+            timestamp_ms,
+            checksum,
+        });
+    }
+
+    RecordedShadowFile {
+        frames,
+        lane_label: lane_label.unwrap_or_else(|| default_label.to_string()),
+    }
+}
+
 // ============================================================================
 // Shadow-run executor
 // ============================================================================
@@ -207,6 +408,153 @@ impl ShadowRunResult {
 pub struct ShadowRun;
 
 impl ShadowRun {
+    /// Compare two recorded `shadow_frame` JSONL evidence files emitted by
+    /// `Program` under [`RolloutPolicy::Shadow`].
+    ///
+    /// Non-`shadow_frame` events in either file (such as `diff_decision` or
+    /// `width_cache_stats`) are ignored. If all shared frames match and both
+    /// files recorded the same number of `shadow_frame` events (with at least
+    /// one frame when both files are empty or matching), the verdict is
+    /// [`ShadowVerdict::Match`]; otherwise [`ShadowVerdict::Diverged`] with
+    /// `first_divergence` pointing at the first mismatched frame index (or the
+    /// length of the shorter run on frame-count mismatch).
+    #[must_use]
+    pub fn compare_recorded(baseline: &Path, candidate: &Path) -> ShadowRunResult {
+        let base_parsed = parse_recorded_shadow_file(baseline, "baseline");
+        let cand_parsed = parse_recorded_shadow_file(candidate, "candidate");
+
+        let baseline_frames = &base_parsed.frames;
+        let candidate_frames = &cand_parsed.frames;
+        let frames_compared = baseline_frames.len().min(candidate_frames.len());
+        let mut frame_comparisons = Vec::with_capacity(frames_compared);
+        let mut first_divergence: Option<usize> = None;
+
+        for i in 0..frames_compared {
+            let matched = baseline_frames[i].checksum == candidate_frames[i].checksum;
+            frame_comparisons.push(FrameComparison {
+                index: i,
+                baseline_checksum: baseline_frames[i].checksum,
+                candidate_checksum: candidate_frames[i].checksum,
+                matched,
+            });
+            if !matched && first_divergence.is_none() {
+                first_divergence = Some(i);
+            }
+        }
+
+        if baseline_frames.len() != candidate_frames.len() && first_divergence.is_none() {
+            first_divergence = Some(frames_compared);
+        }
+
+        let verdict = if first_divergence.is_some() {
+            ShadowVerdict::Diverged
+        } else {
+            ShadowVerdict::Match
+        };
+
+        let run_total = SHADOW_RUNS_TOTAL
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+
+        ShadowRunResult {
+            verdict,
+            scenario_name: "recorded_shadow_compare".to_string(),
+            seed: 0,
+            frame_comparisons,
+            first_divergence,
+            frames_compared,
+            baseline: LabOutput {
+                frame_count: baseline_frames.len(),
+                frame_records: base_parsed.frames,
+                event_count: 0,
+                event_log: Vec::new(),
+                tick_count: 0,
+                anomaly_count: 0,
+            },
+            candidate: LabOutput {
+                frame_count: candidate_frames.len(),
+                frame_records: cand_parsed.frames,
+                event_count: 0,
+                event_log: Vec::new(),
+                tick_count: 0,
+                anomaly_count: 0,
+            },
+            baseline_label: base_parsed.lane_label,
+            candidate_label: cand_parsed.lane_label,
+            run_total,
+        }
+    }
+
+    /// Execute a real headless [`Program`] scenario across two distinct runtime
+    /// lanes / task-executor backends under [`RolloutPolicy::Shadow`], rewinding
+    /// the shared [`ShadowEffectLog`] between runs so external side effects
+    /// execute only once, and compare the recorded `shadow_frame` evidence.
+    pub fn compare_lanes<M, R, MF, SF>(
+        config: ShadowRunConfig,
+        baseline_lane: ShadowLaneSpec,
+        candidate_lane: ShadowLaneSpec,
+        effect_log: &ShadowEffectLog<R>,
+        model_factory: MF,
+        scenario_fn: SF,
+    ) -> ShadowRunResult
+    where
+        M: Model,
+        R: Clone + Send + 'static,
+        MF: Fn(ShadowLaneSpec) -> M,
+        SF: Fn(&mut ShadowHeadlessProgram<M>, ShadowLaneSpec),
+    {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let pid = std::process::id();
+        let baseline_path = std::env::temp_dir().join(format!(
+            "ftui_shadow_lane_baseline_{}_{}_{}.jsonl",
+            config.prefix, pid, nonce
+        ));
+        let candidate_path = std::env::temp_dir().join(format!(
+            "ftui_shadow_lane_candidate_{}_{}_{}.jsonl",
+            config.prefix, pid, nonce
+        ));
+
+        let build_program =
+            |lane_spec: ShadowLaneSpec, evidence_path: &Path| -> ShadowHeadlessProgram<M> {
+                let base_cfg = ProgramConfig::default()
+                    .with_forced_size(config.viewport_width, config.viewport_height)
+                    .with_rollout_policy(RolloutPolicy::Shadow)
+                    .with_evidence_sink(EvidenceSinkConfig::enabled_file(evidence_path))
+                    .with_signal_interception(false);
+                let prog_cfg = lane_spec.apply_to(base_cfg);
+                Program::new_headless(model_factory(lane_spec), prog_cfg)
+                    .expect("initialize headless shadow program")
+            };
+
+        {
+            let mut baseline_program = build_program(baseline_lane, &baseline_path);
+            scenario_fn(&mut baseline_program, baseline_lane);
+            baseline_program
+                .drain_headless_tasks(Duration::from_secs(5))
+                .expect("drain baseline tasks");
+        }
+
+        effect_log.rewind_for_replay();
+
+        {
+            let mut candidate_program = build_program(candidate_lane, &candidate_path);
+            scenario_fn(&mut candidate_program, candidate_lane);
+            candidate_program
+                .drain_headless_tasks(Duration::from_secs(5))
+                .expect("drain candidate tasks");
+        }
+
+        let mut result = Self::compare_recorded(&baseline_path, &candidate_path);
+        result.scenario_name = config.scenario_name;
+        result.seed = config.seed;
+        result.baseline_label = config.baseline_label;
+        result.candidate_label = config.candidate_label;
+        result
+    }
+
     /// Run a shadow comparison between baseline and candidate lanes.
     ///
     /// Both lanes execute the same `scenario_fn` with the same seed and
@@ -449,6 +797,7 @@ mod tests {
     use ftui_core::event::Event;
     use ftui_render::frame::Frame;
     use ftui_runtime::program::{Cmd, Model};
+    use std::sync::atomic::AtomicUsize;
 
     // Minimal counter model for testing.
     struct Counter {
@@ -494,6 +843,271 @@ mod tests {
 
     // Helper trait for rendering in view
     use ftui_widgets::Widget;
+
+    fn write_temp_shadow_jsonl(tag: &str, lines: &[String]) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ftui_shadow_test_{tag}_{}_{nonce}.jsonl",
+            std::process::id()
+        ));
+        let mut content = lines.join("\n");
+        content.push('\n');
+        std::fs::write(&path, content).expect("write temp shadow jsonl");
+        path
+    }
+
+    fn shadow_frame_line(frame: usize, checksum: u64, lane: &str) -> String {
+        format!(
+            r#"{{"schema_version":"ftui-evidence-v2","event":"shadow_frame","frame":{frame},"checksum":"{checksum:016x}","lane":"{lane}","requested_lane":"{lane}","rollout_policy":"shadow","task_backend":"spawned","cols":80,"rows":24,"ts_ns":{}}}"#,
+            (frame as u64 + 1) * 16_000_000
+        )
+    }
+
+    #[test]
+    fn compare_recorded_matches_identical_runs() {
+        let lines: Vec<String> = (0..10)
+            .map(|i| shadow_frame_line(i, 0x1000_0000_0000_0000 + i as u64, "structured"))
+            .collect();
+        let a = write_temp_shadow_jsonl("identical_a", &lines);
+        let b = write_temp_shadow_jsonl("identical_b", &lines);
+
+        let result = ShadowRun::compare_recorded(&a, &b);
+        if result.verdict != ShadowVerdict::Match {
+            eprintln!(
+                "baseline:\n{}\ncandidate:\n{}",
+                std::fs::read_to_string(&a).unwrap_or_default(),
+                std::fs::read_to_string(&b).unwrap_or_default()
+            );
+        }
+        assert_eq!(result.verdict, ShadowVerdict::Match);
+        assert_eq!(result.frames_compared, 10);
+        assert_eq!(result.first_divergence, None);
+        assert_eq!(result.diverged_count(), 0);
+    }
+
+    #[test]
+    fn compare_recorded_reports_first_divergent_frame() {
+        let base_lines: Vec<String> = (0..10)
+            .map(|i| shadow_frame_line(i, 0x2000_0000_0000_0000 + i as u64, "structured"))
+            .collect();
+        let mut cand_lines = base_lines.clone();
+        cand_lines[7] = shadow_frame_line(7, 0xdead_beef_cafe_babe, "asupersync");
+
+        let a = write_temp_shadow_jsonl("div_a", &base_lines);
+        let b = write_temp_shadow_jsonl("div_b", &cand_lines);
+
+        let result = ShadowRun::compare_recorded(&a, &b);
+        assert_eq!(result.verdict, ShadowVerdict::Diverged);
+        assert_eq!(result.frames_compared, 10);
+        assert_eq!(result.first_divergence, Some(7));
+        assert_eq!(result.diverged_count(), 1);
+    }
+
+    #[test]
+    fn compare_recorded_ignores_non_shadow_events() {
+        let mut base_lines = Vec::new();
+        let mut cand_lines = Vec::new();
+        for i in 0..6 {
+            base_lines.push(format!(
+                r#"{{"schema_version":"ftui-evidence-v2","event":"diff_decision","frame_idx":{i},"strategy":"dirty_rows"}}"#
+            ));
+            base_lines.push(shadow_frame_line(
+                i,
+                0x3333_0000_0000_0000 + i as u64,
+                "structured",
+            ));
+            cand_lines.push(shadow_frame_line(
+                i,
+                0x3333_0000_0000_0000 + i as u64,
+                "asupersync",
+            ));
+            cand_lines.push(
+                r#"{"schema_version":"ftui-evidence-v2","event":"width_cache_stats","hits":10,"misses":1}"#
+                    .to_string(),
+            );
+        }
+
+        let a = write_temp_shadow_jsonl("ignore_non_shadow_a", &base_lines);
+        let b = write_temp_shadow_jsonl("ignore_non_shadow_b", &cand_lines);
+
+        let result = ShadowRun::compare_recorded(&a, &b);
+        assert_eq!(result.verdict, ShadowVerdict::Match);
+        assert_eq!(result.frames_compared, 6);
+        assert_eq!(result.first_divergence, None);
+    }
+
+    #[test]
+    fn compare_recorded_length_mismatch_is_reported() {
+        let base_lines: Vec<String> = (0..10)
+            .map(|i| shadow_frame_line(i, 0x4444_0000_0000_0000 + i as u64, "structured"))
+            .collect();
+        let cand_lines: Vec<String> = base_lines[..8].to_vec();
+
+        let a = write_temp_shadow_jsonl("len_a", &base_lines);
+        let b = write_temp_shadow_jsonl("len_b", &cand_lines);
+
+        let result = ShadowRun::compare_recorded(&a, &b);
+        assert_eq!(result.verdict, ShadowVerdict::Diverged);
+        assert_eq!(result.frames_compared, 8);
+        assert_eq!(result.first_divergence, Some(8));
+    }
+
+    struct TaskDrivenModel {
+        effect_log: ShadowEffectLog<u64>,
+        raw_effect_calls: Arc<AtomicUsize>,
+        divergent_bias: u64,
+        accumulated: u64,
+        step: u64,
+    }
+
+    #[derive(Debug, Clone)]
+    enum TaskDrivenMsg {
+        TriggerTask,
+        TaskDone(u64),
+        Noop,
+    }
+
+    impl From<Event> for TaskDrivenMsg {
+        fn from(event: Event) -> Self {
+            match event {
+                Event::Tick => Self::TriggerTask,
+                _ => Self::Noop,
+            }
+        }
+    }
+
+    impl Model for TaskDrivenModel {
+        type Message = TaskDrivenMsg;
+
+        fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+            match msg {
+                TaskDrivenMsg::TriggerTask => {
+                    self.step += 1;
+                    let step = self.step;
+                    let bias = self.divergent_bias;
+                    let effect_log = self.effect_log.clone();
+                    let raw_calls = Arc::clone(&self.raw_effect_calls);
+                    Cmd::task(move || {
+                        let recorded = effect_log.run_once(move || {
+                            raw_calls.fetch_add(1, Ordering::SeqCst);
+                            step * 10
+                        });
+                        TaskDrivenMsg::TaskDone(recorded + bias)
+                    })
+                }
+                TaskDrivenMsg::TaskDone(val) => {
+                    self.accumulated += val;
+                    Cmd::none()
+                }
+                TaskDrivenMsg::Noop => Cmd::none(),
+            }
+        }
+
+        fn view(&self, frame: &mut Frame) {
+            use ftui_core::geometry::Rect;
+            use ftui_widgets::paragraph::Paragraph;
+            let text = format!("Accumulated: {} (step {})", self.accumulated, self.step);
+            let area = Rect::new(0, 0, frame.width(), 1);
+            Paragraph::new(text).render(area, frame);
+        }
+    }
+
+    #[test]
+    fn compare_lanes_spawned_vs_effect_queue_matches_and_runs_effects_once() {
+        let effect_log = ShadowEffectLog::new();
+        let raw_effect_calls = Arc::new(AtomicUsize::new(0));
+        let baseline_spec = ShadowLaneSpec::new(RuntimeLane::Structured)
+            .with_task_backend(TaskExecutorBackend::Spawned);
+        let candidate_spec = ShadowLaneSpec::new(RuntimeLane::Structured)
+            .with_task_backend(TaskExecutorBackend::EffectQueue);
+        let config = ShadowRunConfig::new("lane_cmp", "spawned_vs_queued", 42)
+            .lane_labels("spawned", "queued");
+
+        let result = ShadowRun::compare_lanes(
+            config,
+            baseline_spec,
+            candidate_spec,
+            &effect_log,
+            |_spec| TaskDrivenModel {
+                effect_log: effect_log.clone(),
+                raw_effect_calls: Arc::clone(&raw_effect_calls),
+                divergent_bias: 0,
+                accumulated: 0,
+                step: 0,
+            },
+            |program, spec| {
+                let expected_backend = match spec.task_backend_override {
+                    Some(TaskExecutorBackend::Spawned) => "spawned",
+                    Some(TaskExecutorBackend::EffectQueue) => "queued",
+                    _ => "asupersync",
+                };
+                assert_eq!(program.task_backend_name(), expected_backend);
+                program
+                    .init_headless(Duration::from_secs(5))
+                    .expect("init headless");
+                for _ in 0..4 {
+                    program
+                        .step_headless_event(Event::Tick, Duration::from_secs(5))
+                        .expect("step tick event");
+                }
+            },
+        );
+
+        assert_eq!(result.verdict, ShadowVerdict::Match);
+        assert_eq!(result.frames_compared, 5);
+        assert_eq!(result.first_divergence, None);
+        assert_eq!(
+            raw_effect_calls.load(Ordering::SeqCst),
+            4,
+            "external side effects must execute only during baseline and replay during candidate"
+        );
+        assert_eq!(effect_log.executions(), 4);
+        assert_eq!(effect_log.recorded(), vec![10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn compare_lanes_detects_divergent_candidate_executor() {
+        let effect_log = ShadowEffectLog::new();
+        let raw_effect_calls = Arc::new(AtomicUsize::new(0));
+        let baseline_spec = ShadowLaneSpec::new(RuntimeLane::Structured)
+            .with_task_backend(TaskExecutorBackend::Spawned);
+        let candidate_spec = ShadowLaneSpec::new(RuntimeLane::Structured)
+            .with_task_backend(TaskExecutorBackend::EffectQueue);
+        let config = ShadowRunConfig::new("lane_div", "divergent_candidate", 42)
+            .lane_labels("spawned", "queued");
+
+        let result = ShadowRun::compare_lanes(
+            config,
+            baseline_spec,
+            candidate_spec,
+            &effect_log,
+            |spec| TaskDrivenModel {
+                effect_log: effect_log.clone(),
+                raw_effect_calls: Arc::clone(&raw_effect_calls),
+                divergent_bias: if spec == candidate_spec { 1 } else { 0 },
+                accumulated: 0,
+                step: 0,
+            },
+            |program, _spec| {
+                program
+                    .init_headless(Duration::from_secs(5))
+                    .expect("init headless");
+                for _ in 0..3 {
+                    program
+                        .step_headless_event(Event::Tick, Duration::from_secs(5))
+                        .expect("step tick event");
+                }
+            },
+        );
+
+        assert_eq!(result.verdict, ShadowVerdict::Diverged);
+        // Frame 0 (init) matches; frame 1 (after first task completion) diverges.
+        assert_eq!(result.first_divergence, Some(1));
+        assert_eq!(raw_effect_calls.load(Ordering::SeqCst), 3);
+    }
 
     #[test]
     fn shadow_run_identical_models_match() {

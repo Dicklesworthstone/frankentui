@@ -211,6 +211,8 @@ pub mod evidence {
     pub const INLINE_STRATEGY_FALLBACK: &str = "inline_strategy_fallback";
     /// Regime transition in coalescer.
     pub const REGIME_TRANSITION: &str = "regime_transition";
+    /// Shadow-run per-frame checksum evidence.
+    pub const SHADOW_FRAME: &str = "shadow_frame";
     /// Session lifecycle summary.
     pub const SUMMARY: &str = "summary";
     /// Task executor backend configuration.
@@ -232,6 +234,9 @@ pub mod evidence {
     /// Grapheme width cache statistics.
     pub const WIDTH_CACHE_STATS: &str = "width_cache_stats";
 }
+
+/// Canonical evidence event name for shadow-run frame records (`RolloutPolicy::Shadow`).
+pub const EVENT_SHADOW_FRAME: &str = evidence::SHADOW_FRAME;
 
 // ============================================================================
 // Metric names
@@ -404,6 +409,7 @@ pub const ALL_EVIDENCE_EVENTS: &[&str] = &[
     evidence::INLINE_STRATEGY,
     evidence::INLINE_STRATEGY_FALLBACK,
     evidence::REGIME_TRANSITION,
+    evidence::SHADOW_FRAME,
     evidence::SUMMARY,
     evidence::TASK_EXECUTOR_BACKEND,
     evidence::TASK_EXECUTOR_BACKPRESSURE,

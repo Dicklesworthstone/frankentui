@@ -750,6 +750,31 @@
         "enabled": "boolean",
         "thread": "string"
       }
+    },
+    "shadow_frame": {
+      "required": [
+        "frame",
+        "checksum",
+        "lane",
+        "requested_lane",
+        "rollout_policy",
+        "task_backend",
+        "cols",
+        "rows",
+        "ts_ns"
+      ],
+      "optional": ["schema_version"],
+      "types": {
+        "frame": "integer",
+        "checksum": "string",
+        "lane": "string",
+        "requested_lane": "string",
+        "rollout_policy": "string",
+        "task_backend": "string",
+        "cols": "integer",
+        "rows": "integer",
+        "ts_ns": "integer"
+      }
     }
   }
 }

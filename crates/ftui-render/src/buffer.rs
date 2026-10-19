@@ -363,6 +363,16 @@ impl Buffer {
         0
     }
 
+    /// Compute the 64-bit FNV-1a checksum over each cell's 16 bytes in row-major order.
+    ///
+    /// This is the canonical shadow-run / golden frame checksum shared between
+    /// `ftui-runtime` (`RolloutPolicy::Shadow`) and `ftui-harness`.
+    #[inline]
+    #[must_use]
+    pub fn checksum(&self) -> u64 {
+        buffer_checksum(self)
+    }
+
     // ----- Dirty Tracking API -----
 
     #[inline]
@@ -2087,6 +2097,35 @@ impl AdaptiveDoubleBuffer {
             logical as f64 / capacity as f64
         }
     }
+}
+
+/// 64-bit FNV-1a offset basis used by [`buffer_checksum`].
+pub const BUFFER_CHECKSUM_FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+/// 64-bit FNV-1a prime used by [`buffer_checksum`].
+pub const BUFFER_CHECKSUM_FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Compute the 64-bit FNV-1a checksum over a slice of [`Cell`]s (16 bytes per cell).
+#[inline]
+#[must_use]
+pub fn buffer_cells_checksum(cells: &[Cell]) -> u64 {
+    let mut hash = BUFFER_CHECKSUM_FNV_OFFSET_BASIS;
+    for cell in cells {
+        for byte in cell.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(BUFFER_CHECKSUM_FNV_PRIME);
+        }
+    }
+    hash
+}
+
+/// Compute the 64-bit FNV-1a checksum over each cell's 16 bytes in row-major order.
+///
+/// Shared shadow/golden frame checksum used by `ftui-runtime` (`RolloutPolicy::Shadow`
+/// `shadow_frame` evidence) and `ftui-harness` (`LabSession` and `ShadowRun`).
+#[inline]
+#[must_use]
+pub fn buffer_checksum(buf: &Buffer) -> u64 {
+    buffer_cells_checksum(&buf.cells)
 }
 
 #[cfg(test)]
@@ -4757,5 +4796,48 @@ mod tests {
         assert!(buf.get(1, 0).unwrap().is_empty()); // Should be default/empty, not continuation
 
         buf.pop_scissor();
+    }
+
+    #[test]
+    fn buffer_checksum_known_vector() {
+        let mut empty = Buffer::new(1, 1);
+        empty.cells.clear();
+        assert_eq!(buffer_checksum(&empty), BUFFER_CHECKSUM_FNV_OFFSET_BASIS);
+        assert_eq!(buffer_cells_checksum(&[]), BUFFER_CHECKSUM_FNV_OFFSET_BASIS);
+
+        let mut buf = Buffer::new(2, 1);
+        buf.set_raw(0, 0, Cell::from_char('a'));
+        buf.set_raw(1, 0, Cell::from_char('b'));
+        let expected: u64 = 0x5cda_4da4_1d73_449e;
+        assert_eq!(buffer_checksum(&buf), expected);
+        assert_eq!(buf.checksum(), expected);
+
+        let mut changed = buf.clone();
+        changed.set_raw(1, 0, Cell::from_char('c'));
+        assert_ne!(buffer_checksum(&changed), expected);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn buffer_checksum_row_major_order_sensitive(
+            c1 in proptest::prelude::any::<char>(),
+            c2 in proptest::prelude::any::<char>(),
+            fg1 in proptest::prelude::any::<u32>(),
+            fg2 in proptest::prelude::any::<u32>(),
+        ) {
+            let cell1 = Cell::from_char(c1).with_fg(PackedRgba(fg1));
+            let cell2 = Cell::from_char(c2).with_fg(PackedRgba(fg2));
+            proptest::prop_assume!(cell1 != cell2);
+
+            let mut buf_ab = Buffer::new(2, 2);
+            buf_ab.set_raw(1, 0, cell1);
+            buf_ab.set_raw(0, 1, cell2);
+
+            let mut buf_ba = Buffer::new(2, 2);
+            buf_ba.set_raw(1, 0, cell2);
+            buf_ba.set_raw(0, 1, cell1);
+
+            proptest::prop_assert_ne!(buffer_checksum(&buf_ab), buffer_checksum(&buf_ba));
+        }
     }
 }
