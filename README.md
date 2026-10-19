@@ -50,6 +50,23 @@ cd frankentui
 cargo run -p ftui-demo-showcase
 ```
 
+**Toolchain.** This checkout builds only with nightly Rust: `rust-toolchain.toml`
+pins a dated nightly, and `.cargo/config.toml` passes nightly-only `-Z` flags.
+You don't need to change your default toolchain. With rustup, every `cargo`
+command inside the checkout uses the pin even when your default is stable, and
+rustup installs it on first use. If automatic installs are off
+(`RUSTUP_AUTO_INSTALL=0`), run `rustup toolchain install` in the checkout first.
+
+Two settings outrank the pin: a `RUSTUP_TOOLCHAIN` environment variable and a
+`rustup override` for the directory. Run `rustup show active-toolchain` in the
+checkout to see which toolchain is in effect and why. If it names stable, unset
+whichever setting it reports, or name the pinned nightly explicitly. The date is
+the `channel` value in `rust-toolchain.toml`:
+
+```bash
+cargo +nightly-YYYY-MM-DD run -p ftui-demo-showcase
+```
+
 ---
 
 ## TL;DR
@@ -351,7 +368,8 @@ are repository-only applications. Maintainers cutting a new version follow
 
 ## Quick Start
 
-1. **Install Rust nightly** (required by `rust-toolchain.toml`).
+1. **Install Rust with rustup.** The checkout selects its pinned nightly from
+   `rust-toolchain.toml` (see [Toolchain](#quick-run-from-source) above).
 2. **Clone the repo** and build:
    ```bash
    git clone https://github.com/Dicklesworthstone/frankentui.git
@@ -1468,11 +1486,22 @@ reset
 
 ### “error: the option `-Z` is only accepted on the nightly compiler”
 
-FrankenTUI requires nightly. Install and use nightly or let `rust-toolchain.toml` select it.
+This error means a stable compiler is building the checkout, which needs the
+dated nightly pinned in `rust-toolchain.toml`. Run this inside the checkout:
 
 ```bash
-rustup toolchain install nightly
+rustup show active-toolchain
 ```
+
+- If it names stable because of a `RUSTUP_TOOLCHAIN` variable or a directory
+  override, that setting outranks the pin. Unset it, or run
+  `cargo +nightly-YYYY-MM-DD ...` with the pinned date.
+- If `rustup` is not installed, your `cargo` comes from a system package that
+  ignores `rust-toolchain.toml`. Install Rust through rustup.
+
+Installing the latest `nightly` does not help, because the pin names a
+specific date. If the pinned nightly is merely missing, rustup says so (rather
+than printing this error); run `rustup toolchain install` in the checkout.
 
 ### “raw mode not restored”
 
