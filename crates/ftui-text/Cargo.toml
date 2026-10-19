@@ -20,6 +20,7 @@ markup = ["dep:ftui-render"]
 bidi = ["dep:unicode-bidi"]
 normalization = ["dep:unicode-normalization"]
 shaping = ["dep:rustybuzz"]
+alloc-count = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_nightly)"] }
@@ -42,6 +43,7 @@ rustybuzz = { version = "0.20", optional = true }
 
 [dev-dependencies]
 proptest = "1.7.0"
+stats_alloc = "0.1.10"
 tracing-test = "0.2.5"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 

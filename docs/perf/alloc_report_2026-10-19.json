@@ -1,0 +1,38 @@
+[
+  {
+    "scene": "ascii_dashboard_80x24",
+    "arena": true,
+    "allocs_per_frame": 0,
+    "raw_allocs_per_frame": 0,
+    "baseline_allocs": 0,
+    "bytes_per_frame": 0,
+    "arena_bytes": 266176
+  },
+  {
+    "scene": "ascii_dashboard_80x24",
+    "arena": false,
+    "allocs_per_frame": 1397,
+    "raw_allocs_per_frame": 1397,
+    "baseline_allocs": 0,
+    "bytes_per_frame": 142688,
+    "arena_bytes": 0
+  },
+  {
+    "scene": "unicode_dashboard_80x24",
+    "arena": true,
+    "allocs_per_frame": 3,
+    "raw_allocs_per_frame": 3,
+    "baseline_allocs": 0,
+    "bytes_per_frame": 42,
+    "arena_bytes": 266176
+  },
+  {
+    "scene": "unicode_dashboard_80x24",
+    "arena": false,
+    "allocs_per_frame": 661,
+    "raw_allocs_per_frame": 661,
+    "baseline_allocs": 0,
+    "bytes_per_frame": 79962,
+    "arena_bytes": 0
+  }
+]

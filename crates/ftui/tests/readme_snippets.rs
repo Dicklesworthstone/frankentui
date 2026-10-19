@@ -889,6 +889,10 @@ fn readme_benchmark_suite_matches_paired_jsonl() {
     );
 
     for expected in [
+        "<!-- perf:begin -->",
+        "<!-- perf:end -->",
+        "docs/perf/baseline_2026-10-19.md",
+        "docs/perf/regression_report_2026-10-19.jsonl",
         "diff_paths_paired (certified, spinner_tick 120x40)      p50: [90.7 ns]   throughput: [52.9 Gcells/s]",
         "diff_paths_paired (certified, overmarked_chrome 120x40) p50: [251.4 ns]  throughput: [19.1 Gcells/s]",
         "diff_paths_paired (certified, scattered_5pct 120x40)    p50: [1.98 µs]   throughput: [2.43 Gcells/s]",

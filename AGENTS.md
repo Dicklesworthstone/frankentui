@@ -200,6 +200,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 # no compilation and no network. `make check` runs it too, so you get it for
 # free, but run it directly after doc or ledger edits that touch no code.
 make gates
+
+# After touching render/layout/text/runtime hot paths or tests/baseline.json:
+./scripts/perf_regression_gate.sh --quick --json
+python3 -B scripts/render_perf_readme.py --check
 ```
 
 **The default test run does not see every module.** Most crates declare

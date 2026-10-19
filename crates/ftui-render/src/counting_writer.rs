@@ -219,6 +219,14 @@ pub fn expected_max_bytes(cells_changed: usize, runs: usize) -> u64 {
         + SYNC_OVERHEAD
 }
 
+/// Calculate the strict O(changes) byte budget (`8 * cells_changed + 64`)
+/// enforced by the performance regression gate for sparse frames.
+#[inline]
+#[must_use]
+pub const fn plan_bytes_budget(cells_changed: usize) -> u64 {
+    (cells_changed as u64).saturating_mul(8).saturating_add(64)
+}
+
 /// A stats collector for measuring present operations.
 ///
 /// Use this to wrap present() calls and collect statistics.
@@ -660,5 +668,33 @@ mod tests {
         assert_eq!(stats.bytes_emitted, 50);
         // Duration should be very small (near zero)
         assert!(stats.duration < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn counting_writer_counts_and_resets() {
+        let mut sink = Vec::new();
+        let mut writer = CountingWriter::new(&mut sink);
+        writer.write_all(b"frame-1").unwrap();
+        assert_eq!(writer.bytes_written(), 7);
+        writer.reset_counter();
+        assert_eq!(writer.bytes_written(), 0);
+        writer.write_all(b"ok").unwrap();
+        assert_eq!(writer.bytes_written(), 2);
+    }
+
+    #[test]
+    fn within_budget_true_for_sparse_frame() {
+        // 80x24 @ 5% = 96 cells across 2 runs; ~150 bytes emitted.
+        let stats = PresentStats::new(150, 96, 2, Duration::from_micros(40));
+        assert!(stats.within_budget());
+        assert!(stats.bytes_emitted <= plan_bytes_budget(stats.cells_changed));
+    }
+
+    #[test]
+    fn bytes_budget_formula_8x_plus_64() {
+        assert_eq!(plan_bytes_budget(0), 64);
+        assert_eq!(plan_bytes_budget(96), 8 * 96 + 64);
+        assert_eq!(plan_bytes_budget(240), 8 * 240 + 64);
+        assert_eq!(plan_bytes_budget(600), 8 * 600 + 64);
     }
 }

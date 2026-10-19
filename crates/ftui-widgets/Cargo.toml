@@ -20,6 +20,7 @@ regex-search = ["dep:regex"]
 state-persistence = ["dep:serde"]
 tracing = ["dep:tracing", "ftui-render/tracing"]
 bidi = ["ftui-text/bidi", "dep:unicode-bidi"]
+alloc-count = ["ftui-render/alloc-count", "ftui-text/alloc-count", "ftui-layout/alloc-count"]
 
 [lints]
 workspace = true

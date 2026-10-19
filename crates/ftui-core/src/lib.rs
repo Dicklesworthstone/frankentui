@@ -21,6 +21,8 @@
 //! deterministic render pipeline.
 
 pub mod animation;
+pub mod arena;
+pub use arena::{BumpVec, DEFAULT_ARENA_CAPACITY, FrameArena};
 pub mod capability_override;
 pub mod cursor;
 pub mod cx;

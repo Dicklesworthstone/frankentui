@@ -1,0 +1,38 @@
+[
+  {
+    "scene": "present/bytes/sparse_5pct/80x24",
+    "cols": 80,
+    "rows": 24,
+    "cells_changed": 96,
+    "runs": 3,
+    "bytes": 169,
+    "budget": 832,
+    "expected_max_bytes": 3890,
+    "within_budget": true,
+    "within_expected_max_bytes": true
+  },
+  {
+    "scene": "present/bytes/sparse_5pct/120x40",
+    "cols": 120,
+    "rows": 40,
+    "cells_changed": 240,
+    "runs": 4,
+    "bytes": 319,
+    "budget": 1984,
+    "expected_max_bytes": 9660,
+    "within_budget": true,
+    "within_expected_max_bytes": true
+  },
+  {
+    "scene": "present/bytes/sparse_5pct/200x60",
+    "cols": 200,
+    "rows": 60,
+    "cells_changed": 600,
+    "runs": 6,
+    "bytes": 692,
+    "budget": 4864,
+    "expected_max_bytes": 24080,
+    "within_budget": true,
+    "within_expected_max_bytes": true
+  }
+]

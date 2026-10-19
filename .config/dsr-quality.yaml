@@ -51,6 +51,8 @@ tools:
       # benchmarked or timed here, so it belongs with the stdlib gates rather
       # than in a perf lane.
       - bash scripts/check_perf_gate_decisions_e2e.sh "${DSR_PERF_GATE_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_perf_gate_decisions/dsr}"
+      - python3 -B scripts/render_perf_readme.py --self-test
+      - python3 -B scripts/render_perf_readme.py --check
       # Proves the installed `br` still enforces .beads/policy.yaml, which the
       # audit's own self-test cannot see: a br upgrade or a schema rename would
       # leave the audit green while every close sailed through. Builds a
@@ -176,3 +178,13 @@ tools:
     language: rust
     required_checks:
       - bash scripts/cross_platform_e2e.sh --windows-smoke
+  # Full G25 performance regression gate E2E (bd-g00-root-epic-ewths.31.6):
+  # runs the 27-threshold Criterion + byte-budget + FrameArena allocation gate,
+  # validates the JSONL report schema, verifies injected regression detection,
+  # and checks README/baseline markdown provenance.
+  frankentui-perf-gate:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - RCH_CARGO_WRAPPER_BYPASS=1 bash scripts/perf_gate_e2e.sh --full
+

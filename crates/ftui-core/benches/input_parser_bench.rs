@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Terminal input parsing and dispatch throughput (bd-g00-root-epic-ewths.31.2).
 //!
 //! Run with: cargo bench -p ftui-core --bench input_parser_bench
@@ -17,10 +19,11 @@
 //! The corpus is built from fixed formulas, not random bytes: a bench whose
 //! input changes between runs cannot detect a regression.
 
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
 use ftui_core::event::Event;
 use ftui_core::input_parser::InputParser;
 use std::hint::black_box;
+use std::time::{Duration, Instant};
 
 /// Number of encoded events in the mixed corpus.
 const MIXED_EVENT_COUNT: usize = 1000;
@@ -137,31 +140,46 @@ fn bench_input(c: &mut Criterion) {
     let (stream, encoded_events) = mixed_event_stream();
     let paste = paste_64kb();
 
-    let mut group = c.benchmark_group("input");
+    let mut group = c.benchmark_group("input/parse_dispatch");
 
     // Elements, not bytes: the interesting figure is cost per event, and the
-    // corpus deliberately mixes one-byte keys with a 2 KB paste.
-    group.throughput(Throughput::Elements(encoded_events as u64));
-    group.bench_function("parse_dispatch/mixed_event_stream/per_event", |b| {
-        b.iter(|| {
-            // A fresh parser per iteration: parser state carries across calls,
-            // and reusing one would measure a warmed-up machine that the real
-            // startup path never has.
-            let mut parser = InputParser::new();
-            let mut model = CounterModel::default();
-            let mut events = Vec::with_capacity(MIXED_EVENT_COUNT);
-            parser.parse_into(black_box(&stream), &mut events);
-            for event in &events {
-                model.update(event);
-            }
-            black_box(model.keys + model.mice + model.pastes + model.focus + model.other)
-        });
-    });
+    // corpus deliberately mixes one-byte keys with a 2 KB paste. `iter_custom`
+    // scales the batch elapsed time to per-event so Criterion's `time:` record
+    // directly reflects per-event latency against the 100 µs SLO budget.
+    group.throughput(Throughput::Elements(1));
+    group.bench_with_input(
+        BenchmarkId::new("mixed_event_stream", "per_event"),
+        &encoded_events,
+        |b, &events_per_batch| {
+            b.iter_custom(|iters| {
+                let batches = (iters as usize).div_ceil(events_per_batch).max(1);
+                let total_events = (batches * events_per_batch) as u128;
+                let mut events = Vec::with_capacity(MIXED_EVENT_COUNT);
+                let start = Instant::now();
+                for _ in 0..batches {
+                    // A fresh parser per batch: parser state carries across calls,
+                    // and reusing one would measure a warmed-up machine that the real
+                    // startup path never has.
+                    let mut parser = InputParser::new();
+                    let mut model = CounterModel::default();
+                    events.clear();
+                    parser.parse_into(black_box(&stream), &mut events);
+                    for event in &events {
+                        model.update(event);
+                    }
+                    black_box(model.keys + model.mice + model.pastes + model.focus + model.other);
+                }
+                let elapsed = start.elapsed();
+                let scaled_ns = (elapsed.as_nanos() * u128::from(iters)) / total_events.max(1);
+                Duration::from_nanos(scaled_ns.max(1) as u64)
+            });
+        },
+    );
     group.finish();
 
-    let mut paste_group = c.benchmark_group("input");
+    let mut paste_group = c.benchmark_group("input/parse");
     paste_group.throughput(Throughput::Bytes(paste.len() as u64));
-    paste_group.bench_function("parse/paste_64kb", |b| {
+    paste_group.bench_function("paste_64kb", |b| {
         b.iter(|| {
             let mut parser = InputParser::new();
             black_box(parser.parse(black_box(&paste)))
@@ -170,5 +188,57 @@ fn bench_input(c: &mut Criterion) {
     paste_group.finish();
 }
 
+fn emit_criterion_jsonl(bench_name: &str, ids: &[&str]) {
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    for &id in ids {
+        let estimates_path = std::path::Path::new(&target_dir)
+            .join("criterion")
+            .join(id)
+            .join("new")
+            .join("estimates.json");
+        if let Ok(text) = std::fs::read_to_string(&estimates_path)
+            && let Some(mean_ns) = extract_point_estimate(&text, "mean")
+        {
+            let p50_ns = extract_point_estimate(&text, "median").unwrap_or(mean_ns);
+            let p99_ns = extract_upper_ci(&text, "mean").unwrap_or(mean_ns);
+            eprintln!(
+                r#"{{"bench":"{bench_name}","id":"{id}","mean_ns":{mean_ns:.2},"p50_ns":{p50_ns:.2},"p99_ns":{p99_ns:.2}}}"#
+            );
+        }
+    }
+}
+
+fn extract_point_estimate(json: &str, section: &str) -> Option<f64> {
+    let key = format!("\"{section}\":");
+    let start = json.find(&key)? + key.len();
+    let rest = &json[start..];
+    let pe_key = "\"point_estimate\":";
+    let pe_start = rest.find(pe_key)? + pe_key.len();
+    let tail = rest[pe_start..].trim_start();
+    let end = tail.find([',', '}', ' ', '\n', '\r'])?;
+    tail[..end].parse::<f64>().ok()
+}
+
+fn extract_upper_ci(json: &str, section: &str) -> Option<f64> {
+    let key = format!("\"{section}\":");
+    let start = json.find(&key)? + key.len();
+    let rest = &json[start..];
+    let ci_key = "\"upper_bound\":";
+    let ci_start = rest.find(ci_key)? + ci_key.len();
+    let tail = rest[ci_start..].trim_start();
+    let end = tail.find([',', '}', ' ', '\n', '\r'])?;
+    tail[..end].parse::<f64>().ok()
+}
+
 criterion_group!(benches, bench_input);
-criterion_main!(benches);
+
+fn main() {
+    benches();
+    emit_criterion_jsonl(
+        "input_parser_bench",
+        &[
+            "input/parse_dispatch/mixed_event_stream/per_event",
+            "input/parse/paste_64kb",
+        ],
+    );
+}

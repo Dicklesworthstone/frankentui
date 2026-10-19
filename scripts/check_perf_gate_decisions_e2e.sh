@@ -150,6 +150,103 @@ expect "incomplete_when_id_absent_from_results" "$EXIT_INCOMPLETE" "$incomplete_
 expect "fails_when_slo_metric_undeclared" "$EXIT_REGRESSION" \
     "$(write_case fails_when_slo_metric_undeclared 900 1000 10 undeclared_metric no)"
 
+# 9. kind=bytes within budget (8*cells+64).
+bytes_pass_dir="${RUN_ROOT}/bytes_pass_within_budget"
+mkdir -p "${bytes_pass_dir}/results"
+cat > "${bytes_pass_dir}/baseline.json" <<JSON
+{
+  "bytes_row": {
+    "description": "bytes fixture",
+    "kind": "bytes",
+    "scene": "sparse_5pct_80x24",
+    "budget_expr": "8*cells_changed+64",
+    "bench_file": "presenter_bench",
+    "crate": "ftui-render",
+    "slo_metric": "bytes_emitted"
+  }
+}
+JSON
+cat > "${bytes_pass_dir}/slo.yaml" <<YAML
+metrics:
+  bytes_emitted:
+    metric_type: memory
+    max_value: 16384.0
+    max_ratio: 1.20
+    safe_mode_trigger: false
+YAML
+cat > "${bytes_pass_dir}/results/bytes_report.json" <<JSON
+{"scene":"sparse_5pct_80x24","cells_changed":96,"runs":96,"bytes":600,"budget":832,"within_budget":true}
+JSON
+expect "bytes_pass_within_budget" "$EXIT_OK" "$bytes_pass_dir"
+
+# 10. kind=bytes exceeding budget.
+bytes_fail_dir="${RUN_ROOT}/bytes_fail_over_budget"
+mkdir -p "${bytes_fail_dir}/results"
+cp "${bytes_pass_dir}/baseline.json" "${bytes_fail_dir}/baseline.json"
+cp "${bytes_pass_dir}/slo.yaml" "${bytes_fail_dir}/slo.yaml"
+cat > "${bytes_fail_dir}/results/bytes_report.json" <<JSON
+{"scene":"sparse_5pct_80x24","cells_changed":96,"runs":96,"bytes":900,"budget":832,"within_budget":false}
+JSON
+expect "bytes_fail_over_budget" "$EXIT_REGRESSION" "$bytes_fail_dir"
+
+# 11. kind=allocs within budget (0 allocations).
+allocs_pass_dir="${RUN_ROOT}/allocs_pass_within_budget"
+mkdir -p "${allocs_pass_dir}/results"
+cat > "${allocs_pass_dir}/baseline.json" <<JSON
+{
+  "allocs_row": {
+    "description": "allocs fixture",
+    "kind": "allocs",
+    "scene": "ascii_dashboard_80x24",
+    "budget": 0,
+    "bench_file": "alloc_count_bench",
+    "features": "alloc-count",
+    "crate": "ftui-render",
+    "slo_metric": "frame_allocs"
+  }
+}
+JSON
+cat > "${allocs_pass_dir}/slo.yaml" <<YAML
+metrics:
+  frame_allocs:
+    metric_type: memory
+    max_value: 10.0
+    max_ratio: 1.20
+    safe_mode_trigger: false
+YAML
+cat > "${allocs_pass_dir}/results/alloc_report.json" <<JSON
+[{"scene":"ascii_dashboard_80x24","arena":true,"allocs_per_frame":0,"raw_allocs_per_frame":0,"baseline_allocs":0,"bytes_per_frame":0,"arena_bytes":266176}]
+JSON
+expect "allocs_pass_within_budget" "$EXIT_OK" "$allocs_pass_dir"
+
+# 12. kind=allocs exceeding budget (1 > 0).
+allocs_fail_dir="${RUN_ROOT}/allocs_fail_over_budget"
+mkdir -p "${allocs_fail_dir}/results"
+cp "${allocs_pass_dir}/baseline.json" "${allocs_fail_dir}/baseline.json"
+cp "${allocs_pass_dir}/slo.yaml" "${allocs_fail_dir}/slo.yaml"
+cat > "${allocs_fail_dir}/results/alloc_report.json" <<JSON
+[{"scene":"ascii_dashboard_80x24","arena":true,"allocs_per_frame":1,"raw_allocs_per_frame":1,"baseline_allocs":0,"bytes_per_frame":20,"arena_bytes":266176}]
+JSON
+expect "allocs_fail_over_budget" "$EXIT_REGRESSION" "$allocs_fail_dir"
+
+# 13. _pending row skips with pending_bead reason.
+pending_dir="${RUN_ROOT}/pending_bead_skips_cleanly"
+mkdir -p "${pending_dir}/results"
+cat > "${pending_dir}/baseline.json" <<JSON
+{
+  "pending_row": {
+    "description": "pending fixture",
+    "criterion_name": "future/bench/id",
+    "bench_file": "future_bench",
+    "crate": "ftui-core",
+    "slo_metric": "future_metric",
+    "_pending": "bd-future-bead"
+  }
+}
+JSON
+printf 'metrics:\n' > "${pending_dir}/slo.yaml"
+expect "pending_bead_skips_cleanly" "$EXIT_OK" "$pending_dir"
+
 echo
 printf '{"kind":"summary","tool":"check_perf_gate_decisions_e2e","passed":%d,"failed":%d,"run_root":"%s"}\n' \
     "$PASSED" "$FAILED" "$RUN_ROOT"

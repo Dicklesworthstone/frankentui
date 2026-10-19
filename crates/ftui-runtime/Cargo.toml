@@ -54,6 +54,8 @@ telemetry = [
 ]
 # Enable Asupersync-backed blocking task execution behind the existing runtime APIs.
 asupersync-executor = ["dep:asupersync"]
+# Bench/test allocation-counting hook (G25).
+alloc-count = []
 
 [lints]
 workspace = true
@@ -155,3 +157,6 @@ harness = false
 name = "effect_backend_bench"
 harness = false
 
+[[bench]]
+name = "runtime_latency_bench"
+harness = false

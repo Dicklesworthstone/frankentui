@@ -69,6 +69,8 @@ claims:
 	@python3 scripts/check_readme_claims.py --experimental-check
 	@python3 scripts/render_todo_bead_map.py --self-test > /dev/null
 	@python3 scripts/render_todo_bead_map.py --check > /dev/null
+	@python3 scripts/render_perf_readme.py --self-test > /dev/null
+	@python3 scripts/render_perf_readme.py --check > /dev/null
 
 # Fail when a bead was closed without evidence anyone can follow. `br` enforces
 # `.beads/policy.yaml` at close time; this catches what that cannot see -- a

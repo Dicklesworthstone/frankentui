@@ -1,0 +1,93 @@
+{
+  "schema_version": "perf-regression-report-v1",
+  "key_field": "event",
+  "common_required": [
+    "run_id",
+    "ts",
+    "event"
+  ],
+  "common_types": {
+    "run_id": "string",
+    "ts": "string",
+    "event": "string"
+  },
+  "events": {
+    "start": {
+      "required": [
+        "baseline_file",
+        "slo_file",
+        "slo_threshold_pct"
+      ],
+      "types": {
+        "baseline_file": "string",
+        "slo_file": "string",
+        "slo_threshold_pct": [
+          "number",
+          "null"
+        ]
+      }
+    },
+    "row": {
+      "required": [
+        "category",
+        "criterion_name",
+        "slo_metric",
+        "status"
+      ],
+      "types": {
+        "category": "string",
+        "criterion_name": [
+          "string",
+          "null"
+        ],
+        "slo_metric": "string",
+        "status": "string",
+        "reason": "string",
+        "pending_bead": "string",
+        "observed_ns": "number",
+        "observed_mean_ns": "number",
+        "ci_low_ns": "number",
+        "ci_high_ns": "number",
+        "p99_baseline_ns": "number",
+        "baseline_p99_ns": "number",
+        "max_allowed_ns": "number",
+        "delta_pct": "number",
+        "threshold_pct": "number",
+        "effective_threshold_pct": "number",
+        "slo_threshold_pct": [
+          "number",
+          "null"
+        ],
+        "bytes": "integer",
+        "allocs": "integer",
+        "budget": "integer",
+        "description": "string"
+      }
+    },
+    "summary": {
+      "required": [
+        "total",
+        "passed",
+        "failed",
+        "warned",
+        "skipped",
+        "incomplete",
+        "slo_file",
+        "slo_threshold_pct"
+      ],
+      "types": {
+        "total": "integer",
+        "passed": "integer",
+        "failed": "integer",
+        "warned": "integer",
+        "skipped": "integer",
+        "incomplete": "integer",
+        "slo_file": "string",
+        "slo_threshold_pct": [
+          "number",
+          "null"
+        ]
+      }
+    }
+  }
+}

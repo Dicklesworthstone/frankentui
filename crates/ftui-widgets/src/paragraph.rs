@@ -409,7 +409,8 @@ impl Widget for Paragraph<'_> {
             }
         });
 
-        let mut render_line = |line: &ftui_text::Line, line_width: usize, y: u16| {
+        let arena = frame.arena();
+        let mut render_spans = |spans: &[ftui_text::Span], line_width: usize, y: u16| {
             let scroll_x = usize::from(self.scroll.1);
             let start_x = align_x(text_area, line_width, effective_alignment);
 
@@ -420,7 +421,7 @@ impl Widget for Paragraph<'_> {
             let alignment_offset = usize::from(start_x.saturating_sub(text_area.x));
             let visible_width = usize::from(text_area.right().saturating_sub(text_area.x));
 
-            for span in line.spans() {
+            for span in spans {
                 let span_width = span.width();
 
                 // Effective position of this span relative to text_area.x
@@ -490,13 +491,134 @@ impl Widget for Paragraph<'_> {
             ftui_render::TextDirection::Ltr => ftui_text::bidi::ParagraphDirection::Ltr,
         };
 
-        let metrics = self.cached_metrics(false);
-        let rendered_lines: Option<CachedWrappedParagraph> = self
-            .wrap
-            .map(|wrap_mode| self.cached_wrapped_lines(text_area.width as usize, wrap_mode));
+        let width = text_area.width as usize;
+        if let Some(wrap_mode) = self.wrap {
+            let can_use_arena_wrap = arena.is_some()
+                && self.text.lines().iter().all(|line| {
+                    line.spans().len() <= 1
+                        && line
+                            .spans()
+                            .first()
+                            .is_none_or(|s| !s.as_str().starts_with(char::is_whitespace))
+                });
 
-        if let Some(wrapped) = rendered_lines {
-            for (line, _line_width) in wrapped.lines.iter().zip(wrapped.line_widths.iter()) {
+            if let Some(arena) = arena.filter(|_| can_use_arena_wrap) {
+                let effective_mode = match wrap_mode {
+                    WrapMode::Optimal => WrapMode::Word,
+                    other => other,
+                };
+                for line in self.text.lines() {
+                    let line_width = line.width();
+                    if wrap_mode == WrapMode::None || line_width <= width {
+                        if current_visual_line < scroll_offset {
+                            current_visual_line += 1;
+                            continue;
+                        }
+                        if y >= text_area.bottom() {
+                            break;
+                        }
+                        #[cfg(feature = "bidi")]
+                        if line_has_rtl(line.spans()) {
+                            let (reordered_line, reordered_width) =
+                                reorder_line_bidi(line, para_dir);
+                            render_spans(reordered_line.spans(), reordered_width, y);
+                        } else {
+                            render_spans(line.spans(), line_width, y);
+                        }
+                        #[cfg(not(feature = "bidi"))]
+                        render_spans(line.spans(), line_width, y);
+
+                        y = y.saturating_add(1);
+                        current_visual_line += 1;
+                        continue;
+                    }
+
+                    let Some(span) = line.spans().first() else {
+                        if current_visual_line < scroll_offset {
+                            current_visual_line += 1;
+                            continue;
+                        }
+                        if y >= text_area.bottom() {
+                            break;
+                        }
+                        render_spans(&[], 0, y);
+                        y = y.saturating_add(1);
+                        current_visual_line += 1;
+                        continue;
+                    };
+
+                    let wrapped_slices =
+                        ftui_text::wrap::wrap_text_in(arena, span.as_str(), width, effective_mode);
+                    if wrapped_slices.is_empty() {
+                        if current_visual_line < scroll_offset {
+                            current_visual_line += 1;
+                            continue;
+                        }
+                        if y >= text_area.bottom() {
+                            break;
+                        }
+                        render_spans(&[], 0, y);
+                        y = y.saturating_add(1);
+                        current_visual_line += 1;
+                        continue;
+                    }
+
+                    for &slice in wrapped_slices {
+                        if current_visual_line < scroll_offset {
+                            current_visual_line += 1;
+                            continue;
+                        }
+                        if y >= text_area.bottom() {
+                            break;
+                        }
+                        let w_span = ftui_text::Span {
+                            content: std::borrow::Cow::Borrowed(slice),
+                            style: span.style,
+                            link: span.link.clone(),
+                        };
+                        let w_width = w_span.width();
+                        #[cfg(feature = "bidi")]
+                        if ftui_text::bidi::has_rtl(slice) {
+                            let tmp_line = ftui_text::Line::from_spans([w_span]);
+                            let (reordered_line, reordered_width) =
+                                reorder_line_bidi(&tmp_line, para_dir);
+                            render_spans(reordered_line.spans(), reordered_width, y);
+                        } else {
+                            render_spans(std::slice::from_ref(&w_span), w_width, y);
+                        }
+                        #[cfg(not(feature = "bidi"))]
+                        render_spans(std::slice::from_ref(&w_span), w_width, y);
+
+                        y = y.saturating_add(1);
+                        current_visual_line += 1;
+                    }
+                }
+            } else {
+                let wrapped = self.cached_wrapped_lines(width, wrap_mode);
+                for (line, _line_width) in wrapped.lines.iter().zip(wrapped.line_widths.iter()) {
+                    if current_visual_line < scroll_offset {
+                        current_visual_line += 1;
+                        continue;
+                    }
+                    if y >= text_area.bottom() {
+                        break;
+                    }
+                    #[cfg(feature = "bidi")]
+                    if line_has_rtl(line.spans()) {
+                        let (reordered_line, reordered_width) = reorder_line_bidi(line, para_dir);
+                        render_spans(reordered_line.spans(), reordered_width, y);
+                    } else {
+                        render_spans(line.spans(), *_line_width, y);
+                    }
+                    #[cfg(not(feature = "bidi"))]
+                    render_spans(line.spans(), *_line_width, y);
+
+                    y = y.saturating_add(1);
+                    current_visual_line += 1;
+                }
+            }
+        } else if arena.is_some() {
+            for line in self.text.lines() {
                 if current_visual_line < scroll_offset {
                     current_visual_line += 1;
                     continue;
@@ -504,18 +626,22 @@ impl Widget for Paragraph<'_> {
                 if y >= text_area.bottom() {
                     break;
                 }
+                let line_width = line.width();
                 #[cfg(feature = "bidi")]
-                {
+                if line_has_rtl(line.spans()) {
                     let (reordered_line, reordered_width) = reorder_line_bidi(line, para_dir);
-                    render_line(&reordered_line, reordered_width, y);
+                    render_spans(reordered_line.spans(), reordered_width, y);
+                } else {
+                    render_spans(line.spans(), line_width, y);
                 }
                 #[cfg(not(feature = "bidi"))]
-                render_line(line, *_line_width, y);
+                render_spans(line.spans(), line_width, y);
 
                 y = y.saturating_add(1);
                 current_visual_line += 1;
             }
         } else {
+            let metrics = self.cached_metrics(false);
             for (line, _line_width) in self.text.lines().iter().zip(metrics.line_widths.iter()) {
                 if current_visual_line < scroll_offset {
                     current_visual_line += 1;
@@ -525,18 +651,28 @@ impl Widget for Paragraph<'_> {
                     break;
                 }
                 #[cfg(feature = "bidi")]
-                {
+                if line_has_rtl(line.spans()) {
                     let (reordered_line, reordered_width) = reorder_line_bidi(line, para_dir);
-                    render_line(&reordered_line, reordered_width, y);
+                    render_spans(reordered_line.spans(), reordered_width, y);
+                } else {
+                    render_spans(line.spans(), *_line_width, y);
                 }
                 #[cfg(not(feature = "bidi"))]
-                render_line(line, *_line_width, y);
+                render_spans(line.spans(), *_line_width, y);
 
                 y = y.saturating_add(1);
                 current_visual_line += 1;
             }
         }
     }
+}
+
+#[cfg(feature = "bidi")]
+#[inline]
+fn line_has_rtl(spans: &[ftui_text::Span]) -> bool {
+    spans
+        .iter()
+        .any(|s| ftui_text::bidi::has_rtl(s.content.as_ref()))
 }
 
 #[cfg(feature = "bidi")]
@@ -1959,5 +2095,34 @@ mod tests {
             "RTL frame paragraph should right-align even without bidi feature"
         );
         assert!(row.trim().starts_with("مرحبا"));
+    }
+
+    #[test]
+    fn paragraph_uses_arena_when_present() {
+        let text = "FrankenTUI deterministic buffer diffing and per-frame bump arena wrapping across multiple wrapped lines in an 80x24 viewport.";
+        let para = Paragraph::new(text).wrap(WrapMode::Word);
+        let area = Rect::new(0, 0, 28, 6);
+
+        let mut pool_no_arena = GraphemePool::new();
+        let mut frame_no_arena = Frame::new(28, 6, &mut pool_no_arena);
+        para.render(area, &mut frame_no_arena);
+
+        let arena = ftui_render::arena::FrameArena::new(0);
+        let mut pool_arena = GraphemePool::new();
+        let mut frame_arena = Frame::new(28, 6, &mut pool_arena);
+        frame_arena.set_arena(&arena);
+        para.render(area, &mut frame_arena);
+
+        assert!(
+            arena.allocated_bytes() > 0,
+            "Paragraph::render with WrapMode::Word must allocate in FrameArena when present"
+        );
+        for y in 0..6 {
+            assert_eq!(
+                raw_row_text(&frame_arena, y),
+                raw_row_text(&frame_no_arena, y),
+                "row {y} must match between arena and non-arena paragraph paths"
+            );
+        }
     }
 }

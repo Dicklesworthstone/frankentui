@@ -17,6 +17,8 @@ default = []
 experimental = []
 # Enable performance tracing spans
 tracing = ["ftui-core/tracing", "dep:tracing"]
+# Bench/test allocation-counting hook (G25).
+alloc-count = ["ftui-core/alloc-count"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_nightly)"] }
@@ -43,9 +45,14 @@ tracing = { version = "0.1.41", optional = true }
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
 ftui-core = { path = "../ftui-core", version = "0.9.0" }
+ftui-layout = { path = "../ftui-layout", version = "0.9.0" }
+ftui-style = { path = "../ftui-style", version = "0.9.0" }
+ftui-text = { path = "../ftui-text", version = "0.9.0" }
+ftui-widgets = { path = "../ftui-widgets", version = "0.9.0" }
 proptest = "1.7.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+stats_alloc = "0.1.10"
 
 [[bench]]
 name = "cell_bench"
@@ -77,6 +84,10 @@ harness = false
 
 [[bench]]
 name = "arena_bench"
+harness = false
+
+[[bench]]
+name = "alloc_count_bench"
 harness = false
 
 [[bench]]

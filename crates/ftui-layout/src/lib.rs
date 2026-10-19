@@ -670,10 +670,71 @@ impl Flex {
         rects
     }
 
+    /// Split the given area into smaller rectangles allocated in `arena`,
+    /// avoiding heap allocations even when constraint count exceeds inline capacity
+    /// (`bd-g00-root-epic-ewths.31.3`).
+    pub fn split_in<'a>(&self, arena: &'a ftui_core::arena::FrameArena, area: Rect) -> &'a [Rect] {
+        let inner = area.inner(self.margin);
+        if inner.is_empty() {
+            let mut rects = arena.new_vec_with_capacity::<Rect>(self.constraints.len());
+            for _ in &self.constraints {
+                rects.push(Rect::default());
+            }
+            return rects.into_bump_slice();
+        }
+
+        let total_size = match self.direction {
+            Direction::Horizontal => inner.width,
+            Direction::Vertical => inner.height,
+        };
+
+        let count = self.constraints.len();
+        if count == 0 {
+            return &[];
+        }
+
+        let gap_count = count - 1;
+        let total_gap = (gap_count as u64 * self.gap as u64).min(u16::MAX as u64) as u16;
+        let available_size = total_size.saturating_sub(total_gap);
+
+        let mut sizes = arena.new_vec_with_capacity::<u16>(count);
+        sizes.resize(count, 0);
+        solve_constraints_with_hints_into(
+            &self.constraints,
+            available_size,
+            &|_, _| LayoutSizeHint::ZERO,
+            None,
+            &mut sizes,
+        );
+        let mut rects = self.sizes_to_rects_in(arena, inner, &sizes);
+
+        if self.flow_direction.is_rtl() && self.direction == Direction::Horizontal {
+            direction::mirror_rects_horizontal(&mut rects, inner);
+        }
+
+        rects.into_bump_slice()
+    }
+
     fn sizes_to_rects(&self, area: Rect, sizes: &[u16]) -> Rects {
         let mut rects = SmallVec::with_capacity(sizes.len());
+        self.populate_rects_from_sizes(area, sizes, |r| rects.push(r));
+        rects
+    }
+
+    fn sizes_to_rects_in<'a>(
+        &self,
+        arena: &'a ftui_core::arena::FrameArena,
+        area: Rect,
+        sizes: &[u16],
+    ) -> ftui_core::arena::BumpVec<'a, Rect> {
+        let mut rects = arena.new_vec_with_capacity::<Rect>(sizes.len());
+        self.populate_rects_from_sizes(area, sizes, |r| rects.push(r));
+        rects
+    }
+
+    fn populate_rects_from_sizes<P: FnMut(Rect)>(&self, area: Rect, sizes: &[u16], mut push: P) {
         if sizes.is_empty() {
-            return rects;
+            return;
         }
 
         let total_items_size: u16 = sizes.iter().fold(0u16, |acc, &s| acc.saturating_add(s));
@@ -780,11 +841,9 @@ impl Flex {
                     height: size.min(area.bottom().saturating_sub(pos)),
                 },
             };
-            rects.push(rect);
+            push(rect);
             accumulated_size = accumulated_size.saturating_add(size);
         }
-
-        rects
     }
 
     /// Split area using intrinsic sizing from a measurer callback.
@@ -849,6 +908,57 @@ impl Flex {
 
         rects
     }
+
+    /// Arena-backed counterpart to [`split_with_measurer`](Self::split_with_measurer).
+    pub fn split_with_measurer_in<'a, F>(
+        &self,
+        arena: &'a ftui_core::arena::FrameArena,
+        area: Rect,
+        measurer: F,
+    ) -> &'a [Rect]
+    where
+        F: Fn(usize, u16) -> LayoutSizeHint,
+    {
+        let inner = area.inner(self.margin);
+        if inner.is_empty() {
+            let mut rects = arena.new_vec_with_capacity::<Rect>(self.constraints.len());
+            for _ in &self.constraints {
+                rects.push(Rect::default());
+            }
+            return rects.into_bump_slice();
+        }
+
+        let total_size = match self.direction {
+            Direction::Horizontal => inner.width,
+            Direction::Vertical => inner.height,
+        };
+
+        let count = self.constraints.len();
+        if count == 0 {
+            return &[];
+        }
+
+        let gap_count = count - 1;
+        let total_gap = (gap_count as u64 * self.gap as u64).min(u16::MAX as u64) as u16;
+        let available_size = total_size.saturating_sub(total_gap);
+
+        let mut sizes = arena.new_vec_with_capacity::<u16>(count);
+        sizes.resize(count, 0);
+        solve_constraints_with_hints_into(
+            &self.constraints,
+            available_size,
+            &measurer,
+            None,
+            &mut sizes,
+        );
+        let mut rects = self.sizes_to_rects_in(arena, inner, &sizes);
+
+        if self.flow_direction.is_rtl() && self.direction == Direction::Horizontal {
+            direction::mirror_rects_horizontal(&mut rects, inner);
+        }
+
+        rects.into_bump_slice()
+    }
     /// Split area using intrinsic sizing and temporal coherence.
     ///
     /// Combines the content-aware sizing of [`split_with_measurer`](Self::split_with_measurer)
@@ -902,6 +1012,60 @@ impl Flex {
 
         rects
     }
+
+    /// Arena-backed counterpart to [`split_with_measurer_stably`](Self::split_with_measurer_stably).
+    pub fn split_with_measurer_stably_in<'a, F>(
+        &self,
+        arena: &'a ftui_core::arena::FrameArena,
+        area: Rect,
+        measurer: F,
+        cache: &mut CoherenceCache,
+    ) -> &'a [Rect]
+    where
+        F: Fn(usize, u16) -> LayoutSizeHint,
+    {
+        let inner = area.inner(self.margin);
+        if inner.is_empty() {
+            let mut rects = arena.new_vec_with_capacity::<Rect>(self.constraints.len());
+            for _ in &self.constraints {
+                rects.push(Rect::default());
+            }
+            return rects.into_bump_slice();
+        }
+
+        let total_size = match self.direction {
+            Direction::Horizontal => inner.width,
+            Direction::Vertical => inner.height,
+        };
+
+        let count = self.constraints.len();
+        if count == 0 {
+            return &[];
+        }
+
+        let gap_count = count - 1;
+        let total_gap = (gap_count as u64 * self.gap as u64).min(u16::MAX as u64) as u16;
+        let available_size = total_size.saturating_sub(total_gap);
+
+        let id = CoherenceId::new(&self.constraints, self.direction);
+        let mut sizes = arena.new_vec_with_capacity::<u16>(count);
+        sizes.resize(count, 0);
+        solve_constraints_with_hints_into(
+            &self.constraints,
+            available_size,
+            &measurer,
+            Some((cache, id)),
+            &mut sizes,
+        );
+
+        let mut rects = self.sizes_to_rects_in(arena, inner, &sizes);
+
+        if self.flow_direction.is_rtl() && self.direction == Direction::Horizontal {
+            direction::mirror_rects_horizontal(&mut rects, inner);
+        }
+
+        rects.into_bump_slice()
+    }
 }
 
 /// Solve 1D constraints to determine sizes.
@@ -926,14 +1090,27 @@ pub(crate) fn solve_constraints_with_hints<F>(
     constraints: &[Constraint],
     available_size: u16,
     measurer: &F,
-    mut coherence: Option<(&mut CoherenceCache, CoherenceId)>,
+    coherence: Option<(&mut CoherenceCache, CoherenceId)>,
 ) -> Sizes
 where
     F: Fn(usize, u16) -> LayoutSizeHint,
 {
+    let mut sizes: Sizes = smallvec::smallvec![0u16; constraints.len()];
+    solve_constraints_with_hints_into(constraints, available_size, measurer, coherence, &mut sizes);
+    sizes
+}
+
+pub(crate) fn solve_constraints_with_hints_into<F>(
+    constraints: &[Constraint],
+    available_size: u16,
+    measurer: &F,
+    mut coherence: Option<(&mut CoherenceCache, CoherenceId)>,
+    sizes: &mut [u16],
+) where
+    F: Fn(usize, u16) -> LayoutSizeHint,
+{
     const WEIGHT_SCALE: u64 = 10_000;
 
-    let mut sizes: Sizes = smallvec::smallvec![0u16; constraints.len()];
     let mut remaining = available_size;
     let mut grow_indices: SmallVec<[usize; LAYOUT_INLINE_CAP]> = SmallVec::new();
 
@@ -1057,11 +1234,9 @@ where
         }
 
         let space_to_distribute = remaining;
-        let mut shares: SmallVec<[u16; LAYOUT_INLINE_CAP]> =
-            smallvec::smallvec![0u16; constraints.len()];
 
         // Calculate float targets for fair distribution (Largest Remainder Method)
-        let targets: Vec<f64> = grow_indices
+        let targets: SmallVec<[f64; LAYOUT_INLINE_CAP]> = grow_indices
             .iter()
             .map(|&i| {
                 let weight = grow_weight(constraints[i]);
@@ -1084,15 +1259,11 @@ where
         // Distribute space with stable rounding to minimize jitter and error
         let distributed = round_layout_stable(&targets, space_to_distribute, prev_alloc);
 
-        for (k, &i) in grow_indices.iter().enumerate() {
-            shares[i] = distributed[k];
-        }
-
         // Check for Max constraint violations
-        let mut violations = Vec::new();
-        for &i in &grow_indices {
+        let mut violations: SmallVec<[usize; LAYOUT_INLINE_CAP]> = SmallVec::new();
+        for (k, &i) in grow_indices.iter().enumerate() {
             if let Constraint::Max(max_val) = constraints[i]
-                && sizes[i].saturating_add(shares[i]) > max_val
+                && sizes[i].saturating_add(distributed[k]) > max_val
             {
                 violations.push(i);
             }
@@ -1100,8 +1271,8 @@ where
 
         if violations.is_empty() {
             // No violations, commit shares and exit
-            for &i in &grow_indices {
-                sizes[i] = sizes[i].saturating_add(shares[i]);
+            for (k, &i) in grow_indices.iter().enumerate() {
+                sizes[i] = sizes[i].saturating_add(distributed[k]);
             }
             if let Some((cache, id)) = coherence.as_mut() {
                 // Store full-sized vector mapping constraint index -> share.
@@ -1133,8 +1304,6 @@ where
             }
         }
     }
-
-    sizes
 }
 
 // ---------------------------------------------------------------------------
@@ -3118,6 +3287,75 @@ Grid 120x40 (3r x 2c)
   area(log) x=0 y=27 w=120 h=13
 "
             );
+        }
+    }
+
+    mod arena_flex_proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_constraint() -> impl Strategy<Value = Constraint> {
+            prop_oneof![
+                (0u16..=60).prop_map(Constraint::Fixed),
+                (0u16..=100).prop_map(|p| Constraint::Percentage(f32::from(p))),
+                (0u16..=60).prop_map(Constraint::Min),
+                (1u16..=60).prop_map(Constraint::Max),
+                (0u32..=10, 1u32..=10).prop_map(|(n, d)| Constraint::Ratio(n, d)),
+                Just(Constraint::Fill),
+                Just(Constraint::FitContent),
+                Just(Constraint::FitMin),
+            ]
+        }
+
+        fn arb_alignment() -> impl Strategy<Value = Alignment> {
+            prop_oneof![
+                Just(Alignment::Start),
+                Just(Alignment::Center),
+                Just(Alignment::End),
+                Just(Alignment::SpaceBetween),
+                Just(Alignment::SpaceAround),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            #[test]
+            fn flex_split_in_equals_split(
+                horiz in any::<bool>(),
+                rtl in any::<bool>(),
+                gap in 0u16..=4,
+                w in 0u16..=200,
+                h in 0u16..=80,
+                alignment in arb_alignment(),
+                constraints in prop::collection::vec(arb_constraint(), 0..=20),
+            ) {
+                let mut arena = ftui_core::arena::FrameArena::new(16 * 1024);
+                let flex = if horiz { Flex::horizontal() } else { Flex::vertical() }
+                    .gap(gap)
+                    .alignment(alignment)
+                    .flow_direction(if rtl {
+                        direction::FlowDirection::Rtl
+                    } else {
+                        direction::FlowDirection::Ltr
+                    })
+                    .constraints(constraints);
+
+                let area = Rect::new(2, 3, w, h);
+                let owned = flex.split(area);
+                let in_arena = flex.split_in(&arena, area);
+                prop_assert_eq!(in_arena, owned.as_slice());
+
+                arena.reset();
+                let measurer = |idx: usize, avail: u16| LayoutSizeHint {
+                    min: ((idx as u16) * 2).min(avail),
+                    preferred: ((idx as u16) * 5 + 3).min(avail),
+                    max: Some(40),
+                };
+                let owned_m = flex.split_with_measurer(area, measurer);
+                let in_arena_m = flex.split_with_measurer_in(&arena, area, measurer);
+                prop_assert_eq!(in_arena_m, owned_m.as_slice());
+            }
         }
     }
 }

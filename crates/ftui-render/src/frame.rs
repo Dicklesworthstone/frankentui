@@ -698,7 +698,7 @@ impl<'a> Frame<'a> {
     ///
     /// Widgets should use this for temporary allocations (formatted strings,
     /// scratch slices) to avoid per-frame allocator churn.
-    pub fn arena(&self) -> Option<&FrameArena> {
+    pub fn arena(&self) -> Option<&'a FrameArena> {
         self.arena
     }
 

@@ -116,6 +116,30 @@ metrics:
     max_ratio: 1.30
     safe_mode_trigger: false
 
+  present_p99_us:
+    metric_type: latency
+    max_value: 18000.0
+    max_ratio: 1.25
+    safe_mode_trigger: false
+
+  input_dispatch_p99_us:
+    metric_type: latency
+    max_value: 100.0
+    max_ratio: 1.25
+    safe_mode_trigger: false
+
+  wrap_p99_us:
+    metric_type: latency
+    max_value: 2000.0
+    max_ratio: 1.25
+    safe_mode_trigger: false
+
+  text_width_p99_us:
+    metric_type: latency
+    max_value: 1.0
+    max_ratio: 1.20
+    safe_mode_trigger: false
+
   # ===========================================================================
   # Data Plane: Widget Rendering
   # ===========================================================================
@@ -180,6 +204,18 @@ metrics:
     metric_type: memory
     max_value: 500.0
     max_ratio: 1.30
+    safe_mode_trigger: false
+
+  bytes_emitted:
+    metric_type: memory
+    max_value: 16384.0
+    max_ratio: 1.20
+    safe_mode_trigger: false
+
+  frame_allocs:
+    metric_type: memory
+    max_value: 10.0
+    max_ratio: 1.20
     safe_mode_trigger: false
 
   # ===========================================================================
