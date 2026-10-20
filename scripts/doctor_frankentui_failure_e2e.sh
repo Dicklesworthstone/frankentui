@@ -21,7 +21,9 @@ BIN_PATH=""
 MISSING_RUNTIME_TOOLS=()
 FINALIZE_DISABLED=0
 
-mkdir -p "${CASES_DIR}" "${LOG_DIR}" "${META_DIR}"
+export TMPDIR="${DOCTOR_E2E_TMPDIR:-${ROOT_DIR}/target/doctor_frankentui_ci/tmp}"
+export RCH_CARGO_WRAPPER_BYPASS=1
+mkdir -p "${CASES_DIR}" "${LOG_DIR}" "${META_DIR}" "${TMPDIR}"
 
 require_command() {
   local command="$1"
@@ -34,7 +36,10 @@ require_command() {
 
 detect_runtime_toolchain_gaps() {
   local command
-  for command in vhs ffmpeg ffprobe; do
+  if ! command -v vhs >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1; then
+    MISSING_RUNTIME_TOOLS+=("vhs")
+  fi
+  for command in ffmpeg ffprobe; do
     if ! command -v "${command}" >/dev/null 2>&1; then
       MISSING_RUNTIME_TOOLS+=("${command}")
     fi
@@ -572,16 +577,31 @@ EOF
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
 from pathlib import Path
 
 tape = Path(sys.argv[1])
-timeout_seconds = float(os.environ.get("DOCTOR_FRANKENTUI_VHS_SMOKE_TIMEOUT_S", "12"))
+timeout_seconds = float(os.environ.get("DOCTOR_FRANKENTUI_VHS_SMOKE_TIMEOUT_S", "30"))
+
+if shutil.which("vhs"):
+    cmd = ["vhs", str(tape)]
+else:
+    smoke_dir = str(tape.parent)
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{smoke_dir}:{smoke_dir}",
+        "ghcr.io/charmbracelet/vhs:v0.10.1-devel",
+        str(tape),
+    ]
 
 proc = subprocess.Popen(
-    ["vhs", str(tape)],
+    cmd,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
     text=True,

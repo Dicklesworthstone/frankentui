@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! End-to-end coverage for the alien-uplift validation pipeline (bd-3bxhj.10.11).
 //!
 //! Drives the public crate surface: the `alien-uplift` CLI command (via

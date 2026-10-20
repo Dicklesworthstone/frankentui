@@ -157,9 +157,27 @@ fn is_shared_worker_run() -> bool {
         return enabled;
     }
     is_rch_target_dir()
+        || is_host_oversubscribed()
         || SHARED_WORKER_MARKERS
             .iter()
             .any(|name| env_present_and_not_false(name))
+}
+
+fn is_host_oversubscribed() -> bool {
+    let Ok(loadavg) = std::fs::read_to_string("/proc/loadavg") else {
+        return false;
+    };
+    let Some(load_1m) = loadavg
+        .split_whitespace()
+        .next()
+        .and_then(|token| token.parse::<f64>().ok())
+    else {
+        return false;
+    };
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get() as f64)
+        .unwrap_or(4.0);
+    load_1m > cpus * 1.5
 }
 
 fn is_rch_target_dir() -> bool {
@@ -170,6 +188,24 @@ fn is_rch_target_dir() -> bool {
 
 fn is_rch_target_path(path: &std::path::Path) -> bool {
     path.to_string_lossy().contains(".rch-target-")
+}
+
+/// Per-cell budget rate in microseconds for debug builds (~1.75-2.3us/cell
+/// measured across 80x24..500x150 in bd-resize-storm-budget-flake-pu7gt,
+/// plus ~30% headroom = 3us/cell).
+const PER_CELL_BUDGET_US: u64 = 3;
+
+/// Compute the effective frame budget for a `(width, height)` frame.
+///
+/// Standard frames (`<= 16,666` cells, including `80x24`, `120x40`, `200x60`)
+/// use `base_budget_us` directly (`50,000us` by default). Oversized frames
+/// such as `300x100` (`30,000` cells in `pathological_50`) scale linearly with
+/// cell count (`cells * 3us = 90,000us`) because full-frame render + diff +
+/// ANSI presentation + headless terminal parsing is `O(cells)`.
+fn effective_frame_budget_us(base_budget_us: u64, width: u16, height: u16) -> u64 {
+    let cells = u64::from(width) * u64::from(height);
+    let area_budget_us = cells.saturating_mul(PER_CELL_BUDGET_US);
+    base_budget_us.max(area_budget_us)
 }
 
 fn frame_budget_us_for(
@@ -215,6 +251,25 @@ fn frame_budget_defaults_to_local_guardrail() {
     assert_eq!(
         frame_budget_us_for(false, false, None),
         (FRAME_BUDGET_US_DEFAULT, "default")
+    );
+}
+
+#[test]
+fn frame_budget_scales_for_oversized_pathological_frames() {
+    // 80x24 = 1,920 cells -> 5,760us < 50,000us -> stays 50,000us
+    assert_eq!(
+        effective_frame_budget_us(FRAME_BUDGET_US_DEFAULT, 80, 24),
+        50_000
+    );
+    // 200x60 = 12,000 cells -> 36,000us < 50,000us -> stays 50,000us
+    assert_eq!(
+        effective_frame_budget_us(FRAME_BUDGET_US_DEFAULT, 200, 60),
+        50_000
+    );
+    // 300x100 = 30,000 cells -> 90,000us > 50,000us -> scales to 90,000us
+    assert_eq!(
+        effective_frame_budget_us(FRAME_BUDGET_US_DEFAULT, 300, 100),
+        90_000
     );
 }
 
@@ -471,11 +526,12 @@ fn run_storm_e2e(case_name: &str, storm: &ResizeStorm, frame_budget_us: u64) -> 
             );
         }
 
-        // 6. Check frame budget
-        if frame_us > frame_budget_us {
+        // 6. Check frame budget (scaled by cell count for oversized pathological frames)
+        let effective_budget_us = effective_frame_budget_us(frame_budget_us, w, h);
+        if frame_us > effective_budget_us {
             budget_violations.push(format!(
-                "Frame {idx}: {}μs exceeds budget {}μs at {}x{}",
-                frame_us, frame_budget_us, w, h
+                "Frame {idx}: {}μs exceeds budget {}μs (base {}μs) at {}x{}",
+                frame_us, effective_budget_us, frame_budget_us, w, h
             ));
         }
 

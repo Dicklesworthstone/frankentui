@@ -1,4 +1,8 @@
+# Coverage thresholds for the `doctor_frankentui` core product surface
+# (`crates/doctor_frankentui/src/` default features; experimental modules are
+# gated behind `--features experimental`, see `docs/doctor-frankentui-products.md`).
 [total]
+scope = "crates/doctor_frankentui/src"
 lines = 89.0
 branches = 69.0
 functions = 86.0

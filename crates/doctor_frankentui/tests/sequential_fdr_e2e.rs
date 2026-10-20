@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! End-to-end coverage for the sequential multiple-testing controller
 //! (bd-3bxhj.10.39).
 //!

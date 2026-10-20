@@ -12,8 +12,8 @@ readme = "../../README.md"
 
 [features]
 default = []
-# Compiles internal research modules not reachable from the public API. Not supported. See README.
-experimental = []
+# Compiles experimental migration compiler, graveyard governance, and stress-gate modules. See docs/doctor-frankentui-products.md.
+experimental = ["dep:ftui-harness"]
 
 [lints]
 workspace = true
@@ -35,7 +35,7 @@ sqlmodel-console = "0.5.0"
 sha2 = "0.11.0"
 regex-lite = "0.1.6"
 ftui-runtime = { path = "../ftui-runtime", version = "0.9.0", default-features = false }
-ftui-harness = { path = "../ftui-harness", version = "0.9.0" }
+ftui-harness = { path = "../ftui-harness", version = "0.9.0", optional = true }
 
 [dev-dependencies]
 proptest = "1.7.0"

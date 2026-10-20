@@ -1,3 +1,5 @@
+#![cfg(feature = "experimental")]
+
 use std::collections::BTreeSet;
 
 use doctor_frankentui::proof_artifacts::{

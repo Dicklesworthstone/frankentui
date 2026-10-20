@@ -415,6 +415,7 @@ set +e
   cd "${ROOT_DIR}"
   "${CARGO_CMD[@]}" test \
     -p doctor_frankentui \
+    --features experimental \
     --test ir_invariant_tests \
     ingestion_e2e_trace_export_is_deterministic_and_manifest_complete \
     -- --nocapture

@@ -3,7 +3,7 @@
 # This Makefile provides convenient targets for building and developing FrankenTUI.
 # The reference libraries are automatically synchronized before builds.
 
-.PHONY: all build check test clean sync-refs setup help clippy fmt-check reachability claims gates env-docs close-audit baseline-benches
+.PHONY: all build check test clean sync-refs setup help clippy fmt-check reachability claims gates env-docs close-audit baseline-benches workflows repo-facts
 
 # Default target
 all: build
@@ -33,8 +33,8 @@ check: sync-refs gates
 
 # Every non-cargo correctness gate, about six seconds total. No compilation,
 # no network, stdlib only, so this is safe to run constantly.
-gates: reachability claims env-docs close-audit baseline-benches
-	@echo "gates: reachability, claims, env-docs, close-audit and baseline-benches all green"
+gates: reachability claims env-docs close-audit baseline-benches workflows repo-facts
+	@echo "gates: reachability, claims, env-docs, close-audit, baseline-benches, workflows and repo-facts all green"
 
 # Fail when an environment variable is read by the code but undocumented.
 env-docs:
@@ -91,6 +91,17 @@ close-audit:
 baseline-benches:
 	@python3 scripts/check_baseline_benches.py --quiet
 
+# Fail when workflow YAML or DSR doctor verification contracts drift
+# (bd-g00-root-epic-ewths.28.4).
+workflows:
+	@python3 scripts/check_workflows.py --quiet
+
+# Fail when README.md or AGENTS.md inventory counts or badges drift from the
+# tree, or when un-marked line-count/inventory numbers reappear
+# (bd-g00-root-epic-ewths.5.11).
+repo-facts:
+	@python3 scripts/repo_facts.py --check --quiet
+
 # Clean build artifacts
 clean:
 	@if [ -f Cargo.toml ]; then cargo clean; fi
@@ -111,6 +122,8 @@ help:
 	@echo "  make env-docs   - Validate binary environment variable docs"
 	@echo "  make close-audit - Validate bead close evidence"
 	@echo "  make baseline-benches - Validate tests/baseline.json benchmark IDs"
-	@echo "  make gates      - All 5 non-cargo gates (~6s): reachability, claims, env-docs, close-audit, baseline-benches"
+	@echo "  make workflows  - Validate workflow and DSR doctor verification contracts"
+	@echo "  make repo-facts - Validate README/AGENTS inventory facts against the tree"
+	@echo "  make gates      - All 7 non-cargo gates (~6s): reachability, claims, env-docs, close-audit, baseline-benches, workflows, repo-facts"
 	@echo "  make clean      - Clean build artifacts"
 	@echo "  make help       - Show this help"

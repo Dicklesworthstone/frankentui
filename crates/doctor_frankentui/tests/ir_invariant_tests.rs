@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#![cfg(feature = "experimental")]
 //! Unit and property tests for IR invariants, pass idempotence, and migration adapters.
 //!
 //! Covers:

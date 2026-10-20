@@ -62,3 +62,9 @@ Status key:
 
 - Run full live seeding smoke against a running MCP endpoint in this environment.
 - Add conformance fixtures comparing legacy and Rust output JSON for a fixed capture scenario.
+
+## Status (2026-10)
+
+- **Default verification core (`default = []`)**: 23 core library modules exposing 9 core CLI subcommands and 4 aliases (`replay`/`capture`, `seed-demo`, `migrate`/`suite`, `report`, `certify`/`doctor`, `plan`/`import`, `list-profiles`, `performance-diff`, `visual-diff`), pinned by `core_module_list_matches_products_doc` and `cli_core_subcommands_route`, with default unit + integration tests verified under the 300s core test-time budget (`scripts/doctor_frankentui_core_time_budget.sh`, measured `33.865s`).
+- **Experimental product subcommands (`--features experimental`)**: 101 modules across `migrate` (31), `graveyard` (39), and `gates` (31) exposing 23 experimental CLI subcommands gated behind `--features experimental` and documented in [`docs/doctor-frankentui-products.md`](../doctor-frankentui-products.md).
+- **DSR verification stack (`frankentui-doctor-verification` in `.config/dsr-quality.yaml`)**: executes `doctor_frankentui_happy_e2e.sh` (real `vhs` + `ffmpeg` + `ffprobe` capture), `doctor_frankentui_failure_e2e.sh`, `doctor_frankentui_replay_triage.py`, 3-iteration `doctor_frankentui_determinism_soak.sh` (`total_divergences == 0`), `doctor_frankentui_coverage.sh` (`overall = 91.32% >= 68.0%`, `core_engine = 92.81% >= 74.0%`, `full_stack_orchestration = 90.02% >= 60.0%`, `diagnostics_and_contracts = 96.42% >= 70.0%`), and `doctor_frankentui_validate_jsonl.py --bundle-root /tmp/doctor_frankentui_ci --write-artifact-map`.

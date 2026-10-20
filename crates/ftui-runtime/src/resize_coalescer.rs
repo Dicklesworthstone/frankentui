@@ -1136,16 +1136,23 @@ impl ResizeCoalescer {
             return self.apply_pending_at(now, had_pending_before_event);
         }
 
-        // If enough time has passed since the last event, apply now.
-        // In heuristic mode, only apply immediately in Steady; burst applies via tick.
+        // If enough time has passed since the last event and the interval is
+        // genuinely steady (below burst_enter_rate), apply now; burst intervals
+        // coalesce and apply via tick or hard deadline.
         let time_ok = match dt {
             Some(d) => d >= Duration::from_millis(self.current_delay_ms()),
             None => false, // First event must be coalesced to establish steady state timing
         };
+        let min_steady_interval_ms = if self.config.burst_enter_rate > 0.0 {
+            1000.0 / self.config.burst_enter_rate
+        } else {
+            f64::INFINITY
+        };
 
         if !defer_immediate_apply
             && time_ok
-            && (!self.heuristic_decides() || self.regime == Regime::Steady)
+            && self.regime == Regime::Steady
+            && dt_ms >= min_steady_interval_ms
         {
             return self.apply_pending_at(now, false);
         }
@@ -1237,11 +1244,11 @@ impl ResizeCoalescer {
             return self.apply_pending_at(now, true);
         }
 
-        let delay_ms = self.current_delay_ms();
-
         // Check if enough time has passed since last event
         if let Some(last_event) = self.last_event {
             let since_last_event = duration_since_or_zero(now, last_event);
+            let idle_ms = since_last_event.as_secs_f64() * 1000.0;
+            let delay_ms = self.current_delay_for_tick_ms(idle_ms, time_since_render);
             if since_last_event >= Duration::from_millis(delay_ms) {
                 return self.apply_pending_at(now, false);
             }
@@ -1644,6 +1651,26 @@ impl ResizeCoalescer {
         }
     }
 
+    #[inline]
+    fn current_delay_for_tick_ms(&self, idle_ms: f64, time_since_render: Duration) -> u64 {
+        if let Some(ref bocpd) = self.bocpd
+            && (self.last_detector == RegimeDetector::Bocpd
+                || idle_ms > self.config.steady_delay_ms as f64)
+        {
+            let sustain_ms = self.config.burst_delay_ms.saturating_mul(3) / 2;
+            if time_since_render >= Duration::from_millis(sustain_ms) {
+                return bocpd.recommended_delay_after_idle(
+                    self.config.steady_delay_ms,
+                    self.config.burst_delay_ms,
+                    idle_ms,
+                );
+            }
+            return bocpd
+                .recommended_delay(self.config.steady_delay_ms, self.config.burst_delay_ms);
+        }
+        self.current_delay_ms()
+    }
+
     /// True when the rate heuristic owns regime decisions right now: BOCPD
     /// is off, or the fallback decided the most recent event.
     #[inline]
@@ -1696,14 +1723,21 @@ impl ResizeCoalescer {
             .map(|t| duration_since_or_zero(now, t).as_secs_f64() * 1000.0);
         let mut detector = self.select_detector(observation_ms);
 
-        // The posterior is always updated so it tracks the stream even while
-        // the heuristic decides; only the verdict source changes.
+        // The posterior is updated on every positive inter-arrival interval.
+        // On the initial session event (`observation_ms == None`) or a
+        // simultaneous event in the same poll batch (`observation_ms == 0.0`),
+        // seed the timestamp without injecting a synthetic interval.
         let posterior = self.bocpd.as_mut().map(|bocpd| {
-            bocpd.observe_event(now);
-            (bocpd.regime(), bocpd.p_burst())
+            if observation_ms.is_some_and(|obs| obs > 0.0) {
+                bocpd.observe_event(now);
+            } else {
+                bocpd.seed_event_time(now);
+            }
+            let log_bf = bocpd.last_evidence().map_or(0.0, |ev| ev.log_bayes_factor);
+            (bocpd.regime(), bocpd.p_burst(), log_bf)
         });
         if self.config.heuristic_fallback
-            && let Some((_, p_burst)) = posterior
+            && let Some((_, p_burst, _)) = posterior
             && !p_burst.is_finite()
         {
             detector = RegimeDetector::Heuristic;
@@ -1724,15 +1758,17 @@ impl ResizeCoalescer {
         match detector {
             RegimeDetector::Bocpd => {
                 self.detector_decisions.bocpd += 1;
-                let Some((bocpd_regime, p_burst)) = posterior else {
+                let Some((bocpd_regime, p_burst, log_bf)) = posterior else {
                     return;
                 };
                 // Map BOCPD regime to coalescer regime.
+                // Only transition Burst -> Steady when the observation itself
+                // favors Steady (`log_bf < 0.0`) rather than on a burst interval
+                // while the posterior is still climbing out of a prior quiet gap.
                 let proposed = match bocpd_regime {
-                    BocpdRegime::Steady => Regime::Steady,
                     BocpdRegime::Burst => Regime::Burst,
-                    // During transition, maintain current regime to avoid thrashing.
-                    BocpdRegime::Transitional => self.regime,
+                    BocpdRegime::Steady if log_bf < 0.0 => Regime::Steady,
+                    BocpdRegime::Steady | BocpdRegime::Transitional => self.regime,
                 };
                 if proposed != self.regime {
                     let (reason_code, confidence) = if proposed == Regime::Burst {
@@ -1760,7 +1796,7 @@ impl ResizeCoalescer {
             RegimeDetector::Heuristic => {
                 self.detector_decisions.heuristic += 1;
                 let rate = self.calculate_event_rate(now);
-                let p_burst = posterior.map(|(_, p)| p).filter(|p| p.is_finite());
+                let p_burst = posterior.map(|(_, p, _)| p).filter(|p| p.is_finite());
 
                 match self.regime {
                     Regime::Steady => {
@@ -5646,5 +5682,37 @@ mod tests {
         assert!(events.contains(&"regime_transition".to_owned()));
         assert!(events.contains(&"summary".to_owned()));
         assert!(events.contains(&"cycle_time_percentiles".to_owned()));
+    }
+
+    #[test]
+    fn bocpd_seeds_first_event_and_coalesces_burst_onset() {
+        let config = CoalescerConfig::default().with_bocpd();
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+        let base = Instant::now();
+
+        // First event seeds the BOCPD timestamp without crushing p_burst.
+        assert_eq!(c.handle_resize_at(82, 25, base), CoalesceAction::None);
+        // Second event at 27ms enters the transitional band and holds rather
+        // than applying immediately at burst onset.
+        assert_eq!(
+            c.handle_resize_at(84, 26, base + Duration::from_millis(27)),
+            CoalesceAction::None
+        );
+        // Simultaneous (dt = 0ms) batch arrivals do not flip Burst -> Steady
+        // when the posterior is still climbing toward burst_threshold.
+        for i in 0..5u16 {
+            c.handle_resize_at(
+                90 + i,
+                30 + i,
+                base + Duration::from_millis(27 + u64::from(i) * 5),
+            );
+        }
+        assert_eq!(c.regime(), Regime::Burst);
+        c.handle_resize_at(100, 35, base + Duration::from_millis(47));
+        assert_eq!(
+            c.regime(),
+            Regime::Burst,
+            "simultaneous dt=0 batch event must not drop out of Burst"
+        );
     }
 }

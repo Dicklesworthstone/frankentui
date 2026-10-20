@@ -78,7 +78,7 @@ run_cargo_regression_gate() {
     return
   fi
 
-  command_display="cargo test -p doctor_frankentui mapping_atlas::tests::reevaluate_resolves_new_mappings -- --nocapture"
+  command_display="cargo test -p doctor_frankentui --features experimental mapping_atlas::tests::reevaluate_resolves_new_mappings -- --nocapture"
   if [[ "${DOCTOR_FRANKENTUI_USE_RCH:-0}" == "1" ]]; then
     command_display="RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=${CARGO_TARGET_DIR} ${command_display}"
   else
@@ -90,12 +90,12 @@ run_cargo_regression_gate() {
   if [[ "${DOCTOR_FRANKENTUI_USE_RCH:-0}" == "1" ]]; then
     RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
       rch exec -- env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" \
-        cargo test -p doctor_frankentui \
+        cargo test -p doctor_frankentui --features experimental \
           mapping_atlas::tests::reevaluate_resolves_new_mappings -- --nocapture \
           >"${CARGO_STDOUT_LOG}" 2>"${CARGO_STDERR_LOG}"
   else
     env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" \
-      cargo test -p doctor_frankentui \
+      cargo test -p doctor_frankentui --features experimental \
         mapping_atlas::tests::reevaluate_resolves_new_mappings -- --nocapture \
         >"${CARGO_STDOUT_LOG}" 2>"${CARGO_STDERR_LOG}"
   fi

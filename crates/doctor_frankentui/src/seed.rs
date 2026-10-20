@@ -985,4 +985,251 @@ mod tests {
         assert_eq!(payload["endpoint"], "http://127.0.0.1:8879/mcp/");
         assert_eq!(payload["integration"]["sqlmodel_mode"], "json");
     }
+
+    #[test]
+    fn cancellation_and_deadline_branches_are_exercised() {
+        let expired = Deadline::after(Duration::ZERO);
+        assert!(
+            expired
+                .cancellation_aware_sleep(Duration::from_millis(10))
+                .is_none()
+        );
+
+        let live_source = CancellationSource::new();
+        let live_with_token = Deadline {
+            started_at: Instant::now(),
+            timeout: Duration::from_secs(5),
+            cancel_token: Some(live_source.token()),
+        };
+        assert!(
+            live_with_token
+                .cancellation_aware_sleep(Duration::from_millis(1))
+                .is_some()
+        );
+
+        let cancelled_source = CancellationSource::new();
+        cancelled_source.cancel();
+        let cancelled = Deadline {
+            started_at: Instant::now(),
+            timeout: Duration::from_secs(5),
+            cancel_token: Some(cancelled_source.token()),
+        };
+        assert!(
+            cancelled
+                .cancellation_aware_sleep(Duration::from_millis(10))
+                .is_none()
+        );
+
+        let config = SeedDemoConfig {
+            host: "127.0.0.1".to_string(),
+            port: "1".to_string(),
+            http_path: "/mcp/".to_string(),
+            auth_bearer: String::new(),
+            project_key: "/tmp/project".to_string(),
+            agent_a: "A".to_string(),
+            agent_b: "B".to_string(),
+            messages: 1,
+            timeout_seconds: 1,
+            log_file: None,
+        };
+        let mut client = RpcClient::new(&config).expect("rpc client");
+
+        let once_err = client
+            .call_tool_once("ensure_project", json!({}), &cancelled)
+            .expect_err("cancelled call_tool_once");
+        assert!(
+            once_err
+                .to_string()
+                .contains("Seed cancelled during ensure_project")
+        );
+
+        let stage_err = super::run_seed_stage(&mut client, "ensure_project", json!({}), &cancelled)
+            .expect_err("cancelled run_seed_stage");
+        assert!(
+            stage_err
+                .to_string()
+                .contains("RPC cancelled during ensure_project")
+        );
+
+        let wait_err =
+            wait_for_server(&mut client, &cancelled).expect_err("cancelled wait_for_server");
+        assert!(
+            wait_err
+                .to_string()
+                .contains("Cancelled waiting for server")
+        );
+
+        let backoff_source = CancellationSource::new();
+        let backoff_deadline = Deadline {
+            started_at: Instant::now(),
+            timeout: Duration::from_secs(5),
+            cancel_token: Some(backoff_source.token()),
+        };
+        let cancel_handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            backoff_source.cancel();
+        });
+        let backoff_err = client
+            .call_tool("ensure_project", json!({}), &backoff_deadline)
+            .expect_err("cancelled during rpc backoff");
+        cancel_handle.join().expect("join cancel thread");
+        assert!(backoff_err.to_string().contains("cancelled"));
+
+        let wait_backoff_source = CancellationSource::new();
+        let wait_backoff_deadline = Deadline {
+            started_at: Instant::now(),
+            timeout: Duration::from_secs(5),
+            cancel_token: Some(wait_backoff_source.token()),
+        };
+        let wait_cancel_handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            wait_backoff_source.cancel();
+        });
+        let wait_backoff_err = wait_for_server(&mut client, &wait_backoff_deadline)
+            .expect_err("cancelled during server wait sleep");
+        wait_cancel_handle.join().expect("join wait cancel thread");
+        assert!(
+            wait_backoff_err
+                .to_string()
+                .contains("Cancelled waiting for server")
+        );
+    }
+
+    #[test]
+    fn rpc_tool_error_post_send_expiry_and_json_summary_branches() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let port = listener
+            .local_addr()
+            .expect("local addr")
+            .port()
+            .to_string();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let log_path = temp.path().join("seed_unit.log");
+
+        let server = std::thread::spawn(move || {
+            let responses: &[(&str, u64)] = &[
+                (r#"{"jsonrpc":"2.0","id":1,"result":{"isError":true}}"#, 0),
+                ("", 0),
+                (r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#, 0),
+                ("", 40),
+                (r#"{"not_jsonrpc":true}"#, 0),
+                (
+                    r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"err"}}"#,
+                    0,
+                ),
+                (r#"{"jsonrpc":"2.0","id":1}"#, 0),
+                (r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#, 0),
+                (r#"{"jsonrpc":"2.0","id":2,"result":{"ok":true}}"#, 0),
+                (r#"{"jsonrpc":"2.0","id":3,"result":{"ok":true}}"#, 0),
+                (r#"{"jsonrpc":"2.0","id":4,"result":{"ok":true}}"#, 0),
+                (r#"{"jsonrpc":"2.0","id":5,"result":{"ok":true}}"#, 0),
+                (r#"{"jsonrpc":"2.0","id":6,"result":{"ok":true}}"#, 0),
+                (r#"{"jsonrpc":"2.0","id":7,"result":{"ok":true}}"#, 0),
+                (r#"{"jsonrpc":"2.0","id":8,"result":{"ok":true}}"#, 0),
+                (r#"{"jsonrpc":"2.0","id":9,"result":{"isError":true}}"#, 0),
+            ];
+            for &(body, delay_ms) in responses {
+                let (mut stream, _) = listener.accept().expect("accept client");
+                let mut buf = [0_u8; 4096];
+                let _ = stream.read(&mut buf);
+                if delay_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(delay_ms));
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let config = SeedDemoConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            http_path: "/mcp/".to_string(),
+            auth_bearer: "test-token".to_string(),
+            project_key: "/tmp/project".to_string(),
+            agent_a: "A".to_string(),
+            agent_b: "B".to_string(),
+            messages: 2,
+            timeout_seconds: 5,
+            log_file: Some(log_path),
+        };
+        let mut client = RpcClient::new(&config).expect("rpc client");
+        let live_deadline = Deadline::after(Duration::from_secs(5));
+
+        super::emit_stage_supervision(
+            &client,
+            "unit_failed",
+            &live_deadline,
+            StepOutcome::Failed {
+                reason: "unit".to_string(),
+            },
+        );
+        super::emit_stage_supervision(
+            &client,
+            "unit_timeout",
+            &live_deadline,
+            StepOutcome::TimedOut,
+        );
+
+        let expired_err = client
+            .call_tool_once(
+                "register_agent",
+                json!({}),
+                &Deadline::after(Duration::ZERO),
+            )
+            .expect_err("expired deadline should fail before send");
+        assert!(expired_err.to_string().contains("Seed deadline exceeded"));
+        super::log_message_stage_failed(&client, &live_deadline, 1, "A", "B", &expired_err);
+
+        let tool_err = client
+            .call_tool("register_agent", json!({}), &live_deadline)
+            .expect_err("MCP tool error should fail without retry");
+        assert!(tool_err.to_string().contains("MCP tool error"));
+
+        let recovered = client
+            .call_tool("register_agent", json!({}), &live_deadline)
+            .expect("empty response should retry and recover");
+        assert!(recovered.get("result").is_some());
+
+        let retry_deadline_err = client
+            .call_tool(
+                "register_agent",
+                json!({}),
+                &Deadline::after(Duration::from_millis(20)),
+            )
+            .expect_err("retry after deadline expiry should fail");
+        assert!(
+            retry_deadline_err
+                .to_string()
+                .contains("Seed deadline exceeded")
+        );
+
+        let non_rpc_err = client
+            .call_tool_once("register_agent", json!({}), &live_deadline)
+            .expect_err("non-jsonrpc response should fail");
+        assert!(
+            non_rpc_err
+                .to_string()
+                .contains("RPC non-JSON-RPC response")
+        );
+
+        let rpc_err = client
+            .call_tool_once("register_agent", json!({}), &live_deadline)
+            .expect_err("rpc error response should fail");
+        assert!(rpc_err.to_string().contains("RPC error"));
+
+        crate::util::set_output_mode_override(Some(crate::util::OutputModeOverride::Json));
+        let seed_res = super::run_seed_with_config(config);
+        crate::util::set_output_mode_override(None);
+        seed_res.expect("run_seed_with_config in JSON mode should succeed");
+
+        server.join().expect("join server");
+    }
 }

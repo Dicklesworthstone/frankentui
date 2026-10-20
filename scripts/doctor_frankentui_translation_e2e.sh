@@ -503,6 +503,7 @@ set +e
   cd "${ROOT_DIR}"
   "${CARGO_BIN}" test \
     -p doctor_frankentui \
+    --features experimental \
     --test translation_pipeline_unit_tests \
     translation_e2e_export_has_batch_order_and_generated_projects \
     -- --nocapture

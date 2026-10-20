@@ -13,18 +13,18 @@
   <img src="docs/assets/frankentui_illustration.webp" alt="FrankenTUI - Minimal, high-performance terminal UI kernel">
 </div>
 
-High‑performance terminal UI kernel -- 1.1M+ lines of Rust across 20 crates, 80+ widget/stateful-widget implementations, 45 interactive demo screens, a Bayesian intelligence layer, resizable pane workspaces, and in-tree web/WASM backends -- focused on correctness, determinism, and clean architecture.
+High‑performance terminal UI kernel -- 1.1M+ lines of Rust across <!-- fact:crates -->20<!-- /fact --> crates, <!-- fact:widgets -->70<!-- /fact --> widget/stateful-widget implementations across <!-- fact:widget_types -->55<!-- /fact --> widget types in `ftui-widgets` (<!-- fact:widgets_workspace -->93<!-- /fact --> across the workspace), <!-- fact:demo_screens -->45<!-- /fact --> interactive demo screens, a Bayesian intelligence layer, resizable pane workspaces, and in-tree web/WASM backends -- focused on correctness, determinism, and clean architecture.
 
 ![status](https://img.shields.io/badge/status-WIP-yellow)
 ![rust](https://img.shields.io/badge/rust-nightly-blue)
 ![license](https://img.shields.io/badge/license-MIT%2BOpenAI%2FAnthropic%20Rider-green)
 ![crates](https://img.shields.io/badge/crates-20-blue)
-![widgets](https://img.shields.io/badge/widgets-80%2B-blue)
+![widgets](https://img.shields.io/badge/widgets-70-blue)
 ![screens](https://img.shields.io/badge/demo_screens-45-blue)
 
 ## Try It in Your Browser
 
-All 45 screens run as WASM at **[frankentui.com/web](https://frankentui.com/web)** — no install, no toolchain. It renders through WebGPU where that exists and falls back to canvas2d, so Chrome, Edge, Safari and Firefox all work.
+All <!-- fact:demo_screens -->45<!-- /fact --> screens run as WASM at **[frankentui.com/web](https://frankentui.com/web)** — no install, no toolchain. It renders through WebGPU where that exists and falls back to canvas2d, so Chrome, Edge, Safari and Firefox all work.
 
 Phones too: swipe in from either edge to change screens, and the bar along the bottom carries a button for every key the current screen uses. Press and hold to drag; a divider drags straight away.
 
@@ -84,12 +84,12 @@ cargo +nightly-YYYY-MM-DD run -p ftui-demo-showcase
 | **One‑writer rule** | Serializes output for correctness | `TerminalWriter` owns all stdout writes |
 | **RAII cleanup** | Terminal state restored even on panic | `TerminalSession` in `ftui-core` |
 | **Composable crates** | Layout, text, style, runtime, widgets | Add only what you need |
-| **80+ widgets** | Block, Paragraph, Table, Input, Tree, Modal, Command Palette, etc. | Direct `Widget` / `StatefulWidget` implementations across `ftui-widgets` |
+| **<!-- fact:widgets -->70<!-- /fact --> widget impls** | Block, Paragraph, Table, Input, Tree, Modal, Command Palette, etc. | <!-- fact:widgets -->70<!-- /fact --> direct `Widget` / `StatefulWidget` implementations across <!-- fact:widget_types -->55<!-- /fact --> widget types in `ftui-widgets` (<!-- fact:widgets_workspace -->93<!-- /fact --> workspace-wide) |
 | **Pane workspaces** | Drag‑to‑resize, docking, magnetic snap, inertial throw, undo/redo | `PaneTree` + `PaneDragResizeMachine` in `ftui-layout` |
 | **Web/WASM backend** | Same Rust core renders in browser-oriented environments | In-tree `ftui-web` + `ftui-showcase-wasm` |
 | **Bayesian intelligence** | Statistical diff strategy, resize coalescing, capability detection | BOCPD, VOI, conformal prediction, e‑processes |
 | **Shadow‑run validation** | Prove rendering determinism across runtime migrations | `ShadowRun::compare()` in `ftui-harness` |
-| **45 demo screens** | Dashboard, visual effects, widget gallery, layout lab, and more | `cargo run -p ftui-demo-showcase` |
+| **<!-- fact:demo_screens -->45<!-- /fact --> demo screens** | Dashboard, visual effects, widget gallery, layout lab, and more | `cargo run -p ftui-demo-showcase` |
 
 ---
 
@@ -131,9 +131,9 @@ Press 1–9/0 to select screens 1–10, or Tab/Shift+Tab to cycle through screen
 
 ---
 
-## Demo Showcase Gallery (45 Screens)
+## Demo Showcase Gallery (<!-- fact:demo_screens -->45<!-- /fact --> Screens)
 
-The demo showcase (`cargo run -p ftui-demo-showcase`) ships 45 interactive screens, each demonstrating a different subsystem:
+The demo showcase (`cargo run -p ftui-demo-showcase`) ships <!-- fact:demo_screens -->45<!-- /fact --> interactive screens, each demonstrating a different subsystem:
 
 | Category | Screens | What They Show |
 |----------|---------|----------------|
@@ -234,7 +234,7 @@ fn main() -> std::io::Result<()> {
 
 ---
 
-## Workspace Overview (20 Crates)
+## Workspace Overview (<!-- fact:crates -->20<!-- /fact --> Crates)
 
 ### Core Architecture
 
@@ -245,9 +245,9 @@ fn main() -> std::io::Result<()> {
 | `ftui-render` | Buffer, diff, ANSI presenter, frame, grapheme pool, budget system | Implemented |
 | `ftui-style` | Style + theme system with CSS‑like cascading | Implemented |
 | `ftui-text` | Spans, segments, rope editor, cursor, BiDi, shaping, normalization | Implemented |
-| `ftui-layout` | Flex + Grid solvers, **pane workspace system** (9K+ lines), e‑graph optimizer | Implemented |
-| `ftui-runtime` | Elm/Bubbletea runtime, effect system, subscriptions, rollout policy, telemetry schema (13K+ line program.rs) | Implemented |
-| `ftui-widgets` | 80+ direct `Widget` / `StatefulWidget` implementations across the library | Implemented |
+| `ftui-layout` | Flex + Grid solvers, **pane workspace system**, e‑graph optimizer | Implemented |
+| `ftui-runtime` | Elm/Bubbletea runtime, effect system, subscriptions, rollout policy, telemetry schema (`program.rs`) | Implemented |
+| `ftui-widgets` | <!-- fact:widgets -->70<!-- /fact --> direct `Widget` / `StatefulWidget` implementations across <!-- fact:widget_types -->55<!-- /fact --> widget types in the library (<!-- fact:widgets_workspace -->93<!-- /fact --> workspace-wide) | Implemented |
 | `ftui-extras` | Feature‑gated add‑ons, VFX rasterizer (opt‑level=3) | Implemented |
 
 ### Backend & Platform
@@ -265,8 +265,8 @@ fn main() -> std::io::Result<()> {
 |------|---------|--------|
 | `ftui-harness` | Test harness, shadow‑run comparison, benchmark gate, rollout scorecard, determinism fixtures | Implemented |
 | `ftui-pty` | PTY‑based test utilities | Implemented |
-| `ftui-demo-showcase` | 45 interactive demo screens + snapshot tests | Implemented |
-| `doctor_frankentui` | Integrated TUI capture, seeding, suite reporting, diagnostics, and coverage gating | Implemented |
+| `ftui-demo-showcase` | <!-- fact:demo_screens -->45<!-- /fact --> interactive demo screens + snapshot tests | Implemented |
+| `doctor_frankentui` | Integrated TUI capture, seeding, suite reporting, diagnostics, and coverage gating (9 default core subcommands + 4 aliases across 23 core modules; 23 experimental product subcommands behind `--features experimental`) | Implemented |
 
 ### Supporting
 
@@ -291,8 +291,8 @@ fn main() -> std::io::Result<()> {
 | Bayesian diff strategy | ✅ Adaptive | ❌ Fixed | ❌ Fixed | ❌ N/A |
 | Shadow‑run validation harness | ✅ Built‑in | ❌ | ❌ | ❌ |
 | Snapshot/time‑travel harness | ✅ Built‑in | ❌ | ❌ | ❌ |
-| Widget count | 80+ direct impls | ~20 | ~12 | 0 |
-| Demo screens | 45 | ~5 | ~5 | 0 |
+| Widget count | <!-- fact:widgets -->70<!-- /fact --> direct impls (<!-- fact:widget_types -->55<!-- /fact --> types; <!-- fact:widgets_workspace -->93<!-- /fact --> workspace-wide) | ~20 | ~12 | 0 |
+| Demo screens | <!-- fact:demo_screens -->45<!-- /fact --> | ~5 | ~5 | 0 |
 
 **When to use FrankenTUI:**
 - You want inline + scrollback without flicker.
@@ -505,6 +505,8 @@ python3 -B scripts/render_perf_readme.py --check
 
 ### doctor_frankentui Verification
 
+`doctor_frankentui` ships a default 23-module verification core exposing 9 core subcommands and 4 aliases (`replay`/`capture`, `seed-demo`, `migrate`/`suite`, `report`, `certify`/`doctor`, `plan`/`import`, `list-profiles`, `performance-diff`, `visual-diff`), while the 23 migration/graveyard/gates product subcommands (101 modules) are gated behind `--features experimental` (see [`docs/doctor-frankentui-products.md`](docs/doctor-frankentui-products.md)). DSR runs the canonical verification stack via the `frankentui-doctor-verification` tool in [`.config/dsr-quality.yaml`](.config/dsr-quality.yaml).
+
 Run the full `doctor_frankentui` verification stack locally:
 
 Prerequisites:
@@ -520,24 +522,33 @@ Prerequisites:
   - `python3 -m pip install tomli` for Python `<3.11`
 
 ```bash
-# Unit + integration tests
+# Unit + integration tests (default core) and core test-time budget (< 300s)
 cargo test -p doctor_frankentui --all-targets -- --nocapture
+./scripts/doctor_frankentui_core_time_budget.sh
 
-# Workflow-level E2E
+# Workflow-level E2E + replay triage
 ./scripts/doctor_frankentui_happy_e2e.sh /tmp/doctor_frankentui_ci/happy
 ./scripts/doctor_frankentui_failure_e2e.sh /tmp/doctor_frankentui_ci/failure
+python3 -B scripts/doctor_frankentui_replay_triage.py --run-root /tmp/doctor_frankentui_ci/failure --max-signals 8
 
-# Coverage gate
+# Determinism soak (3 iterations, 0 non-volatile divergences)
+./scripts/doctor_frankentui_determinism_soak.sh /tmp/doctor_frankentui_ci/determinism 3
+
+# Coverage gate + retained artifact bundle/JSONL schema validation
 ./scripts/doctor_frankentui_coverage.sh /tmp/doctor_frankentui_ci/coverage
+python3 -B scripts/doctor_frankentui_validate_jsonl.py --bundle-root /tmp/doctor_frankentui_ci --write-artifact-map
 ```
 
-Artifact contract (CI and local):
+Artifact contract (DSR and local, retained under `/tmp/doctor_frankentui_ci/`):
 
+- `.../artifact_map.txt`: retained artifact index and paths.
 - `.../happy/meta/summary.json`: happy-path pass/fail and per-step timing.
 - `.../happy/meta/artifact_manifest.json`: checksums, sizes, and mtimes for expected outputs.
 - `.../failure/meta/summary.json`: failure-matrix pass/fail counts.
 - `.../failure/meta/case_results.json`: per-case expected vs actual exits and key artifacts.
-- `.../coverage/coverage_gate_report.json`: machine-readable threshold decision.
+- `.../failure/meta/replay_triage_report.json`: deterministic failure signal triage and replay commands.
+- `.../determinism/meta/determinism_report.json` and `.../determinism/meta/determinism_report.txt`: multi-run determinism comparison results (`total_divergences == 0`).
+- `.../coverage/coverage_gate_report.json`: machine-readable threshold decision (`overall`, `core_engine`, `full_stack_orchestration`, `diagnostics_and_contracts`).
 - `.../coverage/coverage_gate_report.txt`: human-readable coverage gate details.
 
 Troubleshooting map:
@@ -700,7 +711,7 @@ This is the core loop that ensures determinism and flicker‑free output.
 
 ## Pane Workspace System
 
-FrankenTUI includes a full pane workspace system (9,000+ lines in `ftui-layout/src/pane.rs`) that goes far beyond simple split layouts:
+FrankenTUI includes a full pane workspace system (`ftui-layout/src/pane.rs`) that goes far beyond simple split layouts:
 
 - **Drag‑to‑resize** via splitter handles with cell‑level hit‑testing
 - **Drag‑to‑move** with magnetic docking fields and live ghost preview targets
@@ -713,7 +724,7 @@ FrankenTUI includes a full pane workspace system (9,000+ lines in `ftui-layout/s
 - **Scroll-wheel magnetic field tuning**: adjust snap strength without leaving the pane
 - **Terminal + Web parity**: same pane interactions work in both backends via `PaneTerminalAdapter` and `PanePointerCaptureAdapter`
 
-The pane system is integrated into three of the 45 demo screens (Dashboard, Widget Gallery, Layout Lab) and has dedicated E2E tests (`scripts/pane_e2e.sh`).
+The pane system is integrated into three of the <!-- fact:demo_screens -->45<!-- /fact --> demo screens (Dashboard, Widget Gallery, Layout Lab) and has dedicated E2E tests (`scripts/pane_e2e.sh`).
 
 ### Pane Architecture
 
@@ -1333,7 +1344,7 @@ where `d_t` is signed distance to the current target boundary, `k` is drift allo
 
 ### Gesture Recognition State Machine
 
-The `GestureRecognizer` in `ftui-core` (2,100+ lines) transforms raw terminal events into semantic events via a multi-phase state machine:
+The `GestureRecognizer` in `ftui-core` transforms raw terminal events into semantic events via a multi-phase state machine:
 
 ```
 Raw Events                    Semantic Events
@@ -1359,7 +1370,7 @@ Key(Ctrl+x)     ─┘          ModifiedKey
 
 `TextArea` handles the mouse itself with the same thresholds, so a host only forwards events through `handle_event`. A left press places the cursor, a double click selects the word under it (Unicode word boundaries), a triple click selects the line, and dragging extends the selection. Presses outside the area it last rendered are ignored, and so is a drag that started outside it. The showcase's forms, advanced text editor and live Markdown screens forward their mouse events to it.
 
-### Input Parser (4,300+ Lines)
+### Input Parser
 
 The `InputParser` in `ftui-core` handles the full complexity of terminal input encoding:
 
@@ -1370,7 +1381,7 @@ The `InputParser` in `ftui-core` handles the full complexity of terminal input e
 - **UTF-8 streaming**: multi-byte character assembly across partial reads
 - **Ambiguous prefix handling**: `ESC` alone vs `ESC [` (Alt+key vs CSI) resolved by timing
 
-### Keybinding System (3,700+ Lines)
+### Keybinding System
 
 The `Keybinding` module supports:
 
@@ -1564,10 +1575,10 @@ strategy); set them to `0` to force the conservative path.
 | Capability | Current State | Planned |
 |------------|---------------|---------|
 | Stable API | ❌ Not yet | Yes (post‑v1) |
-| Widget ecosystem | ✅ 80+ direct widget implementations | Expanding |
+| Widget ecosystem | ✅ <!-- fact:widgets -->70<!-- /fact --> direct widget implementations (<!-- fact:widget_types -->55<!-- /fact --> types; <!-- fact:widgets_workspace -->93<!-- /fact --> workspace-wide) | Expanding |
 | Formal compatibility matrix | ⚠️ In progress | Yes |
 | Asupersync execution lane | ✅ Blocking task pool with `ftui-runtime/asupersync-executor`; otherwise falls back to Structured | Structured subscription cancellation retained |
-| crates.io publishing | ✅ 17 of 20 crates (all libraries) | Showcase targets stay workspace-local |
+| crates.io publishing | ✅ 17 of <!-- fact:crates -->20<!-- /fact --> crates (all libraries) | Showcase targets stay workspace-local |
 
 ---
 
@@ -1579,7 +1590,7 @@ A modular kernel assembled from focused, composable parts. A deliberate, enginee
 
 ### Is this a full framework?
 
-It’s a kernel plus a large widget library plus a demo showcase with 45 screens plus a full pane workspace system. You can build a framework on top, but expect APIs to evolve.
+It’s a kernel plus a large widget library plus a demo showcase with <!-- fact:demo_screens -->45<!-- /fact --> screens plus a full pane workspace system. You can build a framework on top, but expect APIs to evolve.
 
 ### Does it work on Windows?
 
@@ -1601,7 +1612,7 @@ BLESS=1 cargo test -p ftui-demo-showcase
 
 ### How many lines of code is it?
 
-1,110,000+ lines of Rust across 20 crates, with 80+ direct widget implementations, 45 demo screens, and a broad PTY/scripted E2E surface.
+1,110,000+ lines of Rust across <!-- fact:crates -->20<!-- /fact --> crates, with <!-- fact:widgets -->70<!-- /fact --> direct widget implementations across <!-- fact:widget_types -->55<!-- /fact --> widget types in `ftui-widgets` (<!-- fact:widgets_workspace -->93<!-- /fact --> workspace-wide), <!-- fact:demo_screens -->45<!-- /fact --> demo screens, and a broad PTY/scripted E2E surface.
 
 ### What's the performance like?
 
@@ -1653,7 +1664,7 @@ The runtime supports three execution lanes (Legacy, Structured, Asupersync) with
 
 ## E-Graph Layout Optimizer
 
-The layout engine includes an **equality saturation** optimizer (1,700+ lines in `ftui-layout/src/egraph.rs`) that finds optimal constraint solutions through algebraic rewriting:
+The layout engine includes an **equality saturation** optimizer (`ftui-layout/src/egraph.rs`) that finds optimal constraint solutions through algebraic rewriting:
 
 ```
 Expression Language:
@@ -1724,8 +1735,8 @@ native OSC 52 commands do not grant browser clipboard permissions.
 
 ### BiDi & Shaping
 
-- **BiDi** (`bidi.rs`, 1,146 lines): Unicode Bidirectional Algorithm for mixed LTR/RTL text (feature `bidi`, used by `Paragraph` rendering and the opt-in `CursorNavigator::with_visual_bidi` caret mode)
-- **Shaping** (`shaping.rs`, 1,500+ lines): standalone script/run segmentation and ligature/fallback helpers in `ftui-text` (not invoked by the default widget render path)
+- **BiDi** (`bidi.rs`): Unicode Bidirectional Algorithm for mixed LTR/RTL text (feature `bidi`, used by `Paragraph` rendering and the opt-in `CursorNavigator::with_visual_bidi` caret mode)
+- **Shaping** (`shaping.rs`): standalone script/run segmentation and ligature/fallback helpers in `ftui-text` (not invoked by the default widget render path)
 - **Normalization** (`normalization.rs`): opt-in NFC/NFD/NFKC/NFKD Unicode normalization helpers (feature `normalization` in `ftui-text`)
 
 ### Width Calculation
@@ -1795,7 +1806,7 @@ Evidence Emission
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-The `cost_model` module (1,800 lines) provides closed-form cost models for three subsystems:
+The `cost_model` module provides closed-form cost models for three subsystems:
 
 **Where it runs: nowhere.** Nothing in any crate's `src/` imports `ftui_runtime::cost_model`; the formulas below are a library you can call, not a model the runtime consults when sizing caches or scheduling. (`ftui-render/src/presenter.rs` has a private `mod cost_model` for ANSI cursor-move costs — same name, unrelated code.)
 
@@ -2534,7 +2545,7 @@ The entire render pipeline, runtime, and layout engine contain **zero `unsafe` b
 
 ### Integer Overflow Protection
 
-Coordinate arithmetic uses saturating or checked operations — 3,216 `saturating_*` and 68 `checked_*` call sites across the workspace:
+Coordinate arithmetic uses saturating or checked operations (`saturating_*` and `checked_*`) across the workspace:
 
 ```rust
 // Cursor positioning (saturating)
@@ -2547,7 +2558,7 @@ let Some(target_x) = x.checked_add(offset) else { continue };
 seed.wrapping_mul(6364136223846793005).wrapping_add(1)
 ```
 
-This is a convention, not a compiler guarantee: no `clippy::arithmetic_side_effects` lint is enabled, so a bare `+` on a coordinate would compile. The `unsafe` ban above *is* enforced — `#![forbid(unsafe_code)]` is present in all 20 crates.
+This is a convention, not a compiler guarantee: no `clippy::arithmetic_side_effects` lint is enabled, so a bare `+` on a coordinate would compile. The `unsafe` ban above *is* enforced — `#![forbid(unsafe_code)]` is present in all <!-- fact:crates -->20<!-- /fact --> crates.
 
 ### Untrusted Output Sanitization (ADR-006)
 
@@ -2605,16 +2616,16 @@ Alongside them: `identical_buffers_produce_empty_diff`, `diff_is_deterministic`,
 # Run tests, auto-update baselines
 BLESS=1 cargo test -p ftui-demo-showcase
 
-# 599 plain-text .snap files, one per case, reviewed as an ordinary diff
-crates/ftui-demo-showcase/tests/snapshots/   # 432
+# Plain-text .snap files, one per case, reviewed as an ordinary diff
+crates/ftui-demo-showcase/tests/snapshots/
 ├── a11y_accessibility_panel_all_modes_120x40.snap
 ├── a11y_accessibility_panel_high_contrast_80x24.snap
 └── widget_gallery_verification_120x40.snap
-crates/ftui-extras/tests/snapshots/          # 101
-crates/ftui-harness/tests/snapshots/         #  66
+crates/ftui-extras/tests/snapshots/
+crates/ftui-harness/tests/snapshots/
 ```
 
-A `.snap` file is the rendered frame as text, so a failing snapshot diff shows the actual character grid that changed rather than an opaque blob.
+The workspace retains <!-- fact:snapshots_total -->604<!-- /fact --> plain-text `.snap` files across `ftui-demo-showcase` (<!-- fact:snapshots_showcase -->436<!-- /fact -->), `ftui-extras` (<!-- fact:snapshots_extras -->101<!-- /fact -->), and `ftui-harness` (<!-- fact:snapshots_harness -->67<!-- /fact -->). A `.snap` file is the rendered frame as text, so a failing snapshot diff shows the actual character grid that changed rather than an opaque blob.
 
 ### Formal Verification Patterns
 
@@ -2730,9 +2741,9 @@ Intervention: if input_latency >= 50ms OR resize_dominance >= 3 OR F < 0.8:
 
 ---
 
-## Widget System (80+ Direct Implementations)
+## Widget System (<!-- fact:widgets -->70<!-- /fact --> Direct Implementations)
 
-FrankenTUI ships 80+ direct `Widget` and `StatefulWidget` implementations across `ftui-widgets`.
+FrankenTUI ships <!-- fact:widgets -->70<!-- /fact --> direct `Widget` and `StatefulWidget` implementations across <!-- fact:widget_types -->55<!-- /fact --> widget types in `ftui-widgets` (<!-- fact:widgets_workspace -->93<!-- /fact --> implementations across the workspace).
 
 ### Core Widgets
 
@@ -2775,7 +2786,7 @@ The table widget has a dedicated theme engine (`ftui-style/src/table_theme.rs`) 
 | **Truncation** | Ellipsis, clip, or wrap per column (`with_column_truncation(col, Truncate::Ellipsis)`) |
 | **Alignment** | Left/center/right per column with Unicode-aware width (`with_column_alignment(col, Alignment::Right)`) |
 
-Themes are composable; a base theme can be overlaid with per-instance overrides:
+Themes are composable (with <!-- fact:table_presets -->10<!-- /fact --> built-in presets); a base theme can be overlaid with per-instance overrides:
 
 ```rust
 // Ten built-in presets (Aurora, Graphite, Neon, Slate, Solar, Orchard, Paper,
@@ -2938,7 +2949,7 @@ The `i18n_demo` screen switches live between English, Spanish, French, German, R
 
 ## Queueing-Theoretic Scheduler (Deep Dive)
 
-The effect queue scheduler (3,020 lines in `queueing_scheduler.rs`) implements multiple scheduling disciplines from queueing theory.
+The effect queue scheduler (`queueing_scheduler.rs`) implements multiple scheduling disciplines from queueing theory.
 
 **Where it runs:** opt-in via `EffectQueueConfig::default().with_backend(TaskExecutorBackend::EffectQueue)` and `EffectQueueConfig { scheduler_enabled: true, .. }`. By default, `DEFAULT_TASK_BACKEND` is `TaskExecutorBackend::Spawned` for `RuntimeLane::Structured` and `RuntimeLane::Legacy` so blocking polling tasks cannot serialize interactive echo tasks on a single worker thread (see `docs/perf/effect_backend_2026-10-19.md`).
 
@@ -3331,7 +3342,7 @@ Not to be confused with `conformal_predictor`, which **is** on by default in the
 
 ## Headless Simulator
 
-The `ProgramSimulator` (1,700+ lines) runs a `Model` without a real terminal, enabling deterministic testing:
+The `ProgramSimulator` runs a `Model` without a real terminal, enabling deterministic testing:
 
 ```rust
 use ftui::runtime::ProgramSimulator;

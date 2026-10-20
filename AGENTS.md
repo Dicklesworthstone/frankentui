@@ -208,13 +208,12 @@ python3 -B scripts/render_perf_readme.py --check
 
 **The default test run does not see every module.** Most crates declare
 `default = []` and gate modules behind features, and `--workspace` only enables
-what some member happens to turn on. Measured on 2026-09-19 (re-checked
-2026-10-13: 26,293 default tests):
-`cargo nextest run --workspace` runs ~26,000–26,300 tests and
-`--workspace --all-features` runs ~28,300+ — about **2,300 tests the ordinary
-gate never builds**, including every test in `ftui-runtime`'s `stdio_capture`,
-`ivm`, `lens`, `flat_combine`, `slo`, `cost_model`, `countmin_sketch`,
-`eprocess_throttle` and nine more.
+what some member happens to turn on. An `--all-features` sweep compiles
+thousands of additional unit and integration tests that the ordinary
+`--workspace` gate never builds, including every test in `ftui-runtime`'s
+`stdio_capture`, `ivm`, `lens`, `flat_combine`, `slo`, `cost_model`,
+`countmin_sketch`, `eprocess_throttle` and nine more, plus the 101
+experimental product modules in `doctor_frankentui`.
 
 Things really do rot in there. That sweep found `fx-gpu` shipping without a
 wgpu backend for macOS (ten tests panicking inside wgpu), a runbook test
@@ -230,7 +229,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 Expect a handful of wall-clock budget failures under host load; see
 `.config/nextest.toml` for which ones and how to tell them from a regression.
 
-`make gates` is five checks, each runnable on its own:
+`make gates` is seven checks, each runnable on its own:
 
 | Target | Fails when |
 |---|---|
@@ -239,6 +238,8 @@ Expect a handful of wall-clock budget failures under host load; see
 | `make env-docs` | `ftui-harness` or `ftui-demo-showcase` reads an environment variable the README does not attribute to it, the README attributes one neither reads, or an allowlist entry names a variable no longer read. **Scoped to those two binaries only** — see below |
 | `make close-audit` | a bead was closed after 2026-09-19T21:10Z without a reason of 80+ characters carrying a `kind:value` reference |
 | `make baseline-benches` | a `tests/baseline.json` row binds an SLO budget to a Criterion benchmark ID no `benches/*.rs` emits (unless listed in `docs/baseline-bench-exceptions.txt` against an open bead) |
+| `make workflows` | `.config/dsr-quality.yaml` or `.github/workflows/*.yml` breaks YAML syntax, enables automatic GitHub Actions triggers, or drifts from the canonical `doctor_frankentui` verification contract |
+| `make repo-facts` | any `<!-- fact:... -->` inventory count or Shields.io badge in `README.md` or `AGENTS.md` drifts from the tree, or an un-marked line-count/inventory number is introduced |
 
 **`env-docs` sees two crates, not the workspace.** `check_env_docs.py` hardcodes
 `BINARIES = ("ftui-harness", "ftui-demo-showcase")` and walks only those two
@@ -322,8 +323,8 @@ Every component crate includes inline `#[cfg(test)]` unit tests alongside the im
 - Error conditions
 
 Cross-component integration tests live in each crate's own `tests/`
-directory -- 298 files on 2026-10-14, the largest being `ftui-runtime`
-(51), `ftui-harness` (48) and `ftui-demo-showcase` (46).
+directory -- <!-- fact:integration_test_files -->302<!-- /fact --> files across the workspace, the largest being `ftui-runtime`
+(<!-- fact:integration_tests_runtime -->51<!-- /fact -->), `ftui-harness` (<!-- fact:integration_tests_harness -->49<!-- /fact -->) and `ftui-demo-showcase` (<!-- fact:integration_tests_showcase -->46<!-- /fact -->).
 
 **Not** in the repository-root `tests/`. That directory holds fixtures,
 baselines and captured artifacts, contains no `.rs` files, and could not run
@@ -364,12 +365,12 @@ cargo test -p ftui-harness
 
 | Crate | Focus Areas |
 |-------|-------------|
-| `doctor_frankentui` | Verification harness, intent inference, synthesis |
+| `doctor_frankentui` | Verification core (23 default modules, 9 subcommands + 4 aliases: `replay`/`capture`, `seed-demo`, `migrate`/`suite`, `report`, `certify`/`doctor`, `plan`/`import`, `list-profiles`, `performance-diff`, `visual-diff`; 23 experimental product subcommands across 101 modules behind `--features experimental`) |
 | `ftui` | Public facade, prelude, `agent_shell`, README snippet & consumer tests |
 | `ftui-a11y` | Accessibility tree, roles, states, diff tracking |
 | `ftui-backend` | Backend traits (`BackendEventSource`, `BackendPresenter`, `BackendFeatures`) |
 | `ftui-core` | Terminal lifecycle, event parsing, capabilities |
-| `ftui-demo-showcase` | Snapshot tests for all 45 demo screens |
+| `ftui-demo-showcase` | Snapshot tests for all <!-- fact:demo_screens -->45<!-- /fact --> demo screens |
 | `ftui-extras` | Feature-gated add-ons, VFX rasterizer |
 | `ftui-harness` | Test utilities + snapshot framework |
 | `ftui-i18n` | String catalog, CLDR plural rules, number/date formatting |
@@ -429,6 +430,8 @@ cargo run -p ftui-demo-showcase
 
 ### `doctor_frankentui` Verification Stack
 
+`doctor_frankentui` compiles a default 23-module verification core exposing 9 subcommands and 4 aliases (`replay`/`capture`, `seed-demo`, `migrate`/`suite`, `report`, `certify`/`doctor`, `plan`/`import`, `list-profiles`, `performance-diff`, `visual-diff`), while the 23 migration/graveyard/gates product subcommands (101 modules) require `--features experimental` (see [`docs/doctor-frankentui-products.md`](docs/doctor-frankentui-products.md)). DSR runs the canonical verification stack via the `frankentui-doctor-verification` tool in [`.config/dsr-quality.yaml`](.config/dsr-quality.yaml).
+
 Canonical local verification commands for the `doctor_frankentui` crate:
 
 Prerequisites:
@@ -437,29 +440,31 @@ Prerequisites:
 - `python3`
 - `jq`
 - `rg` (ripgrep)
-- `vhs`, `ffmpeg`, and `ffprobe` (required by `doctor_frankentui_happy_e2e.sh` for real VHS/frame media capture)
+- `vhs`, `ffmpeg`, and `ffprobe` (required by `doctor_frankentui_happy_e2e.sh` and `doctor_frankentui_failure_e2e.sh` for real VHS/frame media capture)
 - `cargo-llvm-cov` (`cargo install cargo-llvm-cov`)
 - Python TOML parser support (`tomllib` in Python `3.11+`, or `python3 -m pip install tomli` for Python `<3.11`)
 
 ```bash
-# Unit + integration
+# Unit + integration (default core) and core test-time budget (< 300s)
 cargo test -p doctor_frankentui --all-targets -- --nocapture
+./scripts/doctor_frankentui_core_time_budget.sh
 
 # E2E workflow scripts
 ./scripts/doctor_frankentui_happy_e2e.sh /tmp/doctor_frankentui_ci/happy
 ./scripts/doctor_frankentui_failure_e2e.sh /tmp/doctor_frankentui_ci/failure
 
-# Determinism soak (fails on non-volatile divergence)
-./scripts/doctor_frankentui_determinism_soak.sh /tmp/doctor_frankentui_ci/determinism 3
-
 # Replay/triage helper for failure artifacts
 ./scripts/doctor_frankentui_replay_triage.py --run-root /tmp/doctor_frankentui_ci/failure --max-signals 8
 
-# Coverage gate
+# Determinism soak (fails on non-volatile divergence)
+./scripts/doctor_frankentui_determinism_soak.sh /tmp/doctor_frankentui_ci/determinism 3
+
+# Coverage gate + retained artifact bundle/JSONL schema validation
 ./scripts/doctor_frankentui_coverage.sh /tmp/doctor_frankentui_ci/coverage
+python3 -B scripts/doctor_frankentui_validate_jsonl.py --bundle-root /tmp/doctor_frankentui_ci --write-artifact-map
 ```
 
-DSR verification must run the same contract and retain artifacts under
+DSR verification (`frankentui-doctor-verification`) runs the same contract and retains artifacts under
 `/tmp/doctor_frankentui_ci/` (the existing directory name is retained):
 
 - `artifact_map.txt` (artifact index + paths)
@@ -517,12 +522,12 @@ Provides a layered terminal UI framework with an Elm/Bubbletea-style runtime, de
 frankentui/
 ├── Cargo.toml                         # Workspace root
 ├── crates/
-│   ├── doctor_frankentui/             # Verification harness + intent inference
+│   ├── doctor_frankentui/             # Verification core (23 default modules) + experimental products
 │   ├── ftui/                          # Public facade + prelude
 │   ├── ftui-a11y/                     # Accessibility tree infrastructure
 │   ├── ftui-backend/                  # Backend abstraction
 │   ├── ftui-core/                     # Terminal lifecycle, events, capabilities
-│   ├── ftui-demo-showcase/            # Reference app + snapshots (45 screens)
+│   ├── ftui-demo-showcase/            # Reference app + screen snapshots
 │   ├── ftui-extras/                   # Feature-gated add-ons (VFX, opt-level=3)
 │   ├── ftui-harness/                  # Test utilities + snapshot framework
 │   ├── ftui-i18n/                     # Internationalization support
@@ -536,11 +541,13 @@ frankentui/
 │   ├── ftui-text/                     # Spans, segments, rope editor
 │   ├── ftui-tty/                      # TTY backend
 │   ├── ftui-web/                      # Web backend
-│   └── ftui-widgets/                  # Core widget library (55 widget types, 70 impls; 93 workspace-wide)
+│   └── ftui-widgets/                  # Core widget library (Widget + StatefulWidget)
 ├── scripts/                           # E2E test scripts + benchmarks
 ├── tests/                             # Fixtures/baselines/artifacts (no .rs, not a cargo target)
 └── fuzz/                              # Fuzz testing (excluded from workspace)
 ```
+
+The workspace contains <!-- fact:crates -->20<!-- /fact --> crates, <!-- fact:demo_screens -->45<!-- /fact --> demo screens in `ftui-demo-showcase`, and <!-- fact:widgets -->70<!-- /fact --> `Widget`/`StatefulWidget` implementations across <!-- fact:widget_types -->55<!-- /fact --> widget types in `ftui-widgets` (<!-- fact:widgets_workspace -->93<!-- /fact --> implementations workspace-wide).
 
 **Note:** some specs and integration docs still refer to `frankenterm-core` and
 `frankenterm-web`, but those crates are not currently vendored inside this
@@ -551,9 +558,8 @@ contains them.
 
 | Crate | Key Files | Purpose |
 |-------|-----------|---------|
-| `doctor_frankentui` | `src/doctor.rs` | Verification harness orchestration |
-| `doctor_frankentui` | `src/intent_inference.rs` | Intent inference engine |
-| `doctor_frankentui` | `src/semantic_contract.rs` | Semantic contracts and assertions |
+| `doctor_frankentui` | `src/doctor.rs`, `src/capture.rs`, `src/suite.rs` | Default verification harness orchestration (`replay`/`capture`, `seed-demo`, `migrate`/`suite`, `report`, `certify`/`doctor`, `plan`/`import`, `list-profiles`, `performance-diff`, `visual-diff`) |
+| `doctor_frankentui` | `src/intent_inference.rs`, `src/semantic_contract.rs` | Core intent inference and semantic contracts (`docs/doctor-frankentui-products.md` maps the 23 default core modules and 101 `--features experimental` product modules) |
 | `ftui-a11y` | `src/node.rs` | Accessibility node types, roles, states |
 | `ftui-a11y` | `src/tree.rs` | Accessibility tree builder + diff |
 | `ftui-core` | `src/terminal_session.rs` | RAII terminal lifecycle |
@@ -1058,7 +1064,7 @@ characters. A step you can satisfy by believing you did it is not a step.
    cargo fmt --check
    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
    cargo nextest run --workspace --no-fail-fast   # or the affected crates
-   make gates                                     # 5 stdlib checks, ~6s
+   make gates                                     # 7 stdlib checks, ~6s
    ```
 
    For E2E-affecting changes, the relevant `tests/e2e/scripts/*.sh` too. Builds
@@ -1091,7 +1097,7 @@ characters. A step you can satisfy by believing you did it is not a step.
    deliberately left undone.
 
 **Monthly drift check.** Run the `frankentui-truth-gates` tool in
-`.config/dsr-quality.yaml` on a DSR host (it runs all five `make gates` checks
+`.config/dsr-quality.yaml` on a DSR host (it runs all seven `make gates` checks
 plus every script self-test, compiles nothing, and needs no network). File a
 bead per drift row it reports. This is the scheduled audit G37 asked for; it is
 a DSR job rather than a `reality_check.yml` workflow because GitHub Actions was

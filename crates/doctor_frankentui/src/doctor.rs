@@ -651,7 +651,7 @@ fn tmux_attach_command(session_name: &str) -> String {
 }
 
 fn tmux_target(session_name: &str) -> String {
-    format!("{session_name}:0.0")
+    session_name.to_string()
 }
 
 fn tmux_has_session(session_name: &str) -> bool {
@@ -983,10 +983,10 @@ pub fn run_doctor(args: DoctorArgs) -> Result<()> {
             let exit_code = full.exit_code.unwrap_or(1);
             capture_smoke_detail =
                 describe_capture_smoke_failure(&args.run_root, "doctor_full_run");
-            degraded_reason = capture_smoke_detail
-                .as_deref()
-                .map(|detail| format!("full capture smoke failed with exit={exit_code}; {detail}"))
-                .or_else(|| Some(format!("full capture smoke failed with exit={exit_code}")));
+            degraded_reason = Some(format_degraded_reason(
+                exit_code,
+                capture_smoke_detail.as_deref(),
+            ));
             ui.warning("full capture smoke failed; attempting app launch fallback");
             if let Some(reason) = &degraded_reason {
                 ui.warning(reason);
@@ -998,33 +998,16 @@ pub fn run_doctor(args: DoctorArgs) -> Result<()> {
             {
                 Ok(smoke) => {
                     app_smoke_summary = Some(smoke.summary_path.display().to_string());
-                    app_smoke_stdout_log = smoke
-                        .stdout_log
-                        .as_ref()
-                        .map(|path| path.display().to_string());
-                    app_smoke_stderr_log = smoke
-                        .stderr_log
-                        .as_ref()
-                        .map(|path| path.display().to_string());
+                    app_smoke_stdout_log = opt_path_string(smoke.stdout_log.as_ref());
+                    app_smoke_stderr_log = opt_path_string(smoke.stderr_log.as_ref());
                     tmux_session = smoke.tmux_session;
-                    tmux_session_file = smoke
-                        .tmux_session_file
-                        .as_ref()
-                        .map(|path| path.display().to_string());
-                    tmux_pane_capture = smoke
-                        .tmux_pane_capture
-                        .as_ref()
-                        .map(|path| path.display().to_string());
-                    tmux_pane_log = smoke
-                        .tmux_pane_log
-                        .as_ref()
-                        .map(|path| path.display().to_string());
+                    tmux_session_file = opt_path_string(smoke.tmux_session_file.as_ref());
+                    tmux_pane_capture = opt_path_string(smoke.tmux_pane_capture.as_ref());
+                    tmux_pane_log = opt_path_string(smoke.tmux_pane_log.as_ref());
                     ui.success(&format!(
                         "app launch smoke fallback passed (timed_out={}, exit_code={})",
                         smoke.timed_out,
-                        smoke
-                            .exit_code
-                            .map_or_else(|| "none".to_string(), |value| value.to_string())
+                        format_opt_exit_code(smoke.exit_code)
                     ));
                     if let (Some(stdout_log), Some(stderr_log)) =
                         (&app_smoke_stdout_log, &app_smoke_stderr_log)
@@ -1041,30 +1024,12 @@ pub fn run_doctor(args: DoctorArgs) -> Result<()> {
                     }
                 }
                 Err(error) => {
-                    app_smoke_summary = smoke_paths
-                        .summary_path
-                        .exists()
-                        .then(|| smoke_paths.summary_path.display().to_string());
-                    app_smoke_stdout_log = smoke_paths
-                        .stdout_log
-                        .exists()
-                        .then(|| smoke_paths.stdout_log.display().to_string());
-                    app_smoke_stderr_log = smoke_paths
-                        .stderr_log
-                        .exists()
-                        .then(|| smoke_paths.stderr_log.display().to_string());
-                    tmux_session_file = smoke_paths
-                        .tmux_session_file
-                        .exists()
-                        .then(|| smoke_paths.tmux_session_file.display().to_string());
-                    tmux_pane_capture = smoke_paths
-                        .tmux_pane_capture
-                        .exists()
-                        .then(|| smoke_paths.tmux_pane_capture.display().to_string());
-                    tmux_pane_log = smoke_paths
-                        .tmux_pane_log
-                        .exists()
-                        .then(|| smoke_paths.tmux_pane_log.display().to_string());
+                    app_smoke_summary = existing_path_string(&smoke_paths.summary_path);
+                    app_smoke_stdout_log = existing_path_string(&smoke_paths.stdout_log);
+                    app_smoke_stderr_log = existing_path_string(&smoke_paths.stderr_log);
+                    tmux_session_file = existing_path_string(&smoke_paths.tmux_session_file);
+                    tmux_pane_capture = existing_path_string(&smoke_paths.tmux_pane_capture);
+                    tmux_pane_log = existing_path_string(&smoke_paths.tmux_pane_log);
                     fallback_error = Some(error.to_string());
                     terminal_error = Some(error);
                     ui.error("app launch smoke fallback failed");
@@ -1124,9 +1089,10 @@ pub fn run_doctor(args: DoctorArgs) -> Result<()> {
     }
 
     if degraded_capture {
-        let summary = degraded_reason
-            .clone()
-            .unwrap_or_else(|| "capture stack degraded".to_string());
+        let summary = match degraded_reason.clone() {
+            Some(reason) => reason,
+            None => "capture stack degraded".to_string(),
+        };
         ui.warning(&format!("capture stack health: {capture_stack_health}"));
         if !args.allow_degraded {
             return Err(DoctorError::exit(
@@ -1139,6 +1105,35 @@ pub fn run_doctor(args: DoctorArgs) -> Result<()> {
 
     ui.success("doctor completed successfully");
     Ok(())
+}
+
+fn opt_path_string(path: Option<&PathBuf>) -> Option<String> {
+    match path {
+        Some(path) => Some(path.display().to_string()),
+        None => None,
+    }
+}
+
+fn existing_path_string(path: &Path) -> Option<String> {
+    if path.exists() {
+        Some(path.display().to_string())
+    } else {
+        None
+    }
+}
+
+fn format_opt_exit_code(exit_code: Option<i32>) -> String {
+    match exit_code {
+        Some(value) => value.to_string(),
+        None => "none".to_string(),
+    }
+}
+
+fn format_degraded_reason(exit_code: i32, detail: Option<&str>) -> String {
+    match detail {
+        Some(detail) => format!("full capture smoke failed with exit={exit_code}; {detail}"),
+        None => format!("full capture smoke failed with exit={exit_code}"),
+    }
 }
 
 #[cfg(test)]
@@ -1212,18 +1207,8 @@ exit 1
             fs::set_permissions(&script_path, perms).expect("set permissions");
         }
 
-        let mut result = super::run_help_check(&script_path, "ok");
-        for _ in 0..5 {
-            if let Err(e) = &result
-                && (e.to_string().contains("Text file busy") || e.to_string().contains("26"))
-            {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                result = super::run_help_check(&script_path, "ok");
-                continue;
-            }
-            break;
-        }
-        assert!(result.is_ok(), "Result was: {:?}", result);
+        let result = super::run_help_check(&script_path, "ok");
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1245,23 +1230,10 @@ exit 1
             fs::set_permissions(&script_path, perms).expect("set permissions");
         }
 
-        let mut result = super::run_help_check(&script_path, "capture");
-        for _ in 0..5 {
-            if let Err(e) = &result
-                && (e.to_string().contains("Text file busy") || e.to_string().contains("26"))
-            {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                result = super::run_help_check(&script_path, "capture");
-                continue;
-            }
-            break;
-        }
-        let error = result.expect_err("help check should fail");
+        let error =
+            super::run_help_check(&script_path, "capture").expect_err("help check should fail");
         let message = error.to_string();
-        assert!(
-            message.contains("help check failed for command: capture"),
-            "unexpected error shape: {message}"
-        );
+        assert!(message.contains("help check failed for command: capture"));
     }
 
     #[cfg(unix)]
@@ -1281,19 +1253,8 @@ kill -TERM $$
         perms.set_mode(0o755);
         fs::set_permissions(&script_path, perms).expect("set permissions");
 
-        let mut result = super::run_help_check(&script_path, "capture");
-        for _ in 0..5 {
-            if let Err(e) = &result
-                && (e.to_string().contains("Text file busy") || e.to_string().contains("26"))
-            {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                result = super::run_help_check(&script_path, "capture");
-                continue;
-            }
-            break;
-        }
-
-        let error = result.expect_err("help check should fail for signal exit");
+        let error = super::run_help_check(&script_path, "capture")
+            .expect_err("help check should fail for signal exit");
         assert_eq!(error.exit_code(), 143);
         assert!(
             error
@@ -1350,11 +1311,7 @@ kill -TERM $$
         let values = arg_list(&command);
 
         assert_eq!(values[0], "-lc");
-        assert!(
-            values[1].contains("cd '/tmp/project' && cargo run -q -p ftui-demo-showcase"),
-            "unexpected app smoke shell command: {}",
-            values[1]
-        );
+        assert!(values[1].contains("cd '/tmp/project' && cargo run -q -p ftui-demo-showcase"));
     }
 
     #[test]
@@ -1698,5 +1655,171 @@ kill -TERM $$
         assert!(!detail.contains("ttyd_shim_log="));
         assert!(!detail.contains("ttyd_runtime_log="));
         assert!(!detail.contains("vhs_docker_log="));
+    }
+
+    #[test]
+    fn check_command_and_describe_capture_smoke_failure_cover_remaining_branches() {
+        let ui = CliOutput::new(false);
+        let missing = super::check_command("definitely-missing-doctor-cmd-xyz", &ui)
+            .expect_err("missing command should fail");
+        assert!(
+            missing
+                .to_string()
+                .contains("definitely-missing-doctor-cmd-xyz")
+        );
+
+        let temp = tempdir().expect("tempdir");
+
+        // 1. Empty directory -> None
+        assert!(super::describe_capture_smoke_failure(temp.path(), "empty_run").is_none());
+
+        // 2. Directory with only vhs.log containing "recording failed"
+        let vhs_only_dir = temp.path().join("vhs_only");
+        fs::create_dir_all(&vhs_only_dir).expect("create vhs_only");
+        fs::write(
+            vhs_only_dir.join("vhs.log"),
+            "starting vhs\nrecording failed: eof\n",
+        )
+        .expect("write vhs.log");
+        let vhs_detail = super::describe_capture_smoke_failure(temp.path(), "vhs_only")
+            .expect("vhs_only detail");
+        assert!(vhs_detail.contains("vhs_log=recording failed: eof"));
+
+        // 3. Directory with run_meta containing valid in-run shim/runtime/docker logs
+        let full_dir = temp.path().join("full_logs");
+        fs::create_dir_all(&full_dir).expect("create full_logs");
+        RunMeta {
+            status: "failed".to_string(),
+            profile: "analytics-empty".to_string(),
+            run_dir: full_dir.display().to_string(),
+            vhs_exit_code: Some(1),
+            host_vhs_exit_code: Some(1),
+            vhs_driver_used: Some("docker-fallback".to_string()),
+            fallback_reason: Some("host failed".to_string()),
+            capture_error_reason: Some("eof".to_string()),
+            ttyd_shim_log: Some("ttyd_shim.log".to_string()),
+            ttyd_runtime_log: Some("ttyd_runtime.log".to_string()),
+            vhs_docker_log: Some("vhs_docker.log".to_string()),
+            ..RunMeta::default()
+        }
+        .write_to_path(&full_dir.join("run_meta.json"))
+        .expect("write full_logs run_meta");
+        let full_detail = super::describe_capture_smoke_failure(temp.path(), "full_logs")
+            .expect("full_logs detail");
+        assert!(full_detail.contains("ttyd_shim_log=ttyd_shim.log"));
+        assert!(full_detail.contains("ttyd_runtime_log=ttyd_runtime.log"));
+        assert!(full_detail.contains("vhs_docker_log=vhs_docker.log"));
+    }
+
+    #[test]
+    fn tmux_helpers_and_tmux_app_smoke_fallback_execute_clean_and_failing_sessions() {
+        let default_args = super::DoctorArgs {
+            tmux_session_name: None,
+            ..sample_args()
+        };
+        let generated_name = super::tmux_session_name(&default_args);
+        assert!(generated_name.starts_with("doctor-frankentui-"));
+
+        let custom_args = super::DoctorArgs {
+            tmux_session_name: Some("custom-session".to_string()),
+            ..sample_args()
+        };
+        assert_eq!(super::tmux_session_name(&custom_args), "custom-session");
+        assert_eq!(super::tmux_target("custom-session"), "custom-session");
+        assert_eq!(
+            super::tmux_attach_command("custom-session"),
+            "tmux attach-session -t 'custom-session'"
+        );
+
+        let temp = tempdir().expect("tempdir");
+        let missing_session = format!("doctor-missing-{}", std::process::id());
+        assert!(!super::tmux_has_session(&missing_session));
+        assert!(super::capture_tmux_pane(&missing_session, &temp.path().join("pane.txt")).is_err());
+        assert!(super::kill_tmux_session(&missing_session));
+
+        let ui = CliOutput::new(false);
+        super::check_app_smoke_fallback_dependencies(super::ObserveMode::Tmux, &ui)
+            .expect("bash and tmux should exist");
+
+        let project_dir = temp.path().join("project");
+        fs::create_dir_all(&project_dir).expect("project dir");
+
+        let pipe_fail_session = format!("doctor-smoke-pipe-{}", std::process::id());
+        let pipe_fail_args = super::DoctorArgs {
+            binary: None,
+            app_command: "true".to_string(),
+            project_dir: project_dir.clone(),
+            full: true,
+            capture_timeout_seconds: 5,
+            allow_degraded: true,
+            run_root: temp.path().join("run_pipe"),
+            observe: super::ObserveMode::Tmux,
+            tmux_session_name: Some(pipe_fail_session),
+            tmux_keep_open: false,
+        };
+        let _ = super::run_app_smoke_fallback(&pipe_fail_args, &ui);
+
+        let ok_session = format!("doctor-smoke-ok-{}", std::process::id());
+        let ok_args = super::DoctorArgs {
+            binary: None,
+            app_command: "sleep 0.25".to_string(),
+            project_dir: project_dir.clone(),
+            full: true,
+            capture_timeout_seconds: 5,
+            allow_degraded: true,
+            run_root: temp.path().join("run_ok"),
+            observe: super::ObserveMode::Tmux,
+            tmux_session_name: Some(ok_session.clone()),
+            tmux_keep_open: false,
+        };
+        let ok_res =
+            super::run_app_smoke_fallback(&ok_args, &ui).expect("tmux app smoke ok should pass");
+        assert_eq!(ok_res.exit_code, Some(0));
+        assert!(!ok_res.timed_out);
+        assert_eq!(ok_res.tmux_session.as_deref(), Some(ok_session.as_str()));
+        assert!(ok_res.summary_path.exists());
+
+        let fail_session = format!("doctor-smoke-fail-{}", std::process::id());
+        let fail_args = super::DoctorArgs {
+            binary: None,
+            app_command: "sleep 0.25; (exit 9)".to_string(),
+            project_dir,
+            full: true,
+            capture_timeout_seconds: 5,
+            allow_degraded: true,
+            run_root: temp.path().join("run_fail"),
+            observe: super::ObserveMode::Tmux,
+            tmux_session_name: Some(fail_session),
+            tmux_keep_open: false,
+        };
+        let fail_err = super::run_app_smoke_fallback(&fail_args, &ui)
+            .expect_err("tmux app smoke non-zero should fail");
+        assert_eq!(fail_err.exit_code(), 9);
+
+        let p = temp.path().join("exists.txt");
+        fs::write(&p, "ok").expect("write exists.txt");
+        assert_eq!(
+            super::opt_path_string(Some(&p)),
+            Some(p.display().to_string())
+        );
+        assert_eq!(super::opt_path_string(None), None);
+        assert_eq!(
+            super::existing_path_string(&p),
+            Some(p.display().to_string())
+        );
+        assert_eq!(
+            super::existing_path_string(&temp.path().join("missing.txt")),
+            None
+        );
+        assert_eq!(super::format_opt_exit_code(Some(42)), "42");
+        assert_eq!(super::format_opt_exit_code(None), "none");
+        assert_eq!(
+            super::format_degraded_reason(2, Some("detail")),
+            "full capture smoke failed with exit=2; detail"
+        );
+        assert_eq!(
+            super::format_degraded_reason(2, None),
+            "full capture smoke failed with exit=2"
+        );
     }
 }

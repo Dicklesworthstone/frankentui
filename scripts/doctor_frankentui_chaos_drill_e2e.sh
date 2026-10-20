@@ -54,7 +54,7 @@ echo "[chaos-drill-e2e] run-root: ${RUN_ROOT}"
 echo "[chaos-drill-e2e] building + running doctor_frankentui chaos-drill ..."
 
 GATE_EXIT=0
-cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui -- \
+cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui --features experimental -- \
   --machine json chaos-drill \
   --run-root "${RUN_ROOT}" --run-name "${RUN_NAME}" \
   >"${RUN_ROOT}/cli_stdout.json" 2>"${RUN_ROOT}/cli_stderr.log" || GATE_EXIT=$?
@@ -158,7 +158,7 @@ echo "[chaos-drill-e2e] manifest integrity verified"
 
 # ── Determinism: a second run yields a byte-identical ledger ────────────────
 RUN2_DIR="${RUN_ROOT}/green2"
-cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui -- \
+cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui --features experimental -- \
   --machine json chaos-drill \
   --run-root "${RUN_ROOT}" --run-name "green2" \
   >"${RUN_ROOT}/cli_stdout2.json" 2>"${RUN_ROOT}/cli_stderr2.log" || fail "second run failed"

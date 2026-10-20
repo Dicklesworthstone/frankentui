@@ -38,7 +38,7 @@ require_command jq
 mkdir -p "${RUN_ROOT}"
 
 GATE_EXIT=0
-cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui -- \
+cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui --features experimental -- \
   --machine json operator-workflows \
   --run-root "${RUN_ROOT}" --run-name "${RUN_NAME}" \
   >"${RUN_ROOT}/cli_stdout.json" 2>"${RUN_ROOT}/cli_stderr.log" || GATE_EXIT=$?
@@ -119,7 +119,7 @@ done < <(jq -r '.artifacts[] | [.file, .sha256] | @tsv' "${MANIFEST}")
 
 # ── Determinism: a second run must produce a byte-identical ledger ───────────
 SECOND_EXIT=0
-cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui -- \
+cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui --features experimental -- \
   --machine json operator-workflows \
   --run-root "${RUN_ROOT}" --run-name "${RUN_NAME}2" \
   >"${RUN_ROOT}/cli_stdout_2.json" 2>"${RUN_ROOT}/cli_stderr_2.log" || SECOND_EXIT=$?

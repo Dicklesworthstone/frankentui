@@ -58,13 +58,11 @@ if [[ "${COMPARE_ONLY}" == true ]]; then
   mkdir -p "${META_DIR}"
 else
   require_command "jq" "install jq for JSON checks"
-  if [[ -e "${RUN_ROOT}" ]]; then
+  if [[ -e "${RUN_INDEX_TSV}" ]]; then
     echo "[determinism] run root already exists; choose a new run directory" >&2
     exit 2
   fi
-  mkdir -p "$(dirname "${RUN_ROOT}")"
-  mkdir "${RUN_ROOT}"
-  mkdir -p "${LOG_DIR}" "${META_DIR}"
+  mkdir -p "${RUN_ROOT}" "${LOG_DIR}" "${META_DIR}"
   : > "${RUN_INDEX_TSV}"
 fi
 
@@ -451,6 +449,15 @@ def normalize_event(event: dict[str, Any], run_dir: Path) -> dict[str, Any]:
                     raise ValueError("artifact hash mismatch")
                 raw_sizes[raw_path] = len(artifact_bytes)
                 if is_volatile_artifact(normalized_path):
+                    if artifact_path.name == "run_meta.json":
+                        meta = parse_json_file(artifact_path)
+                        if not meta:
+                            raise ValueError("run_meta.json is empty or invalid")
+                        trace_id(meta.get("trace_id"))
+                        if meta.get("finished_at") is not None:
+                            normalize_capture_times(dict(meta))
+                        else:
+                            timestamp(meta.get("started_at"))
                     volatile_artifact_count += 1
                     continue
                 if artifact_path.name == "evidence_ledger.jsonl":
@@ -490,8 +497,7 @@ def normalize_event(event: dict[str, Any], run_dir: Path) -> dict[str, Any]:
         event.get("event_type") == "artifact"
         and isinstance(artifact_hashes, dict)
         and len(artifact_hashes) == 1
-        and next(iter(artifact_hashes)).endswith("/snapshot.png")
-        and is_volatile_artifact(next(iter(artifact_hashes)))
+        and is_volatile_artifact(normalize_path_value(str(next(iter(artifact_hashes))), run_dir))
         and isinstance(actual, dict)
         and "size_bytes" in actual
     ):
@@ -500,7 +506,7 @@ def normalize_event(event: dict[str, Any], run_dir: Path) -> dict[str, Any]:
             actual["size_bytes"] = {"positive": True}
         else:
             actual["size_bytes"] = {"positive": False, "value": size}
-            artifact_hash_shape_errors.append("snapshot size_bytes must be a positive integer")
+            artifact_hash_shape_errors.append("volatile artifact size_bytes must be a positive integer")
 
     return {
         "schema_version": event.get("schema_version"),
@@ -892,7 +898,7 @@ report = {
         "text artifacts": ["run-directory aliases", "loopback endpoint port (linked to server.port when present)"],
         "VHS subprocess stderr": ["pid (linked to spawn/final observation)", "elapsed"],
         "Cargo build_doctor stderr": ["Finished profile duration"],
-        "artifact size_bytes": "verified raw size, then canonical byte length; snapshot.png requires positive integer",
+        "artifact size_bytes": "verified raw size, then canonical byte length; volatile artifacts require positive integer",
     },
     "workflow_reports": workflow_reports,
     "global_errors": global_errors,

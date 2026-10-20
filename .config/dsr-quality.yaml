@@ -60,6 +60,12 @@ tools:
       - bash scripts/check_close_policy_e2e.sh "${DSR_CLOSE_POLICY_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_close_policy/dsr}"
       # Release preflight gate self-tests (bd-g00-root-epic-ewths.10.1).
       - bash scripts/release_preflight_test.sh
+      # Static workflow + DSR doctor verification contract assertions (bd-g00-root-epic-ewths.28.4).
+      - python3 -B scripts/check_workflows.py --self-test
+      - python3 -B scripts/check_workflows.py
+      # Tree-derived README/AGENTS inventory facts and drift gate (bd-g00-root-epic-ewths.5.11).
+      - python3 -B scripts/repo_facts.py --self-test
+      - python3 -B scripts/repo_facts.py --check
   # The AGENTS.md "Landing the Plane" gate set on the native host, without RCH
   # (forbidden until bd-g00-root-epic-ewths.6.24): `cargo` on this host's PATH
   # is an RCH shim, so every cargo line carries RCH_CARGO_WRAPPER_BYPASS=1, the
@@ -187,4 +193,21 @@ tools:
     language: rust
     required_checks:
       - RCH_CARGO_WRAPPER_BYPASS=1 bash scripts/perf_gate_e2e.sh --full
+  # Canonical doctor_frankentui verification stack (bd-g00-root-epic-ewths.28.2,
+  # bd-g00-root-epic-ewths.28.4, bd-g00-root-epic-ewths.28.6): runs core unit +
+  # integration tests, core test-time budget check, happy/failure/determinism/
+  # replay-triage/coverage gates, and validates the retained artifact bundle +
+  # JSONL schema under /tmp/doctor_frankentui_ci/.
+  frankentui-doctor-verification:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness test --locked -p doctor_frankentui --all-targets -- --nocapture
+      - bash scripts/doctor_frankentui_core_time_budget.sh
+      - bash scripts/doctor_frankentui_happy_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}/happy"
+      - bash scripts/doctor_frankentui_failure_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}/failure"
+      - python3 -B scripts/doctor_frankentui_replay_triage.py --run-root "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}/failure" --max-signals 8
+      - bash scripts/doctor_frankentui_determinism_soak.sh "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}/determinism" 3
+      - bash scripts/doctor_frankentui_coverage.sh "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}/coverage"
+      - python3 -B scripts/doctor_frankentui_validate_jsonl.py --bundle-root "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}" --write-artifact-map
 

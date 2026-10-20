@@ -42,7 +42,7 @@ echo "[alien-uplift-e2e] building + running doctor_frankentui alien-uplift ..."
 # The command exits non-zero if the pipeline gate fails; capture so we can still
 # inspect the materialized artifacts for triage.
 PIPELINE_EXIT=0
-cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui -- \
+cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui --features experimental -- \
   --machine json alien-uplift \
   --run-root "${RUN_ROOT}" --run-name "${RUN_NAME}" \
   >"${RUN_ROOT}/cli_stdout.json" 2>"${RUN_ROOT}/cli_stderr.log" || PIPELINE_EXIT=$?

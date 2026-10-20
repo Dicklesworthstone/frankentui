@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! End-to-end coverage for the graveyardctl executable workflow (bd-3bxhj.10.32).
 //!
 //! Drives the public crate surface: the `graveyardctl` CLI command (via

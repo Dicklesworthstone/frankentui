@@ -418,6 +418,7 @@ set +e
   cd "${ROOT_DIR}"
   "${CARGO_BIN}" test \
     -p doctor_frankentui \
+    --features experimental \
     --test ir_invariant_tests \
     ir_determinism_e2e_export_validates_stage_and_final_hashes \
     -- --nocapture

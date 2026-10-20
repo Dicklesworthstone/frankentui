@@ -24,6 +24,7 @@ This directory holds reproducible Criterion, allocation, byte-budget, and differ
 | [`egraph_vs_flex_2026-09-18.md`](egraph_vs_flex_2026-09-18.md) | E-graph layout saturation vs direct `Flex::split` solver evaluation |
 | [`cost_surface_stage_dominance_2026-09-19.md`](cost_surface_stage_dominance_2026-09-19.md) | Render pipeline stage dominance and cost-surface analysis |
 | [`resize_differential_2026-09.md`](resize_differential_2026-09.md) | BOCPD vs heuristic resize coalescer differential replay across 6 storm patterns ([JSON](resize_differential_2026-09.json)) |
+| [`resize_differential_2026-10.md`](resize_differential_2026-10.md) | Latest BOCPD vs heuristic resize coalescer differential replay (6/6 EQUAL on frames, 6/6 within 40ms settling budget; [JSON](resize_differential_2026-10.json)) |
 | [`conformal_default_2026-09.md`](conformal_default_2026-09.md) | Mondrian conformal frame-time risk gating overhead and default-on evaluation |
 | [`controllers_merge_2026-09.md`](controllers_merge_2026-09.md) | Budget controller PID + GRAPA e-process + conformal gate integration report |
 | [`virtualized_scroll_jump_2026-09.md`](virtualized_scroll_jump_2026-09.md) | Fenwick tree `O(log n)` scroll and Bayesian height prediction benchmark on 100k items |

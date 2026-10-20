@@ -343,9 +343,7 @@ impl SemanticEquivalenceContract {
 
     fn validate_visual_tolerance_policy(&self) -> Result<()> {
         let vtp = &self.visual_tolerance_policy;
-        if vtp.strict_classes.is_empty()
-            || vtp.strict_classes.iter().any(|c| c.trim().is_empty())
-        {
+        if vtp.strict_classes.is_empty() || vtp.strict_classes.iter().any(|c| c.trim().is_empty()) {
             return Err(SemanticContractError::Validation(
                 "visual_tolerance_policy.strict_classes must not be empty".to_string(),
             ));
@@ -1631,8 +1629,7 @@ impl ConfidenceModel {
                 "loss_matrix.rollback_cost must be in (0.0, accept_incorrect)".to_string(),
             ));
         }
-        if lm.conservative_fallback_cost <= 0.0
-            || lm.conservative_fallback_cost > lm.rollback_cost
+        if lm.conservative_fallback_cost <= 0.0 || lm.conservative_fallback_cost > lm.rollback_cost
         {
             return Err(SemanticContractError::Validation(
                 "loss_matrix.conservative_fallback_cost must be in (0.0, rollback_cost]"
@@ -4901,11 +4898,7 @@ mod tests {
 
         // Forbidden rewrite fails.
         let err = contract
-            .check_improvement_envelope(
-                &["latency"],
-                &["silent_policy_downgrade"],
-                &all_safeguards,
-            )
+            .check_improvement_envelope(&["latency"], &["silent_policy_downgrade"], &all_safeguards)
             .expect_err("forbidden rewrite must fail");
         assert!(
             matches!(err, SemanticContractError::Validation(ref msg) if msg.contains("forbidden_rewrites"))
@@ -4984,4 +4977,3 @@ mod tests {
         );
     }
 }
-

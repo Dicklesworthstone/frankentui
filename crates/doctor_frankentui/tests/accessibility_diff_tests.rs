@@ -1,3 +1,5 @@
+#![cfg(feature = "experimental")]
+
 use doctor_frankentui::accessibility_diff::{
     AccessibilityAction, AccessibilityActionKind, AccessibilityDiffConfig,
     AccessibilityDiffVerdict, AccessibilityImprovementKind, AccessibilityNode, AccessibilityRole,

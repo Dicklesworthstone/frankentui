@@ -500,7 +500,7 @@ fn tmux_observe_paths(run_dir: &Path) -> TmuxObserveArtifacts {
 }
 
 fn tmux_target(session_name: &str) -> String {
-    format!("{session_name}:0.0")
+    session_name.to_string()
 }
 
 fn kill_tmux_session(session_name: &str) {
@@ -1555,6 +1555,7 @@ fn run_vhs_with_driver(
 ) -> Result<VhsRunOutcome> {
     if cfg.vhs_driver == VhsDriver::Docker {
         let docker_outcome = run_vhs_with_docker(cfg, run_dir, tape_path, ui)?;
+        let _ = fs::copy(&docker_outcome.log_path, vhs_log);
         let fatal_capture_reason = if docker_outcome.exit_code == 0 {
             None
         } else if docker_outcome.timed_out {
@@ -4233,5 +4234,101 @@ mod tests {
     fn playwright_chromium_build_id_returns_zero_for_nonmatching_paths() {
         let path = PathBuf::from("/tmp/not-playwright/chrome-linux/chrome");
         assert_eq!(super::playwright_chromium_build_id(&path), 0);
+    }
+
+    #[test]
+    fn apply_empty_profile_and_tmux_observer_lifecycle_cover_remaining_branches() {
+        let mut cfg = super::ResolvedCaptureConfig::defaults("custom");
+        let empty_profile = crate::profile::Profile::default();
+        cfg.apply_profile(&empty_profile);
+        assert_eq!(cfg.profile, "custom");
+
+        // Exercise apply_args requested_legacy_runtime branches (port, http_path, auth_bearer)
+        for idx in 0..3 {
+            let mut c = super::ResolvedCaptureConfig::defaults("custom");
+            let mut args = minimal_args();
+            args.binary = None;
+            args.app_command = None;
+            match idx {
+                0 => args.port = Some("9999".to_string()),
+                1 => args.http_path = Some("/custom".to_string()),
+                _ => args.auth_bearer = Some("tok".to_string()),
+            }
+            c.apply_args(&args);
+            assert!(c.app_command.is_none());
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let run_dir = temp.path().join("run");
+        fs::create_dir_all(&run_dir).expect("create run_dir");
+        let ui = crate::util::CliOutput::new(false);
+
+        // 1. start_tmux_observer with legacy binary -> error
+        let mut legacy_cfg = super::ResolvedCaptureConfig::defaults("analytics-empty");
+        legacy_cfg.observe = super::ObserveMode::Tmux;
+        legacy_cfg.app_command = None;
+        let legacy_err = super::start_tmux_observer(&legacy_cfg, &run_dir, &ui)
+            .expect_err("legacy binary with tmux observe should fail");
+        assert!(legacy_err.to_string().contains("--app-command directly"));
+
+        // 2. start_tmux_observer with default session name + finalize_tmux_observer(None, false)
+        super::finalize_tmux_observer(None, false);
+        let mut default_obs_cfg = super::ResolvedCaptureConfig::defaults("analytics-empty");
+        default_obs_cfg.project_dir = temp.path().to_path_buf();
+        default_obs_cfg.observe = super::ObserveMode::Tmux;
+        default_obs_cfg.tmux_session_name = None;
+        default_obs_cfg.app_command = Some("sleep 0.25".to_string());
+        let default_artifacts = super::start_tmux_observer(&default_obs_cfg, &run_dir, &ui)
+            .expect("start default tmux observer")
+            .expect("default observer artifacts");
+        assert!(default_artifacts.session_name.starts_with("capture-"));
+        super::finalize_tmux_observer(Some(&default_artifacts), false);
+
+        // 3. start_tmux_observer + finalize_tmux_observer with custom session name
+        let session_name = format!("capture-unit-{}", std::process::id());
+        let mut live_cfg = super::ResolvedCaptureConfig::defaults("analytics-empty");
+        live_cfg.project_dir = temp.path().to_path_buf();
+        live_cfg.observe = super::ObserveMode::Tmux;
+        live_cfg.tmux_session_name = Some(session_name.clone());
+        live_cfg.app_command = Some("sleep 0.25".to_string());
+        let artifacts = super::start_tmux_observer(&live_cfg, &run_dir, &ui)
+            .expect("start tmux observer")
+            .expect("observer artifacts");
+        assert_eq!(artifacts.session_name, session_name);
+        assert!(artifacts.session_file.exists());
+        super::finalize_tmux_observer(Some(&artifacts), false);
+
+        // 4. build_docker_mounts with non-existent run_root and legacy binary parent
+        let mut docker_cfg = super::ResolvedCaptureConfig::defaults("analytics-empty");
+        docker_cfg.run_root = temp.path().join("missing_root");
+        docker_cfg.app_command = None;
+        docker_cfg.binary = temp.path().join("bin_dir/demo_bin");
+        let mounts = super::build_docker_mounts(&docker_cfg, &run_dir);
+        assert!(mounts.contains(&run_dir));
+        assert!(mounts.contains(&temp.path().join("bin_dir")));
+
+        // 5. infer_vhs_fatal_reason version rejected, seed_child_deadline, env_flag_enabled, collect_playwright_chromium_candidates
+        assert_eq!(
+            super::infer_vhs_fatal_reason("ttyd version is out of date"),
+            Some("vhs rejected ttyd version string".to_string())
+        );
+        assert!(super::seed_child_deadline(5) > Duration::from_secs(5));
+        assert!(!super::env_flag_enabled("DEFINITELY_NOT_SET_DOCTOR_FLAG"));
+
+        let pw_dir = temp.path().join("pw");
+        fs::create_dir_all(pw_dir.join("other-dir")).expect("other dir");
+        let chrome_path = pw_dir.join("chromium-1234/chrome-linux/chrome");
+        fs::create_dir_all(chrome_path.parent().expect("parent")).expect("chrome dir");
+        fs::write(&chrome_path, "bin").expect("write chrome");
+        let mut candidates = Vec::new();
+        super::collect_playwright_chromium_candidates(&pw_dir, &mut candidates);
+        assert_eq!(candidates, vec![chrome_path]);
+
+        // 6. ttyd_help_text / detect_ttyd_feature_support / ttyd_requires_compat_shim with missing/echo paths
+        assert!(super::ttyd_help_text(Path::new("/nonexistent/ttyd")).is_none());
+        assert!(super::ttyd_requires_compat_shim(Path::new(
+            "/nonexistent/ttyd"
+        )));
+        assert!(super::ttyd_requires_compat_shim(Path::new("/bin/echo")));
     }
 }

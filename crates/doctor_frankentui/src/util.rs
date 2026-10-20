@@ -38,15 +38,27 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 
 #[must_use]
 pub fn default_project_dir() -> PathBuf {
+    resolve_default_project_dir_with(
+        &|var| std::env::var_os(var),
+        std::env::current_dir().ok().as_deref(),
+        Some(Path::new(env!("CARGO_MANIFEST_DIR"))),
+    )
+}
+
+fn resolve_default_project_dir_with(
+    env_lookup: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    cwd: Option<&Path>,
+    manifest_dir: Option<&Path>,
+) -> PathBuf {
     for var in ["DOCTOR_FRANKENTUI_PROJECT_DIR", "FTUI_PROJECT_DIR"] {
-        if let Some(val) = std::env::var_os(var)
+        if let Some(val) = env_lookup(var)
             && !val.is_empty()
         {
             return PathBuf::from(val);
         }
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut cursor: Option<&Path> = Some(cwd.as_path());
+    if let Some(cwd) = cwd {
+        let mut cursor: Option<&Path> = Some(cwd);
         while let Some(dir) = cursor {
             if dir.join("Cargo.toml").is_file() && dir.join("crates").is_dir() {
                 return dir.to_path_buf();
@@ -54,32 +66,42 @@ pub fn default_project_dir() -> PathBuf {
             cursor = dir.parent();
         }
     }
-    if let Some(workspace_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
+    if let Some(workspace_root) = manifest_dir.and_then(Path::parent).and_then(Path::parent)
         && workspace_root.exists()
     {
         return workspace_root.to_path_buf();
     }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    cwd.map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
 #[must_use]
 pub fn default_demo_showcase_binary(project_dir: &Path) -> PathBuf {
+    resolve_default_demo_showcase_binary_with(
+        project_dir,
+        &|var| std::env::var_os(var),
+        std::env::current_exe().ok().as_deref(),
+    )
+}
+
+fn resolve_default_demo_showcase_binary_with(
+    project_dir: &Path,
+    env_lookup: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    current_exe: Option<&Path>,
+) -> PathBuf {
     let exe_name = format!("ftui-demo-showcase{}", std::env::consts::EXE_SUFFIX);
     for var in ["DOCTOR_FRANKENTUI_BINARY", "FTUI_DEMO_SHOWCASE_BIN"] {
-        if let Some(val) = std::env::var_os(var)
+        if let Some(val) = env_lookup(var)
             && !val.is_empty()
         {
             return PathBuf::from(val);
         }
     }
-    if let Some(target_dir) = std::env::var_os("CARGO_TARGET_DIR")
+    if let Some(target_dir) = env_lookup("CARGO_TARGET_DIR")
         && !target_dir.is_empty()
     {
         return PathBuf::from(target_dir).join("debug").join(&exe_name);
     }
-    if let Ok(current_exe) = std::env::current_exe()
+    if let Some(current_exe) = current_exe
         && let Some(parent) = current_exe.parent()
     {
         let sibling = parent.join(&exe_name);
@@ -305,17 +327,14 @@ where
     )
 }
 
-fn copy_tree_snapshot_materialized_inner<F>(
+fn copy_tree_snapshot_materialized_inner(
     source_dir: &Path,
     snapshot_dir: &Path,
     relative_prefix: &Path,
     canonical_root: &Path,
-    should_skip: &F,
+    should_skip: &dyn Fn(&Path) -> bool,
     active_dirs: &mut BTreeSet<PathBuf>,
-) -> io::Result<()>
-where
-    F: Fn(&Path) -> bool,
-{
+) -> io::Result<()> {
     let canonical_dir = fs::canonicalize(source_dir).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -405,17 +424,14 @@ where
     result
 }
 
-fn materialize_snapshot_symlink<F>(
+fn materialize_snapshot_symlink(
     source_path: &Path,
     target_path: &Path,
     relative_path: &Path,
     canonical_root: &Path,
-    should_skip: &F,
+    should_skip: &dyn Fn(&Path) -> bool,
     active_dirs: &mut BTreeSet<PathBuf>,
-) -> io::Result<()>
-where
-    F: Fn(&Path) -> bool,
-{
+) -> io::Result<()> {
     let resolved_path = fs::canonicalize(source_path).map_err(|error| {
         invalid_snapshot_data_error(format!(
             "unable to resolve symlink {}: {error}",
@@ -625,10 +641,12 @@ mod tests {
     use crate::error::DoctorError;
 
     use super::{
-        OutputIntegration, append_line, bool_to_u8, command_exists, duration_literal, ensure_dir,
-        ensure_executable, ensure_exists, ensure_safe_path_component, join_validated_child_path,
-        normalize_http_path, output_for, parse_duration_value, relative_to, require_command,
-        rust_comment_text, shell_single_quote, tape_escape, tmux_attach_command_literal,
+        CliOutput, OutputIntegration, OutputModeOverride, append_line, bool_to_u8, command_exists,
+        default_demo_showcase_binary, default_project_dir, duration_literal, ensure_dir,
+        ensure_executable, ensure_exists, ensure_safe_path_component, hex_encode,
+        join_validated_child_path, normalize_http_path, now_compact_timestamp, now_utc_iso, output,
+        output_for, parse_duration_value, relative_to, require_command, rust_comment_text,
+        set_output_mode_override, shell_single_quote, tape_escape, tmux_attach_command_literal,
         write_string,
     };
 
@@ -923,5 +941,324 @@ mod tests {
         let explicit = target.display().to_string();
         assert!(command_exists(&explicit));
         require_command(&explicit).expect("require_command should accept explicit executable path");
+    }
+
+    #[test]
+    fn timestamps_and_hex_encode_produce_expected_formats() {
+        let iso = now_utc_iso();
+        assert!(iso.ends_with('Z'));
+        assert_eq!(iso.len(), 20);
+
+        let compact = now_compact_timestamp();
+        assert_eq!(compact.len(), 15);
+        assert!(compact.contains('_'));
+
+        assert_eq!(hex_encode(&[0x00, 0x0a, 0xff]), "000aff");
+        assert_eq!(hex_encode(&[]), "");
+    }
+
+    #[test]
+    fn default_project_dir_and_demo_binary_resolve_workspace_paths() {
+        let proj = default_project_dir();
+        assert!(proj.exists());
+
+        let demo_bin = default_demo_showcase_binary(&proj);
+        assert!(
+            demo_bin
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|name| name.starts_with("ftui-demo-showcase"))
+        );
+    }
+
+    #[test]
+    fn output_mode_override_and_cli_output_methods_execute() {
+        set_output_mode_override(Some(OutputModeOverride::Human));
+        let human = OutputIntegration::detect();
+        assert_eq!(human.fastapi_mode, "plain");
+        assert_eq!(human.sqlmodel_mode, "plain");
+        assert!(!human.should_emit_json());
+
+        set_output_mode_override(Some(OutputModeOverride::Json));
+        let json = OutputIntegration::detect();
+        assert_eq!(json.fastapi_mode, "json");
+        assert_eq!(json.sqlmodel_mode, "json");
+        assert!(json.should_emit_json());
+
+        set_output_mode_override(None);
+        let auto = OutputIntegration::detect();
+        assert!(!auto.fastapi_mode.is_empty());
+        assert!(!auto.sqlmodel_mode.is_empty());
+
+        let disabled = CliOutput::new(false);
+        disabled.rule(None);
+        disabled.rule(Some("disabled"));
+        disabled.info("info");
+        disabled.success("ok");
+        disabled.warning("warn");
+        disabled.error("err");
+
+        let enabled = CliOutput::new(true);
+        enabled.rule(None);
+        enabled.rule(Some("enabled"));
+        enabled.info("info");
+        enabled.success("ok");
+        enabled.warning("warn");
+        enabled.error("err");
+
+        let _rich = output();
+    }
+
+    #[test]
+    fn parse_duration_rejects_malformed_ms_and_s_units() {
+        let bad_ms = parse_duration_value("xyzms").expect_err("invalid ms should fail");
+        assert!(bad_ms.to_string().contains("invalid millisecond duration"));
+
+        let bad_s = parse_duration_value("xyzs").expect_err("invalid s should fail");
+        assert!(bad_s.to_string().contains("invalid second duration"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_status_code_returns_normal_exit_code() {
+        let zero = std::process::ExitStatus::from_raw(0);
+        assert_eq!(exit_status_code(zero), 0);
+
+        let seven = std::process::ExitStatus::from_raw(7 << 8);
+        assert_eq!(exit_status_code(seven), 7);
+
+        let sigkill = std::process::ExitStatus::from_raw(9);
+        assert_eq!(exit_status_code(sigkill), 137);
+
+        let stopped = std::process::ExitStatus::from_raw(0x7f);
+        assert_eq!(exit_status_code(stopped), 1);
+    }
+
+    #[test]
+    fn resolve_default_project_dir_and_demo_binary_cover_all_discovery_branches() {
+        use std::ffi::OsString;
+
+        let temp = tempdir().expect("tempdir");
+
+        // 1. Env override for project dir (and empty value skipped)
+        let from_env = super::resolve_default_project_dir_with(
+            &|var| {
+                if var == "DOCTOR_FRANKENTUI_PROJECT_DIR" {
+                    Some(OsString::from(""))
+                } else {
+                    Some(OsString::from("/custom/project"))
+                }
+            },
+            None,
+            None,
+        );
+        assert_eq!(from_env, PathBuf::from("/custom/project"));
+
+        // 2. Fallback to manifest_dir workspace root when cwd has no Cargo.toml+crates
+        let from_manifest = super::resolve_default_project_dir_with(
+            &|_| None,
+            Some(temp.path()),
+            Some(Path::new(env!("CARGO_MANIFEST_DIR"))),
+        );
+        assert!(from_manifest.exists());
+
+        // 3. Fallback to "." when neither cwd nor manifest_dir exists
+        let missing_manifest = temp.path().join("a/b/c");
+        let fallback_dot =
+            super::resolve_default_project_dir_with(&|_| None, None, Some(&missing_manifest));
+        assert_eq!(fallback_dot, PathBuf::from("."));
+
+        // 4. Demo binary from env override (empty first var, set second var)
+        let bin_env = super::resolve_default_demo_showcase_binary_with(
+            temp.path(),
+            &|var| {
+                if var == "DOCTOR_FRANKENTUI_BINARY" {
+                    Some(OsString::from(""))
+                } else {
+                    Some(OsString::from("/custom/ftui-demo-showcase"))
+                }
+            },
+            None,
+        );
+        assert_eq!(bin_env, PathBuf::from("/custom/ftui-demo-showcase"));
+
+        // 5. Demo binary from sibling of current_exe
+        let exe_name = format!("ftui-demo-showcase{}", std::env::consts::EXE_SUFFIX);
+        let bin_dir = temp.path().join("bin");
+        ensure_dir(&bin_dir).expect("create bin dir");
+        let sibling_bin = bin_dir.join(&exe_name);
+        write_string(&sibling_bin, "bin").expect("write sibling bin");
+        let fake_exe = bin_dir.join("doctor_frankentui");
+        let resolved_sibling = super::resolve_default_demo_showcase_binary_with(
+            temp.path(),
+            &|_| None,
+            Some(&fake_exe),
+        );
+        assert_eq!(resolved_sibling, sibling_bin);
+
+        // 6. Demo binary from parent of deps/ directory
+        let debug_dir = temp.path().join("target_test/debug");
+        let deps_dir = debug_dir.join("deps");
+        ensure_dir(&deps_dir).expect("create deps dir");
+        let debug_sibling = debug_dir.join(&exe_name);
+        write_string(&debug_sibling, "bin").expect("write debug sibling");
+        let deps_exe = deps_dir.join("doctor_frankentui-1234");
+        let resolved_deps = super::resolve_default_demo_showcase_binary_with(
+            temp.path(),
+            &|var| {
+                if var == "CARGO_TARGET_DIR" {
+                    Some(OsString::from(""))
+                } else {
+                    None
+                }
+            },
+            Some(&deps_exe),
+        );
+        assert_eq!(resolved_deps, debug_sibling);
+
+        // 7. Demo binary fallback to project_dir/target/debug/ftui-demo-showcase when deps parent has no binary
+        let empty_deps = temp
+            .path()
+            .join("empty_target/debug/deps/doctor_frankentui-1234");
+        let resolved_fallback = super::resolve_default_demo_showcase_binary_with(
+            temp.path(),
+            &|_| None,
+            Some(&empty_deps),
+        );
+        assert_eq!(
+            resolved_fallback,
+            temp.path().join("target").join("debug").join(&exe_name)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_snapshot_handles_nested_dirs_skips_cycles_and_broken_symlinks() {
+        use std::io::ErrorKind;
+        use std::os::unix::fs::symlink;
+
+        let missing_src = PathBuf::from("/tmp/doctor_frankentui/nonexistent-snapshot-src-dir");
+        let dst = tempdir().expect("tempdir");
+        let missing_err =
+            copy_tree_snapshot_materialized(&missing_src, dst.path(), |_| false).unwrap_err();
+        assert_eq!(missing_err.kind(), ErrorKind::NotFound);
+
+        let src = tempdir().expect("tempdir");
+        write_string(&src.path().join("nested/keep.txt"), "keep").expect("write keep");
+        write_string(&src.path().join("nested/skip.txt"), "skip").expect("write skip");
+        write_string(&src.path().join("dir_target/inner.txt"), "inner").expect("write inner");
+        symlink(
+            src.path().join("dir_target"),
+            src.path().join("dir_symlink"),
+        )
+        .expect("create dir symlink");
+        symlink(
+            src.path().join("nested/skip.txt"),
+            src.path().join("skipped_symlink.txt"),
+        )
+        .expect("create skipped symlink");
+
+        copy_tree_snapshot_materialized(src.path(), dst.path(), |rel| {
+            rel == Path::new("nested/skip.txt")
+        })
+        .expect("copy nested tree with skips and dir symlink");
+
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("nested/keep.txt")).expect("keep.txt"),
+            "keep"
+        );
+        assert!(!dst.path().join("nested/skip.txt").exists());
+        assert!(!dst.path().join("skipped_symlink.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("dir_symlink/inner.txt")).expect("inner.txt"),
+            "inner"
+        );
+
+        let cycle_src = tempdir().expect("tempdir");
+        let cycle_dst = tempdir().expect("tempdir");
+        ensure_dir(&cycle_src.path().join("sub")).expect("create sub");
+        symlink(cycle_src.path(), cycle_src.path().join("sub/back")).expect("create cycle symlink");
+        let cycle_err =
+            copy_tree_snapshot_materialized(cycle_src.path(), cycle_dst.path(), |_| false)
+                .expect_err("cycle should fail");
+        assert_eq!(cycle_err.kind(), ErrorKind::InvalidData);
+        assert!(cycle_err.to_string().contains("symlink cycle detected"));
+
+        let broken_src = tempdir().expect("tempdir");
+        let broken_dst = tempdir().expect("tempdir");
+        symlink(
+            broken_src.path().join("does-not-exist"),
+            broken_src.path().join("dangling"),
+        )
+        .expect("create broken symlink");
+        let broken_err =
+            copy_tree_snapshot_materialized(broken_src.path(), broken_dst.path(), |_| false)
+                .expect_err("broken symlink should fail");
+        assert_eq!(broken_err.kind(), ErrorKind::InvalidData);
+        assert!(broken_err.to_string().contains("unable to resolve symlink"));
+
+        // Direct inner checks: missing source dir and escaping source dir
+        let mut active = std::collections::BTreeSet::new();
+        let inner_missing = super::copy_tree_snapshot_materialized_inner(
+            &missing_src,
+            dst.path(),
+            Path::new(""),
+            dst.path(),
+            &|_: &Path| false,
+            &mut active,
+        )
+        .expect_err("missing inner source should fail");
+        assert_eq!(inner_missing.kind(), ErrorKind::NotFound);
+
+        let inner_escape = super::copy_tree_snapshot_materialized_inner(
+            src.path(),
+            dst.path(),
+            Path::new(""),
+            dst.path(),
+            &|_: &Path| false,
+            &mut active,
+        )
+        .expect_err("escaping inner source should fail");
+        assert_eq!(inner_escape.kind(), ErrorKind::InvalidData);
+        assert!(inner_escape.to_string().contains("escapes source root"));
+
+        // Unsupported filesystem entry (Unix domain socket) and symlink to unsupported entry
+        let sock_src = tempdir().expect("tempdir");
+        let sock_dst = tempdir().expect("tempdir");
+        let sock_path = sock_src.path().join("test.sock");
+        let _listener =
+            std::os::unix::net::UnixListener::bind(&sock_path).expect("bind unix socket");
+        let sock_err = copy_tree_snapshot_materialized(sock_src.path(), sock_dst.path(), |_| false)
+            .expect_err("socket entry should fail");
+        assert_eq!(sock_err.kind(), ErrorKind::InvalidData);
+        assert!(
+            sock_err
+                .to_string()
+                .contains("unsupported filesystem entry")
+        );
+
+        let sym_sock_src = tempdir().expect("tempdir");
+        let sym_sock_dst = tempdir().expect("tempdir");
+        ensure_dir(&sym_sock_src.path().join("hidden")).expect("create hidden dir");
+        let hidden_sock = sym_sock_src.path().join("hidden/test.sock");
+        let _listener2 =
+            std::os::unix::net::UnixListener::bind(&hidden_sock).expect("bind hidden socket");
+        symlink(&hidden_sock, sym_sock_src.path().join("sock_link"))
+            .expect("symlink to unix socket");
+        let sym_sock_err =
+            copy_tree_snapshot_materialized(sym_sock_src.path(), sym_sock_dst.path(), |rel| {
+                rel == Path::new("hidden")
+            })
+            .expect_err("symlink to socket should fail");
+        assert_eq!(sym_sock_err.kind(), ErrorKind::InvalidData);
+        assert!(
+            sym_sock_err
+                .to_string()
+                .contains("symlink points to unsupported entry type")
+        );
+
+        // Root path ("/") has no parent, exercising parent() == None branch in write_string/append_line
+        let _ = write_string(Path::new("/"), "x");
+        let _ = append_line(Path::new("/"), "x");
     }
 }

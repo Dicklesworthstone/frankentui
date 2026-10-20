@@ -15,9 +15,24 @@ HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate doctor_frankentui e2e JSONL telemetry",
+        description="Validate doctor_frankentui e2e JSONL telemetry or full verification bundle",
     )
-    parser.add_argument("--input", required=True, help="Path to JSONL event stream")
+    parser.add_argument("--input", default="", help="Path to JSONL event stream")
+    parser.add_argument(
+        "--bundle-root",
+        default="",
+        help="Path to a doctor_frankentui verification bundle root (e.g. /tmp/doctor_frankentui_ci)",
+    )
+    parser.add_argument(
+        "--write-artifact-map",
+        action="store_true",
+        help="Generate <bundle-root>/artifact_map.txt before validating the bundle",
+    )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run built-in validator unit tests",
+    )
     parser.add_argument(
         "--schema",
         default="crates/doctor_frankentui/coverage/e2e_jsonl_schema.json",
@@ -363,15 +378,372 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
+CANONICAL_BUNDLE_ARTIFACTS: tuple[str, ...] = (
+    "happy/meta/summary.json",
+    "happy/meta/artifact_manifest.json",
+    "happy/meta/events.jsonl",
+    "happy/meta/events_validation_report.json",
+    "failure/meta/summary.json",
+    "failure/meta/case_results.json",
+    "failure/meta/replay_triage_report.json",
+    "failure/meta/events.jsonl",
+    "failure/meta/events_validation_report.json",
+    "determinism/meta/determinism_report.json",
+    "determinism/meta/determinism_report.txt",
+    "coverage/coverage_gate_report.json",
+    "coverage/coverage_gate_report.txt",
+)
+
+AGENTS_REQUIRED_ARTIFACT_MAP_ENTRIES: tuple[str, ...] = (
+    "happy/meta/summary.json",
+    "happy/meta/artifact_manifest.json",
+    "failure/meta/summary.json",
+    "failure/meta/case_results.json",
+    "failure/meta/replay_triage_report.json",
+    "determinism/meta/determinism_report.json",
+    "determinism/meta/determinism_report.txt",
+    "coverage/coverage_gate_report.json",
+    "coverage/coverage_gate_report.txt",
+)
+
+
+def write_bundle_artifact_map(bundle_root: Path) -> Path:
+    bundle_root.mkdir(parents=True, exist_ok=True)
+    map_path = bundle_root / "artifact_map.txt"
+    lines = ["# doctor_frankentui canonical verification artifact map"]
+    for rel in CANONICAL_BUNDLE_ARTIFACTS:
+        target = bundle_root / rel
+        lines.append(f"{rel}\t{target}")
+    map_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return map_path
+
+
+def validate_bundle(
+    bundle_root: Path,
+    schema_obj: dict[str, Any],
+    write_map: bool = False,
+) -> tuple[list[str], dict[str, Any]]:
+    errors: list[str] = []
+    if write_map:
+        write_bundle_artifact_map(bundle_root)
+
+    map_path = bundle_root / "artifact_map.txt"
+    if not map_path.is_file() or map_path.stat().st_size == 0:
+        errors.append(f"missing or empty artifact_map.txt at {map_path}")
+    else:
+        map_text = map_path.read_text(encoding="utf-8")
+        for req_entry in AGENTS_REQUIRED_ARTIFACT_MAP_ENTRIES:
+            if req_entry not in map_text:
+                errors.append(
+                    f"artifact_map.txt missing required entry: {req_entry}"
+                )
+
+    checked_files: list[str] = []
+    for rel in CANONICAL_BUNDLE_ARTIFACTS:
+        path = bundle_root / rel
+        if not path.is_file():
+            errors.append(f"missing required bundle artifact: {rel} ({path})")
+        elif path.stat().st_size == 0:
+            errors.append(f"empty required bundle artifact: {rel} ({path})")
+        else:
+            checked_files.append(rel)
+
+    json_status_checks = (
+        ("happy/meta/summary.json", {"passed", "ok"}),
+        ("happy/meta/events_validation_report.json", {"passed"}),
+        ("failure/meta/summary.json", {"passed", "ok"}),
+        ("failure/meta/events_validation_report.json", {"passed"}),
+        ("determinism/meta/determinism_report.json", {"passed", "ok"}),
+        ("coverage/coverage_gate_report.json", {"passed"}),
+    )
+    loaded_json: dict[str, Any] = {}
+    for rel, allowed_statuses in json_status_checks:
+        path = bundle_root / rel
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            errors.append(f"{rel}: invalid JSON: {exc}")
+            continue
+        loaded_json[rel] = payload
+        status = payload.get("status") if isinstance(payload, dict) else None
+        if status not in allowed_statuses:
+            errors.append(
+                f"{rel}: status={status!r} not in allowed {sorted(allowed_statuses)}"
+            )
+
+    happy_summary = loaded_json.get("happy/meta/summary.json")
+    if isinstance(happy_summary, dict):
+        steps = happy_summary.get("steps")
+        if isinstance(steps, list) and steps:
+            steps_total = len(steps)
+            steps_passed = sum(1 for s in steps if isinstance(s, dict) and s.get("exit_code") == 0)
+            steps_failed = steps_total - steps_passed
+        else:
+            steps_total = happy_summary.get("steps_total", happy_summary.get("runs"))
+            steps_passed = happy_summary.get("steps_passed", happy_summary.get("passed"))
+            steps_failed = happy_summary.get("steps_failed", happy_summary.get("failed"))
+        if not isinstance(steps_total, int) or steps_total <= 0:
+            errors.append("happy/meta/summary.json: missing positive steps/runs count")
+        if not isinstance(steps_passed, int) or steps_passed <= 0:
+            errors.append("happy/meta/summary.json: missing positive steps_passed/passed count")
+        if not isinstance(steps_failed, int) or steps_failed != 0:
+            errors.append(f"happy/meta/summary.json: expected 0 failed steps, got {steps_failed!r}")
+
+    case_results_path = bundle_root / "failure/meta/case_results.json"
+    if case_results_path.is_file():
+        try:
+            raw_case_results = json.loads(case_results_path.read_text(encoding="utf-8"))
+            case_results = (
+                raw_case_results.get("cases")
+                if isinstance(raw_case_results, dict)
+                else raw_case_results
+            )
+            if not isinstance(case_results, list) or not case_results:
+                errors.append("failure/meta/case_results.json: must contain a non-empty cases array")
+            else:
+                for idx, entry in enumerate(case_results):
+                    if not isinstance(entry, dict):
+                        errors.append(f"failure/meta/case_results.json[{idx}]: must be an object")
+                        continue
+                    has_case = isinstance(entry.get("case_id") or entry.get("case"), str)
+                    has_expected = isinstance(entry.get("expected_exit"), int)
+                    has_actual = isinstance(entry.get("actual_exit"), int)
+                    if not (has_case and has_expected and has_actual):
+                        errors.append(
+                            f"failure/meta/case_results.json[{idx}]: requires case_id/case, expected_exit, actual_exit"
+                        )
+        except json.JSONDecodeError as exc:
+            errors.append(f"failure/meta/case_results.json: invalid JSON: {exc}")
+
+    det_report = loaded_json.get("determinism/meta/determinism_report.json")
+    if isinstance(det_report, dict):
+        divergent = det_report.get("divergent")
+        divergences = det_report.get("divergences")
+        if divergent is True or (isinstance(divergences, list) and len(divergences) > 0):
+            errors.append("determinism/meta/determinism_report.json: reported divergence")
+
+    cov_report = loaded_json.get("coverage/coverage_gate_report.json")
+    if isinstance(cov_report, dict):
+        scopes = cov_report.get("scopes")
+        if isinstance(scopes, dict) and scopes:
+            for scope_name, scope_data in scopes.items():
+                if not isinstance(scope_data, dict):
+                    continue
+                measured = scope_data.get("measured", {})
+                required = scope_data.get("required", {})
+                if isinstance(measured, dict) and isinstance(required, dict):
+                    m_lines = measured.get("lines")
+                    r_lines = required.get("lines")
+                    if isinstance(m_lines, (int, float)) and isinstance(r_lines, (int, float)):
+                        if m_lines < r_lines:
+                            errors.append(
+                                f"coverage/coverage_gate_report.json: scope {scope_name} lines {m_lines} < {r_lines}"
+                            )
+
+    for rel, wf in (
+        ("happy/meta/events.jsonl", "happy"),
+        ("failure/meta/events.jsonl", "failure"),
+    ):
+        path = bundle_root / rel
+        if not path.is_file():
+            continue
+        events = load_jsonl(path)
+        wf_errors, _ = validate_stream(events, schema_obj, wf)
+        for err in wf_errors:
+            errors.append(f"{rel} ({wf}): {err}")
+
+    cov_txt = bundle_root / "coverage/coverage_gate_report.txt"
+    if cov_txt.is_file():
+        first_line = (cov_txt.read_text(encoding="utf-8").splitlines() or [""])[0].strip()
+        if first_line != "status=passed":
+            errors.append(
+                f"coverage/coverage_gate_report.txt: expected first line 'status=passed', got {first_line!r}"
+            )
+
+    report = {
+        "schema_name": schema_obj.get("schema_name"),
+        "schema_version": schema_obj.get("schema_version"),
+        "mode": "bundle",
+        "bundle_root": str(bundle_root),
+        "checked_files": checked_files,
+        "errors": errors,
+        "status": "passed" if not errors else "failed",
+    }
+    return errors, report
+
+
+def run_self_test(schema_path: Path) -> int:
+    schema_obj = load_json(schema_path)
+    assert isinstance(schema_obj, dict), "schema must be dict"
+    assert not validate_schema_contract(schema_obj, "generic")
+
+    def make_event(
+        seq: int,
+        event_type: str,
+        step_id: str | None = "s1",
+        case_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "1.0.0",
+            "timestamp_utc": "2026-10-19T00:00:00Z",
+            "run_id": "run_test",
+            "correlation_id": f"run_test-corr-{seq:04d}",
+            "case_id": case_id,
+            "step_id": step_id,
+            "event_type": event_type,
+            "command": "doctor_frankentui",
+            "env_hash": "a" * 64,
+            "duration_ms": 10,
+            "exit_code": 0,
+            "stdout_sha256": "b" * 64,
+            "stderr_sha256": "c" * 64,
+            "artifact_hashes": {"summary": "d" * 64},
+            "expected": {"exit_code": 0, "regex_match": True, "json_valid": True},
+            "actual": {"exit_code": 0, "regex_match": True, "json_valid": True},
+        }
+
+    happy_events = [
+        make_event(1, "run_start", None),
+        make_event(2, "step_start", "step_1"),
+        make_event(3, "step_end", "step_1"),
+        make_event(4, "artifact", None),
+        make_event(5, "run_end", None),
+    ]
+    errs, _ = validate_stream(happy_events, schema_obj, "happy")
+    assert not errs, f"expected happy stream pass, got: {errs}"
+
+    failure_events = [
+        make_event(1, "run_start", None, case_id="c1"),
+        make_event(2, "case_start", None, case_id="c1"),
+        make_event(3, "case_end", None, case_id="c1"),
+        make_event(4, "artifact", None, case_id="c1"),
+        make_event(5, "run_end", None, case_id="c1"),
+    ]
+    errs_f, _ = validate_stream(failure_events, schema_obj, "failure")
+    assert not errs_f, f"expected failure stream pass, got: {errs_f}"
+
+    repo_root = Path(__file__).resolve().parents[1]
+    root = repo_root / "target/doctor_frankentui_ci/validator_self_test"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "happy/meta").mkdir(parents=True, exist_ok=True)
+    (root / "failure/meta").mkdir(parents=True, exist_ok=True)
+    (root / "determinism/meta").mkdir(parents=True, exist_ok=True)
+    cov_dir = root / "coverage"
+    cov_dir.mkdir(parents=True, exist_ok=True)
+
+    (root / "happy/meta/summary.json").write_text(
+        json.dumps({"status": "passed", "steps_total": 8, "steps_passed": 8, "steps_failed": 0}) + "\n",
+        encoding="utf-8",
+    )
+    (root / "happy/meta/artifact_manifest.json").write_text(
+        json.dumps({"status": "passed"}) + "\n", encoding="utf-8"
+    )
+    (root / "happy/meta/events_validation_report.json").write_text(
+        json.dumps({"status": "passed"}) + "\n", encoding="utf-8"
+    )
+    (root / "failure/meta/summary.json").write_text(
+        json.dumps({"status": "passed", "total_cases": 12, "passed_cases": 12, "failed_cases": 0}) + "\n",
+        encoding="utf-8",
+    )
+    (root / "failure/meta/case_results.json").write_text(
+        json.dumps([{"case_id": "c1", "expected_exit": 2, "actual_exit": 2}]) + "\n",
+        encoding="utf-8",
+    )
+    (root / "failure/meta/replay_triage_report.json").write_text(
+        json.dumps({"status": "passed"}) + "\n", encoding="utf-8"
+    )
+    (root / "failure/meta/events_validation_report.json").write_text(
+        json.dumps({"status": "passed"}) + "\n", encoding="utf-8"
+    )
+    (root / "determinism/meta/determinism_report.json").write_text(
+        json.dumps({"status": "passed", "divergences": []}) + "\n", encoding="utf-8"
+    )
+    (root / "determinism/meta/determinism_report.txt").write_text(
+        "status=passed\n", encoding="utf-8"
+    )
+    (cov_dir / "coverage_gate_report.json").write_text(
+        json.dumps({
+            "status": "passed",
+            "scopes": {
+                "total": {
+                    "measured": {"lines": 91.5, "branches": 71.0, "functions": 92.6},
+                    "required": {"lines": 89.0, "branches": 69.0, "functions": 86.0},
+                }
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+    (cov_dir / "coverage_gate_report.txt").write_text(
+        "status=passed\n", encoding="utf-8"
+    )
+    (root / "happy/meta/events.jsonl").write_text(
+        "\n".join(json.dumps(e) for e in happy_events) + "\n", encoding="utf-8"
+    )
+    (root / "failure/meta/events.jsonl").write_text(
+        "\n".join(json.dumps(e) for e in failure_events) + "\n", encoding="utf-8"
+    )
+
+    b_errs, b_report = validate_bundle(root, schema_obj, write_map=True)
+    assert not b_errs, f"expected bundle pass, got: {b_errs}"
+    assert b_report["status"] == "passed"
+
+    (cov_dir / "coverage_gate_report.txt").write_text(
+        "status=failed\n", encoding="utf-8"
+    )
+    b_errs_fail, _ = validate_bundle(root, schema_obj, write_map=False)
+    assert b_errs_fail, "expected bundle failure when coverage status=failed"
+    (cov_dir / "coverage_gate_report.txt").write_text(
+        "status=passed\n", encoding="utf-8"
+    )
+
+    print(json.dumps({"status": "passed", "mode": "self_test"}))
+    return 0
+
+
 def main() -> int:
     args = parse_args()
 
     schema_path = Path(args.schema)
-    input_path = Path(args.input)
+    if args.self_test:
+        return run_self_test(schema_path)
+
     schema_obj = load_json(schema_path)
 
     if not isinstance(schema_obj, dict):
         raise SystemExit("[validator] schema must be a JSON object")
+
+    if args.bundle_root:
+        bundle_root = Path(args.bundle_root)
+        errors, report = validate_bundle(
+            bundle_root, schema_obj, write_map=args.write_artifact_map
+        )
+        if args.report_json:
+            write_report(Path(args.report_json), report)
+        print(
+            json.dumps(
+                {
+                    "status": report["status"],
+                    "mode": "bundle",
+                    "bundle_root": str(bundle_root),
+                    "checked_files": len(report["checked_files"]),
+                    "errors": len(errors),
+                    "report_json": args.report_json or None,
+                }
+            )
+        )
+        if errors:
+            for error in errors:
+                print(f"[validator] {error}", file=sys.stderr)
+            return 1
+        return 0
+
+    if not args.input:
+        print("[validator] either --input, --bundle-root, or --self-test is required", file=sys.stderr)
+        return 2
+
+    input_path = Path(args.input)
 
     schema_errors = validate_schema_contract(schema_obj, args.workflow)
     if schema_errors:

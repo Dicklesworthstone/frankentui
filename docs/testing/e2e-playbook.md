@@ -293,6 +293,7 @@ Known divergence policy file:
 - **Mux interference**: unset `TMUX`, `ZELLIJ`, or `STY` in tests that rely on
   scroll regions or pass-through behavior.
 - **Binary missing**: build once or set `E2E_HARNESS_BIN`.
+- **VHS / ttyd capture dependencies**: in static workflow definitions, VHS/ttyd are installed by `.github/actions/install-vhs` (bump versions and checksums there). On native DSR hosts, `doctor_frankentui` and `scripts/doctor_frankentui_{happy,failure}_e2e.sh` use either host `vhs`/`ttyd` + Playwright Chromium or `--vhs-driver docker` (`ghcr.io/charmbracelet/vhs:v0.10.1-devel`).
 
 ## Adding a New Scenario
 

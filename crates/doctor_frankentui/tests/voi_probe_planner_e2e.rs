@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! End-to-end coverage for the value-of-information probe planner
 //! (bd-3bxhj.10.24).
 //!

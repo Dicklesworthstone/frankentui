@@ -56,7 +56,7 @@ echo "[portfolio-schedule-e2e] building + running doctor_frankentui portfolio-sc
 # The command exits non-zero if the gate fails; capture so we can still inspect
 # the materialized artifacts for triage.
 GATE_EXIT=0
-cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui -- \
+cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui --features experimental -- \
   --machine json portfolio-schedule \
   --run-root "${RUN_ROOT}" --run-name "${RUN_NAME}" --stage all \
   >"${RUN_ROOT}/cli_stdout.json" 2>"${RUN_ROOT}/cli_stderr.log" || GATE_EXIT=$?
@@ -164,7 +164,7 @@ echo "[portfolio-schedule-e2e] manifest integrity verified"
 
 # ── Determinism (AC4): a second run yields a byte-identical ledger ──────────
 RUN2_DIR="${RUN_ROOT}/green2"
-cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui -- \
+cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui --features experimental -- \
   --machine json portfolio-schedule \
   --run-root "${RUN_ROOT}" --run-name "green2" --stage all \
   >"${RUN_ROOT}/cli_stdout2.json" 2>"${RUN_ROOT}/cli_stderr2.log" || fail "second run failed"

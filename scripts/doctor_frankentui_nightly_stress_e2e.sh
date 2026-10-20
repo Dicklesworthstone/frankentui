@@ -53,7 +53,7 @@ fail() {
 run_cli() {
   # $1 = run-name, $2 = extra flag (e.g. --resume or empty)
   local name="$1" extra="${2:-}"
-  cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui -- \
+  cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui --features experimental -- \
     --machine json nightly-stress \
     --run-root "${RUN_ROOT}" --run-name "${name}" ${extra} \
     >"${RUN_ROOT}/cli_${name}.json" 2>"${RUN_ROOT}/cli_${name}.log"

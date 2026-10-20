@@ -1,35 +1,58 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+#[cfg(feature = "experimental")]
 use crate::adaptive_schedule::{AdaptiveScheduleArgs, run_adaptive_schedule_command};
+#[cfg(feature = "experimental")]
 use crate::alien_kernel_tests::{AlienUpliftArgs, run_alien_uplift};
 use crate::capture::{CaptureArgs, print_profiles, run_capture};
+#[cfg(feature = "experimental")]
 use crate::chaos_drill::{ChaosDrillArgs, run_chaos_drill};
+#[cfg(feature = "experimental")]
 use crate::ci_outputs::{CiOutputsArgs, run_ci_outputs_command};
+#[cfg(feature = "experimental")]
 use crate::deep_assurance_gauntlet::{DeepAssuranceArgs, run_deep_assurance_command};
 use crate::doctor::{DoctorArgs, run_doctor};
 use crate::error::Result;
+#[cfg(feature = "experimental")]
 use crate::feedback_ingestion::{FeedbackReportArgs, run_feedback_report};
+#[cfg(feature = "experimental")]
 use crate::flagship_migrations::{FlagshipMigrationsArgs, run_flagship_migrations_command};
+#[cfg(feature = "experimental")]
 use crate::formal_assurance_gauntlet::{FormalAssuranceArgs, run_formal_assurance_command};
+#[cfg(feature = "experimental")]
 use crate::galaxy_brain_ux::{GalaxyUxArgs, run_galaxy_ux_command};
+#[cfg(feature = "experimental")]
 use crate::graveyard_gauntlet::{GraveyardGauntletArgs, run_graveyard_gauntlet_command};
+#[cfg(feature = "experimental")]
 use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
+#[cfg(feature = "experimental")]
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
+#[cfg(feature = "experimental")]
 use crate::hazard_regime_model::{HazardRegimeArgs, run_hazard_regime_command};
 use crate::import::{ImportArgs, run_import};
+#[cfg(feature = "experimental")]
 use crate::killer_demo::{KillerDemoArgs, run_killer_demo_command};
+#[cfg(feature = "experimental")]
 use crate::multi_round_drill::{MultiRoundDrillArgs, run_multi_round_drill_command};
+#[cfg(feature = "experimental")]
 use crate::nightly_evaluation::{NightlyEvalArgs, run_nightly_eval};
+#[cfg(feature = "experimental")]
 use crate::nightly_stress::{NightlyStressArgs, run_nightly_stress_command};
+#[cfg(feature = "experimental")]
 use crate::operator_workflows::{OperatorWorkflowsArgs, run_operator_workflows_command};
+#[cfg(feature = "experimental")]
 use crate::optimization_gauntlet::{OptimizationGauntletArgs, run_optimization_gauntlet_command};
+#[cfg(feature = "experimental")]
 use crate::portfolio_scheduler::{PortfolioScheduleArgs, run_portfolio_schedule};
+#[cfg(feature = "experimental")]
 use crate::release_candidate_gate::{ReleaseCandidateArgs, run_release_candidate_command};
 use crate::report::{ReportArgs, run_report};
 use crate::seed::{SeedDemoArgs, run_seed_demo};
+#[cfg(feature = "experimental")]
 use crate::sequential_fdr::{SequentialFdrArgs, run_sequential_fdr};
 use crate::suite::{SuiteArgs, run_suite};
 use crate::util::{OutputModeOverride, set_output_mode_override};
+#[cfg(feature = "experimental")]
 use crate::voi_probe_planner::{VoiPlanArgs, run_voi_plan};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -114,32 +137,38 @@ pub enum Commands {
     ListProfiles,
 
     /// Run the alien-uplift E2E validation pipeline and emit a JSONL evidence ledger.
+    #[cfg(feature = "experimental")]
     #[command(name = "alien-uplift")]
     AlienUplift(AlienUpliftArgs),
 
     /// Run the graveyard-verify E2E gate (contract/guarantee/explainability
     /// completeness + budget/assumption fallback integrity).
+    #[cfg(feature = "experimental")]
     #[command(name = "graveyard-verify")]
     GraveyardVerify(GraveyardVerifyArgs),
 
     /// Run the graveyardctl executable workflow (index/score/pick/scaffold/
     /// verify) and apply the active-entry verify CI gate.
+    #[cfg(feature = "experimental")]
     #[command(name = "graveyardctl")]
     Graveyardctl(GraveyardctlArgs),
 
     /// Run the value-of-information probe planner (estimate/schedule/allocate/
     /// account) and apply the adaptive-evidence gate.
+    #[cfg(feature = "experimental")]
     #[command(name = "voi-plan")]
     VoiPlan(VoiPlanArgs),
 
     /// Run the sequential multiple-testing controller (evalue/ebh/invest/govern)
     /// with e-BH + alpha-investing wealth management and apply the FDR gate.
+    #[cfg(feature = "experimental")]
     #[command(name = "sequential-fdr")]
     SequentialFdr(SequentialFdrArgs),
 
     /// Run the expected-loss portfolio scheduler (score/select/diversify/govern)
     /// over alien primitives with branch-diversity, budget-safety, and
     /// formal-guarantee constraints, and apply the portfolio gate.
+    #[cfg(feature = "experimental")]
     #[command(name = "portfolio-schedule")]
     PortfolioSchedule(PortfolioScheduleArgs),
 
@@ -147,12 +176,14 @@ pub enum Commands {
     /// budget exhaustion, calibration failure, and optional-stopping
     /// perturbations across the governance kernels and apply the
     /// safe-degradation gate.
+    #[cfg(feature = "experimental")]
     #[command(name = "chaos-drill")]
     ChaosDrill(ChaosDrillArgs),
 
     /// Run the nightly continuous evaluation pipeline: deterministically shard a
     /// fixture corpus, VOI-gate re-profile rounds, screen for drift, and emit a
     /// triage + time-series evidence ledger with a fail-closed gate.
+    #[cfg(feature = "experimental")]
     #[command(name = "nightly-eval")]
     NightlyEval(NightlyEvalArgs),
 
@@ -160,6 +191,7 @@ pub enum Commands {
     /// schedule against the static round-robin baseline on identical datasets,
     /// screen for drift, re-rank the backlog, and apply the confidence-per-compute
     /// gate.
+    #[cfg(feature = "experimental")]
     #[command(name = "adaptive-schedule")]
     AdaptiveSchedule(AdaptiveScheduleArgs),
 
@@ -167,6 +199,7 @@ pub enum Commands {
     /// logging with stage timings, hotspot tables, score decisions, and outcome
     /// classes; resume/retry from a checkpoint; and behavior-preservation proofs
     /// for optimized paths.
+    #[cfg(feature = "experimental")]
     #[command(name = "nightly-stress")]
     NightlyStress(NightlyStressArgs),
 
@@ -174,18 +207,21 @@ pub enum Commands {
     /// baseline->profile->score->one-lever->isomorphism->reprofile->rollback loop
     /// across positive, red, and drift scenarios, and apply the fail-closed
     /// promotion gate.
+    #[cfg(feature = "experimental")]
     #[command(name = "optimization-gauntlet")]
     OptimizationGauntlet(OptimizationGauntletArgs),
 
     /// Ingest production migration feedback (quantitative + qualitative) under
     /// privacy + provenance constraints and emit periodic prioritized action
     /// reports for parity / translator-quality / UX investment.
+    #[cfg(feature = "experimental")]
     #[command(name = "feedback-report")]
     FeedbackReport(FeedbackReportArgs),
 
     /// Render CI- and IDE-friendly migration outputs (SARIF 2.1.0 + structured
     /// JSON + markdown summary) with source/generated location mapping and
     /// documented schema versions.
+    #[cfg(feature = "experimental")]
     #[command(name = "ci-outputs")]
     CiOutputs(CiOutputsArgs),
 
@@ -193,6 +229,7 @@ pub enum Commands {
     /// with calibrated credible intervals, a BOCPD change-point + run-length
     /// tracker, and regime-aware policy hooks (normal/holdback/rollback) tunable by
     /// policy profile.
+    #[cfg(feature = "experimental")]
     #[command(name = "hazard-regime")]
     HazardRegime(HazardRegimeArgs),
 
@@ -200,6 +237,7 @@ pub enum Commands {
     /// conformal coverage backtests + assumption checks, hazard/BOCPD drift
     /// transitions, and galaxy-brain explainability replay, with a fail-closed
     /// conservative-fallback gate.
+    #[cfg(feature = "experimental")]
     #[command(name = "formal-assurance")]
     FormalAssurance(FormalAssuranceArgs),
 
@@ -208,6 +246,7 @@ pub enum Commands {
     /// green and red campaigns (metadata/contract faults, composition risk,
     /// demo divergence, optimization-policy violations), with machine-checkable
     /// violated clauses, a failure-signature triage map, and a fail-closed gate.
+    #[cfg(feature = "experimental")]
     #[command(name = "graveyard-gauntlet")]
     GraveyardGauntlet(GraveyardGauntletArgs),
 
@@ -216,6 +255,7 @@ pub enum Commands {
     /// counterfactual/fragility drills, degradation + recovery campaigns,
     /// mid-run guarantee faults, and galaxy-brain UX contracts, with a
     /// fail-closed evidence-pack gate (mandatory for RC promotion).
+    #[cfg(feature = "experimental")]
     #[command(name = "deep-assurance")]
     DeepAssurance(DeepAssuranceArgs),
 
@@ -224,6 +264,7 @@ pub enum Commands {
     /// explainability audit) over the real kernels, logging command spans,
     /// operator decisions, artifact references, and galaxy-card ids, with a
     /// fail-closed red-path gate.
+    #[cfg(feature = "experimental")]
     #[command(name = "operator-workflows")]
     OperatorWorkflows(OperatorWorkflowsArgs),
 
@@ -231,12 +272,14 @@ pub enum Commands {
     /// formal-assurance, graveyard, deep-assurance, chaos, optimization, and
     /// multi-round-drill gauntlets into one go/no-go RC decision with
     /// rollback-readiness, behavior-regression, and drift clauses.
+    #[cfg(feature = "experimental")]
     #[command(name = "release-candidate")]
     ReleaseCandidate(ReleaseCandidateArgs),
 
     /// Run the E2E multi-round optimization drill: progress Round1 -> Round2 ->
     /// Round3 with tier eligibility gates, per-round baseline/profile/proof
     /// artifacts + re-profile deltas, and a Round3 rollback rehearsal.
+    #[cfg(feature = "experimental")]
     #[command(name = "multi-round-drill")]
     MultiRoundDrill(MultiRoundDrillArgs),
 
@@ -245,6 +288,7 @@ pub enum Commands {
     /// snapshot, generated project, certification report, demo manifest with
     /// claim/evidence/policy linkage, repro commands, baseline comparator, and
     /// rollback notes, gated fail-closed on traceability.
+    #[cfg(feature = "experimental")]
     #[command(name = "flagship-migrations")]
     FlagshipMigrations(FlagshipMigrationsArgs),
 
@@ -252,6 +296,7 @@ pub enum Commands {
     /// scenarios (golden -> verify -> replay materializations), emit demo.yaml
     /// contracts with claim/evidence/policy linkage and expected checksums, and
     /// fail closed on checksum drift, replay divergence, or budget overruns.
+    #[cfg(feature = "experimental")]
     #[command(name = "killer-demo")]
     KillerDemo(KillerDemoArgs),
 
@@ -260,6 +305,7 @@ pub enum Commands {
     /// and apply the fail-closed UX-contract gate (determinism, hard
     /// non-interference, accessibility, perf budgets, provenance, copy-as
     /// exports).
+    #[cfg(feature = "experimental")]
     #[command(name = "galaxy-ux")]
     GalaxyUx(GalaxyUxArgs),
 }
@@ -286,28 +332,51 @@ pub fn run(cli: Cli) -> Result<()> {
             print_profiles();
             Ok(())
         }
+        #[cfg(feature = "experimental")]
         Commands::AlienUplift(args) => run_alien_uplift(args),
+        #[cfg(feature = "experimental")]
         Commands::GraveyardVerify(args) => run_graveyard_verify(args),
+        #[cfg(feature = "experimental")]
         Commands::Graveyardctl(args) => run_graveyardctl(args),
+        #[cfg(feature = "experimental")]
         Commands::VoiPlan(args) => run_voi_plan(args),
+        #[cfg(feature = "experimental")]
         Commands::SequentialFdr(args) => run_sequential_fdr(args),
+        #[cfg(feature = "experimental")]
         Commands::PortfolioSchedule(args) => run_portfolio_schedule(args),
+        #[cfg(feature = "experimental")]
         Commands::ChaosDrill(args) => run_chaos_drill(args),
+        #[cfg(feature = "experimental")]
         Commands::NightlyEval(args) => run_nightly_eval(args),
+        #[cfg(feature = "experimental")]
         Commands::AdaptiveSchedule(args) => run_adaptive_schedule_command(args),
+        #[cfg(feature = "experimental")]
         Commands::NightlyStress(args) => run_nightly_stress_command(args),
+        #[cfg(feature = "experimental")]
         Commands::OptimizationGauntlet(args) => run_optimization_gauntlet_command(args),
+        #[cfg(feature = "experimental")]
         Commands::FeedbackReport(args) => run_feedback_report(args),
+        #[cfg(feature = "experimental")]
         Commands::CiOutputs(args) => run_ci_outputs_command(args),
+        #[cfg(feature = "experimental")]
         Commands::HazardRegime(args) => run_hazard_regime_command(args),
+        #[cfg(feature = "experimental")]
         Commands::FormalAssurance(args) => run_formal_assurance_command(args),
+        #[cfg(feature = "experimental")]
         Commands::GraveyardGauntlet(args) => run_graveyard_gauntlet_command(args),
+        #[cfg(feature = "experimental")]
         Commands::DeepAssurance(args) => run_deep_assurance_command(args),
+        #[cfg(feature = "experimental")]
         Commands::OperatorWorkflows(args) => run_operator_workflows_command(args),
+        #[cfg(feature = "experimental")]
         Commands::ReleaseCandidate(args) => run_release_candidate_command(args),
+        #[cfg(feature = "experimental")]
         Commands::MultiRoundDrill(args) => run_multi_round_drill_command(args),
+        #[cfg(feature = "experimental")]
         Commands::FlagshipMigrations(args) => run_flagship_migrations_command(args),
+        #[cfg(feature = "experimental")]
         Commands::KillerDemo(args) => run_killer_demo_command(args),
+        #[cfg(feature = "experimental")]
         Commands::GalaxyUx(args) => run_galaxy_ux_command(args),
     }
 }
@@ -325,7 +394,7 @@ mod tests {
     use clap::Parser;
     use tempfile::tempdir;
 
-    use super::{Cli, Commands, MachineOutputMode, run};
+    use super::{Cli, Commands, ComparisonReplayArgs, MachineOutputMode, run};
 
     #[test]
     fn list_profiles_command_dispatches_successfully() {
@@ -529,6 +598,27 @@ mod tests {
         let cli = Cli::try_parse_from(["doctor_frankentui", "--machine", "json", "list-profiles"])
             .expect("json machine mode should parse");
         assert_eq!(cli.machine, MachineOutputMode::Json);
+        assert_eq!(MachineOutputMode::Auto.override_mode(), None);
+        assert_eq!(
+            MachineOutputMode::Human.override_mode(),
+            Some(crate::util::OutputModeOverride::Human)
+        );
+        assert_eq!(
+            MachineOutputMode::Json.override_mode(),
+            Some(crate::util::OutputModeOverride::Json)
+        );
+
+        run(Cli {
+            machine: MachineOutputMode::Human,
+            command: Commands::ListProfiles,
+        })
+        .expect("list-profiles human mode should succeed");
+        run(Cli {
+            machine: MachineOutputMode::Json,
+            command: Commands::ListProfiles,
+        })
+        .expect("list-profiles json mode should succeed");
+        crate::util::set_output_mode_override(None);
     }
 
     #[test]
@@ -554,5 +644,27 @@ mod tests {
             Cli::try_parse_from(["doctor_frankentui", "import", "--source", "/tmp/source"])
                 .expect("legacy import alias should parse");
         assert!(matches!(import.command, Commands::Import(_)));
+    }
+
+    #[test]
+    fn performance_and_visual_diff_commands_dispatch_missing_input_errors() {
+        let temp = tempdir().expect("tempdir");
+        let missing = temp.path().join("missing-diff-bundle.json");
+
+        let perf_err = run(Cli {
+            machine: MachineOutputMode::Auto,
+            command: Commands::PerformanceDiff(ComparisonReplayArgs {
+                input: missing.clone(),
+            }),
+        })
+        .expect_err("performance-diff should fail on missing file");
+        assert!(!perf_err.to_string().is_empty());
+
+        let visual_err = run(Cli {
+            machine: MachineOutputMode::Auto,
+            command: Commands::VisualDiff(ComparisonReplayArgs { input: missing }),
+        })
+        .expect_err("visual-diff should fail on missing file");
+        assert!(!visual_err.to_string().is_empty());
     }
 }

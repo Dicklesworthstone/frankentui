@@ -1,0 +1,178 @@
+{
+  "generated": "2026-10-19",
+  "commit": "5df1d6d7 (working tree dirty)",
+  "seed": 104372001701892,
+  "budget_ms": 40,
+  "cases": [
+    {
+      "case": "burst_50",
+      "verdict": "EQUAL",
+      "frames_during_drag": {
+        "heuristic": 6,
+        "bocpd": 6
+      },
+      "total_applies": {
+        "heuristic": 7,
+        "bocpd": 7
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 33,
+        "bocpd": 33
+      },
+      "regime_transitions": {
+        "heuristic": 1,
+        "bocpd": 2
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 49
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 50,
+        "bocpd": 1
+      }
+    },
+    {
+      "case": "burst_200",
+      "verdict": "EQUAL",
+      "frames_during_drag": {
+        "heuristic": 26,
+        "bocpd": 26
+      },
+      "total_applies": {
+        "heuristic": 27,
+        "bocpd": 27
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 24,
+        "bocpd": 24
+      },
+      "regime_transitions": {
+        "heuristic": 1,
+        "bocpd": 2
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 199
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 200,
+        "bocpd": 1
+      }
+    },
+    {
+      "case": "sweep_80x24_to_200x60",
+      "verdict": "EQUAL",
+      "frames_during_drag": {
+        "heuristic": 10,
+        "bocpd": 10
+      },
+      "total_applies": {
+        "heuristic": 11,
+        "bocpd": 11
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 40,
+        "bocpd": 40
+      },
+      "regime_transitions": {
+        "heuristic": 1,
+        "bocpd": 2
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 39
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 40,
+        "bocpd": 1
+      }
+    },
+    {
+      "case": "oscillate_10",
+      "verdict": "EQUAL",
+      "frames_during_drag": {
+        "heuristic": 4,
+        "bocpd": 4
+      },
+      "total_applies": {
+        "heuristic": 5,
+        "bocpd": 5
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 52,
+        "bocpd": 36
+      },
+      "regime_transitions": {
+        "heuristic": 1,
+        "bocpd": 2
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 19
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 20,
+        "bocpd": 1
+      }
+    },
+    {
+      "case": "mixed_100",
+      "verdict": "EQUAL",
+      "frames_during_drag": {
+        "heuristic": 25,
+        "bocpd": 25
+      },
+      "total_applies": {
+        "heuristic": 26,
+        "bocpd": 26
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 45,
+        "bocpd": 29
+      },
+      "regime_transitions": {
+        "heuristic": 1,
+        "bocpd": 11
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 88
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 100,
+        "bocpd": 12
+      }
+    },
+    {
+      "case": "pathological_50",
+      "verdict": "EQUAL",
+      "frames_during_drag": {
+        "heuristic": 20,
+        "bocpd": 20
+      },
+      "total_applies": {
+        "heuristic": 21,
+        "bocpd": 21
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 51,
+        "bocpd": 19
+      },
+      "regime_transitions": {
+        "heuristic": 4,
+        "bocpd": 18
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 30
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 50,
+        "bocpd": 20
+      }
+    }
+  ],
+  "regressions": [],
+  "test_status": 0
+}

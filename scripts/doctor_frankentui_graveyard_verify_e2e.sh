@@ -44,7 +44,7 @@ echo "[graveyard-verify-e2e] building + running doctor_frankentui graveyard-veri
 # The command exits non-zero if the gate fails; capture so we can still inspect
 # the materialized artifacts for triage.
 GATE_EXIT=0
-cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui -- \
+cargo run --quiet --manifest-path "${ROOT_DIR}/Cargo.toml" -p doctor_frankentui --features experimental -- \
   --machine json graveyard-verify \
   --run-root "${RUN_ROOT}" --run-name "${RUN_NAME}" \
   >"${RUN_ROOT}/cli_stdout.json" 2>"${RUN_ROOT}/cli_stderr.log" || GATE_EXIT=$?

@@ -1,3 +1,5 @@
+#![cfg(feature = "experimental")]
+
 use doctor_frankentui::semantic_contract::TransformationRiskLevel;
 use doctor_frankentui::semantic_diff::{
     SemanticDiffVerdict, SemanticDifferenceKind, compare_traces,

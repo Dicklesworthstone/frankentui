@@ -144,130 +144,527 @@
 //! - Replay/capture runs keep deterministic run IDs, manifests, and summary
 //!   paths suitable for local triage and CI uploads.
 
+#[cfg(feature = "experimental")]
 pub mod abstract_interpretation;
+#[cfg(feature = "experimental")]
 pub mod accessibility_diff;
+#[cfg(feature = "experimental")]
 pub mod adaptive_schedule;
+#[cfg(feature = "experimental")]
 pub mod adversarial_fixtures;
+#[cfg(feature = "experimental")]
 pub mod alien_kernel_tests;
+#[cfg(feature = "experimental")]
 pub mod alien_kernel_unit_tests;
+#[cfg(feature = "experimental")]
 pub mod archetype_scoreboard;
+#[cfg(feature = "experimental")]
 pub mod artifact_coding_tests;
+#[cfg(feature = "experimental")]
 pub mod backend_capability;
+#[cfg(feature = "experimental")]
 pub mod baseline_capture;
+#[cfg(feature = "experimental")]
 pub mod benchmark_harness;
+#[cfg(feature = "experimental")]
 pub mod benchmark_regression_gate;
+#[cfg(feature = "experimental")]
 pub mod capability_gap;
 pub mod capture;
+#[cfg(feature = "experimental")]
 pub mod cegis_synthesis;
+#[cfg(feature = "experimental")]
 pub mod certification_report;
+#[cfg(feature = "experimental")]
 pub mod chaos_drill;
+#[cfg(feature = "experimental")]
 pub mod ci_outputs;
 pub mod cli;
+#[cfg(feature = "experimental")]
 pub mod cli_explain_tests;
+#[cfg(feature = "experimental")]
 pub mod code_emission;
+#[cfg(feature = "experimental")]
 pub mod codegen_optimize;
+#[cfg(feature = "experimental")]
 pub mod composition_matrix;
+#[cfg(feature = "experimental")]
 pub mod composition_semantics;
+#[cfg(feature = "experimental")]
 pub mod concolic_differential;
+#[cfg(feature = "experimental")]
 pub mod controller_composition;
+#[cfg(feature = "experimental")]
 pub mod corpus;
+#[cfg(feature = "experimental")]
 pub mod corpus_integrity_tests;
+#[cfg(feature = "experimental")]
 pub mod counterfactual_audit;
+#[cfg(feature = "experimental")]
 pub mod coverage_prioritizer;
+#[cfg(feature = "experimental")]
 pub mod decision_loss_policy;
+#[cfg(feature = "experimental")]
 pub mod deep_assurance_gauntlet;
+#[cfg(feature = "experimental")]
 pub mod degradation_policy;
 pub mod doctor;
+#[cfg(feature = "experimental")]
 pub mod drift_monitor;
+#[cfg(feature = "experimental")]
 pub mod ecosystem_scan;
+#[cfg(feature = "experimental")]
 pub mod effect_canonical;
+#[cfg(feature = "experimental")]
 pub mod effect_translator;
+#[cfg(feature = "experimental")]
 pub mod egraph_optimizer;
+#[cfg(feature = "experimental")]
 pub mod entry_header_compiler;
 pub mod error;
+#[cfg(feature = "experimental")]
 pub mod explain;
+#[cfg(feature = "experimental")]
 pub mod failure_mode_risk;
+#[cfg(feature = "experimental")]
 pub mod feedback_ingestion;
+#[cfg(feature = "experimental")]
 pub mod fixture_taxonomy;
+#[cfg(feature = "experimental")]
 pub mod flagship_migrations;
+#[cfg(feature = "experimental")]
 pub mod formal_assurance_gauntlet;
+#[cfg(feature = "experimental")]
 pub mod galaxy_brain_cards;
+#[cfg(feature = "experimental")]
 pub mod galaxy_brain_ux;
+#[cfg(feature = "experimental")]
 pub mod gap_triage;
+#[cfg(feature = "experimental")]
 pub mod golden_isomorphism;
+#[cfg(feature = "experimental")]
 pub mod governance_validator_tests;
+#[cfg(feature = "experimental")]
 pub mod graveyard_control_tests;
+#[cfg(feature = "experimental")]
 pub mod graveyard_gauntlet;
+#[cfg(feature = "experimental")]
 pub mod graveyard_verify;
+#[cfg(feature = "experimental")]
 pub mod graveyardctl;
+#[cfg(feature = "experimental")]
 pub mod guarantee_assumption_registry;
+#[cfg(feature = "experimental")]
 pub mod guarantee_layer;
 pub mod harness;
+#[cfg(feature = "experimental")]
 pub mod hazard_regime_model;
+#[cfg(feature = "experimental")]
 pub mod hierarchical_fusion;
 pub mod import;
 pub mod intent_inference;
+#[cfg(feature = "experimental")]
 pub mod ir_explainer;
+#[cfg(feature = "experimental")]
 pub mod ir_normalize;
+#[cfg(feature = "experimental")]
 pub mod ir_versioning;
 pub mod keyseq;
+#[cfg(feature = "experimental")]
 pub mod killer_demo;
+#[cfg(feature = "experimental")]
 pub mod lowering;
+#[cfg(feature = "experimental")]
 pub mod mapping_atlas;
+#[cfg(feature = "experimental")]
 pub mod metamorphic_oracle;
+#[cfg(feature = "experimental")]
 pub mod migration_config;
 pub mod migration_ir;
+#[cfg(feature = "experimental")]
 pub mod milestone_policy;
+#[cfg(feature = "experimental")]
 pub mod module_graph;
+#[cfg(feature = "experimental")]
 pub mod multi_round_drill;
+#[cfg(feature = "experimental")]
 pub mod nightly_evaluation;
+#[cfg(feature = "experimental")]
 pub mod nightly_stress;
+#[cfg(feature = "experimental")]
 pub mod one_lever_policy;
+#[cfg(feature = "experimental")]
 pub mod operator_workflows;
+#[cfg(feature = "experimental")]
 pub mod opportunity_scorer;
+#[cfg(feature = "experimental")]
 pub mod optimization_control_tests;
+#[cfg(feature = "experimental")]
 pub mod optimization_gauntlet;
+#[cfg(feature = "experimental")]
 pub mod optimization_model_tests;
+#[cfg(feature = "experimental")]
 pub mod paper_verification;
 pub mod performance_diff;
+#[cfg(feature = "experimental")]
 pub mod portfolio_governance_tests;
+#[cfg(feature = "experimental")]
 pub mod portfolio_scheduler;
+#[cfg(feature = "experimental")]
 pub mod posterior_core;
 pub mod profile;
+#[cfg(feature = "experimental")]
 pub mod profile_orchestrator;
+#[cfg(feature = "experimental")]
 pub mod proof_artifacts;
+#[cfg(feature = "experimental")]
 pub mod recommendation_contract;
 pub mod redact;
+#[cfg(feature = "experimental")]
 pub mod release_candidate_gate;
 pub mod report;
+#[cfg(feature = "experimental")]
 pub mod reprofile_loop;
+#[cfg(feature = "experimental")]
 pub mod reverse_round_governance;
+#[cfg(feature = "experimental")]
 pub mod rollout_gate_tests;
 pub mod runmeta;
 pub mod sandbox;
 pub mod seed;
 pub mod semantic_contract;
+#[cfg(feature = "experimental")]
 pub mod semantic_diff;
+#[cfg(feature = "experimental")]
 pub mod sequential_fdr;
+#[cfg(feature = "experimental")]
 pub mod shadow_run;
+#[cfg(feature = "experimental")]
 pub mod state_effects;
+#[cfg(feature = "experimental")]
 pub mod state_event_translator;
+#[cfg(feature = "experimental")]
 pub mod style_semantics;
+#[cfg(feature = "experimental")]
 pub mod style_translator;
 pub mod suite;
 pub mod supervised_orchestration;
+#[cfg(feature = "experimental")]
 pub mod symptom_router;
 pub mod tape;
+#[cfg(feature = "experimental")]
 pub mod test_budget_allocator;
+#[cfg(feature = "experimental")]
 pub mod tier_escalator;
+#[cfg(feature = "experimental")]
 pub mod tier_escalator_tests;
 pub mod trace;
+#[cfg(feature = "experimental")]
 pub mod translation_planner;
+#[cfg(feature = "experimental")]
 pub mod tsx_parser;
 pub mod util;
+#[cfg(feature = "experimental")]
 pub mod view_layout_translator;
 pub mod visual_diff;
+#[cfg(feature = "experimental")]
 pub mod voi_probe_planner;
 
 pub use cli::run_from_env;
 pub use error::{DoctorError, Result};
+pub use harness::{BaselineResult, FixtureRunner, Harness, HarnessConfig, ScriptedEvent};
+pub use intent_inference::{IntentInferenceResult, infer_intents};
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use clap::{Parser, error::ErrorKind};
+
+    use crate::cli::Cli;
+
+    const CORE_MODULES: &[&str] = &[
+        "capture",
+        "cli",
+        "doctor",
+        "error",
+        "harness",
+        "import",
+        "intent_inference",
+        "keyseq",
+        "migration_ir",
+        "performance_diff",
+        "profile",
+        "redact",
+        "report",
+        "runmeta",
+        "sandbox",
+        "seed",
+        "semantic_contract",
+        "suite",
+        "supervised_orchestration",
+        "tape",
+        "trace",
+        "util",
+        "visual_diff",
+    ];
+
+    const EXPERIMENTAL_MODULES: &[&str] = &[
+        "abstract_interpretation",
+        "accessibility_diff",
+        "adaptive_schedule",
+        "adversarial_fixtures",
+        "alien_kernel_tests",
+        "alien_kernel_unit_tests",
+        "archetype_scoreboard",
+        "artifact_coding_tests",
+        "backend_capability",
+        "baseline_capture",
+        "benchmark_harness",
+        "benchmark_regression_gate",
+        "capability_gap",
+        "cegis_synthesis",
+        "certification_report",
+        "chaos_drill",
+        "ci_outputs",
+        "cli_explain_tests",
+        "code_emission",
+        "codegen_optimize",
+        "composition_matrix",
+        "composition_semantics",
+        "concolic_differential",
+        "controller_composition",
+        "corpus",
+        "corpus_integrity_tests",
+        "counterfactual_audit",
+        "coverage_prioritizer",
+        "decision_loss_policy",
+        "deep_assurance_gauntlet",
+        "degradation_policy",
+        "drift_monitor",
+        "ecosystem_scan",
+        "effect_canonical",
+        "effect_translator",
+        "egraph_optimizer",
+        "entry_header_compiler",
+        "explain",
+        "failure_mode_risk",
+        "feedback_ingestion",
+        "fixture_taxonomy",
+        "flagship_migrations",
+        "formal_assurance_gauntlet",
+        "galaxy_brain_cards",
+        "galaxy_brain_ux",
+        "gap_triage",
+        "golden_isomorphism",
+        "governance_validator_tests",
+        "graveyard_control_tests",
+        "graveyard_gauntlet",
+        "graveyard_verify",
+        "graveyardctl",
+        "guarantee_assumption_registry",
+        "guarantee_layer",
+        "hazard_regime_model",
+        "hierarchical_fusion",
+        "ir_explainer",
+        "ir_normalize",
+        "ir_versioning",
+        "killer_demo",
+        "lowering",
+        "mapping_atlas",
+        "metamorphic_oracle",
+        "migration_config",
+        "milestone_policy",
+        "module_graph",
+        "multi_round_drill",
+        "nightly_evaluation",
+        "nightly_stress",
+        "one_lever_policy",
+        "operator_workflows",
+        "opportunity_scorer",
+        "optimization_control_tests",
+        "optimization_gauntlet",
+        "optimization_model_tests",
+        "paper_verification",
+        "portfolio_governance_tests",
+        "portfolio_scheduler",
+        "posterior_core",
+        "profile_orchestrator",
+        "proof_artifacts",
+        "recommendation_contract",
+        "release_candidate_gate",
+        "reprofile_loop",
+        "reverse_round_governance",
+        "rollout_gate_tests",
+        "semantic_diff",
+        "sequential_fdr",
+        "shadow_run",
+        "state_effects",
+        "state_event_translator",
+        "style_semantics",
+        "style_translator",
+        "symptom_router",
+        "test_budget_allocator",
+        "tier_escalator",
+        "tier_escalator_tests",
+        "translation_planner",
+        "tsx_parser",
+        "view_layout_translator",
+        "voi_probe_planner",
+    ];
+
+    #[test]
+    fn core_module_list_matches_products_doc() {
+        let products_doc = include_str!("../../../docs/doctor-frankentui-products.md");
+        let lib_src = include_str!("lib.rs");
+
+        let mut doc_core = BTreeSet::new();
+        let mut doc_experimental = BTreeSet::new();
+
+        let mut in_module_table = false;
+        for line in products_doc.lines() {
+            if line.starts_with("## ") {
+                in_module_table = line.trim() == "## Module Classification Table";
+                continue;
+            }
+            if !in_module_table || !line.starts_with("| `") {
+                continue;
+            }
+            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+            if cells.len() < 3 {
+                continue;
+            }
+            let module = cells[0].trim_matches('`');
+            let product = cells[1].trim_matches('`');
+            let gate = cells[2].trim_matches('`');
+            match product {
+                "core" => {
+                    assert_eq!(gate, "default", "core module {module} must be default");
+                    doc_core.insert(module.to_string());
+                }
+                "migrate" | "graveyard" | "gates" => {
+                    assert_eq!(
+                        gate, "experimental",
+                        "non-core module {module} must be experimental"
+                    );
+                    doc_experimental.insert(module.to_string());
+                }
+                other => panic!("unexpected product classification '{other}' for {module}"),
+            }
+        }
+
+        let expected_core: BTreeSet<String> =
+            CORE_MODULES.iter().map(|s| (*s).to_string()).collect();
+        let expected_experimental: BTreeSet<String> = EXPERIMENTAL_MODULES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+
+        assert_eq!(doc_core, expected_core, "core module set mismatch");
+        assert_eq!(
+            doc_experimental, expected_experimental,
+            "experimental module set mismatch"
+        );
+
+        // Also parse lib.rs declarations directly so any ungated experimental pub mod fails.
+        let mut prev_cfg_experimental = false;
+        let mut declared_core = BTreeSet::new();
+        let mut declared_experimental = BTreeSet::new();
+        for line in lib_src.lines() {
+            let trimmed = line.trim();
+            if trimmed == "#[cfg(test)]" {
+                break;
+            }
+            if trimmed == "#[cfg(feature = \"experimental\")]" {
+                prev_cfg_experimental = true;
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("pub mod ")
+                && let Some(mod_name) = rest.strip_suffix(';')
+            {
+                if prev_cfg_experimental {
+                    declared_experimental.insert(mod_name.to_string());
+                } else {
+                    declared_core.insert(mod_name.to_string());
+                }
+                prev_cfg_experimental = false;
+            } else if !trimmed.is_empty() {
+                prev_cfg_experimental = false;
+            }
+        }
+
+        assert_eq!(declared_core, doc_core);
+        assert_eq!(declared_experimental, doc_experimental);
+    }
+
+    #[test]
+    fn cli_core_subcommands_route() {
+        let core_subcommands = [
+            "capture",
+            "replay",
+            "seed-demo",
+            "suite",
+            "migrate",
+            "report",
+            "doctor",
+            "certify",
+            "import",
+            "plan",
+            "list-profiles",
+            "performance-diff",
+            "visual-diff",
+        ];
+        for sub in core_subcommands {
+            let err = Cli::try_parse_from(["doctor_frankentui", sub, "--help"])
+                .expect_err("--help exits via clap DisplayHelp");
+            assert_eq!(
+                err.kind(),
+                ErrorKind::DisplayHelp,
+                "core subcommand '{sub}' should route to DisplayHelp, got {err:?}"
+            );
+        }
+
+        let experimental_subcommands = [
+            "alien-uplift",
+            "graveyard-verify",
+            "graveyardctl",
+            "voi-plan",
+            "sequential-fdr",
+            "portfolio-schedule",
+            "chaos-drill",
+            "nightly-eval",
+            "adaptive-schedule",
+            "nightly-stress",
+            "optimization-gauntlet",
+            "feedback-report",
+            "ci-outputs",
+            "hazard-regime",
+            "formal-assurance",
+            "graveyard-gauntlet",
+            "deep-assurance",
+            "operator-workflows",
+            "release-candidate",
+            "multi-round-drill",
+            "flagship-migrations",
+            "killer-demo",
+            "galaxy-ux",
+        ];
+        for sub in experimental_subcommands {
+            let err = Cli::try_parse_from(["doctor_frankentui", sub, "--help"])
+                .expect_err("subcommand --help or unrecognized");
+            if cfg!(feature = "experimental") {
+                assert_eq!(
+                    err.kind(),
+                    ErrorKind::DisplayHelp,
+                    "experimental subcommand '{sub}' should route when feature is enabled"
+                );
+            } else {
+                assert_eq!(
+                    err.kind(),
+                    ErrorKind::InvalidSubcommand,
+                    "experimental subcommand '{sub}' must be rejected without --features experimental"
+                );
+            }
+        }
+    }
+}

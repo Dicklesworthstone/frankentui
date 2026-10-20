@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! End-to-end coverage for the graveyard-verify gate (bd-3bxhj.10.16).
 //!
 //! Drives the public crate surface: the `graveyard-verify` CLI command (via

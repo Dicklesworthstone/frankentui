@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! End-to-end coverage for the expected-loss portfolio scheduler
 //! (bd-3bxhj.10.18).
 //!

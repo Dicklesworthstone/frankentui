@@ -132,13 +132,13 @@ run_cargo_gate() {
 
 if ! run_cargo_gate \
   "cargo_certification_report_tests" \
-  cargo test -p doctor_frankentui --test certification_report_tests -- --nocapture; then
+  cargo test -p doctor_frankentui --features experimental --test certification_report_tests -- --nocapture; then
   CARGO_EXIT_CODE=1
 fi
 
 if ! run_cargo_gate \
   "cargo_comparator_matrix_tests" \
-  cargo test -p doctor_frankentui --test comparator_adversarial_fuzz_tests \
+  cargo test -p doctor_frankentui --features experimental --test comparator_adversarial_fuzz_tests \
     synthetic_fixture_matrix_covers_positive_negative_and_tolerance_boundaries -- --nocapture; then
   CARGO_EXIT_CODE=1
 fi

@@ -1,3 +1,5 @@
+#![cfg(feature = "experimental")]
+
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 

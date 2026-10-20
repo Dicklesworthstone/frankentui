@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#![cfg(feature = "experimental")]
 //! Unit tests for the opentui-import translation pipeline:
 //! mapping atlas lookup, planner decisions, code emission templates,
 //! and optimization pass correctness.
