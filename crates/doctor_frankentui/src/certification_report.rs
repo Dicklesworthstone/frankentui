@@ -636,7 +636,7 @@ fn compliance_stage_result(
     report: &ProvenanceReport,
     policy: &CertificationPolicyProfile,
 ) -> CertificationStageResult {
-    let status = compliance_status(report.overall_status, policy);
+    let mut status = compliance_status(report.overall_status, policy);
     let mut evidence_refs = report
         .chain
         .iter()
@@ -658,6 +658,24 @@ fn compliance_stage_result(
         .collect::<Vec<_>>();
     if report.overall_status != IpArtifactStatus::Clear {
         messages.push(format!("provenance status is {:?}", report.overall_status));
+    }
+    let attribution_required = crate::semantic_contract::load_builtin_licensing_provenance()
+        .map(|contract| contract.provenance_chain_policy.attribution_required)
+        .unwrap_or(true);
+    if attribution_required
+        && !report.ip_artifacts.is_empty()
+        && report.attribution_notice.trim().is_empty()
+    {
+        let degraded = if policy.require_compliance_clear {
+            CertificationStageStatus::Fail
+        } else {
+            CertificationStageStatus::Warning
+        };
+        status = worst_stage_status(status, degraded);
+        messages.push(
+            "attribution_notice is empty while provenance_chain_policy.attribution_required is true"
+                .to_string(),
+        );
     }
 
     CertificationStageResult {

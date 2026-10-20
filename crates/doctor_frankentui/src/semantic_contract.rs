@@ -266,6 +266,10 @@ impl SemanticEquivalenceContract {
             ));
         }
 
+        self.validate_equivalence_axes()?;
+        self.validate_visual_tolerance_policy()?;
+        self.validate_improvement_envelope()?;
+
         let mut clause_ids = BTreeSet::new();
         for clause in &self.clauses {
             if clause.clause_id.trim().is_empty() {
@@ -318,6 +322,105 @@ impl SemanticEquivalenceContract {
             }
         }
 
+        Ok(())
+    }
+
+    fn validate_equivalence_axes(&self) -> Result<()> {
+        let axes = &self.equivalence_axes;
+        for (name, val) in [
+            ("state_transition", &axes.state_transition),
+            ("event_ordering", &axes.event_ordering),
+            ("side_effect_observability", &axes.side_effect_observability),
+        ] {
+            if val.trim().is_empty() {
+                return Err(SemanticContractError::Validation(format!(
+                    "equivalence_axes.{name} must not be empty"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_visual_tolerance_policy(&self) -> Result<()> {
+        let vtp = &self.visual_tolerance_policy;
+        if vtp.strict_classes.is_empty()
+            || vtp.strict_classes.iter().any(|c| c.trim().is_empty())
+        {
+            return Err(SemanticContractError::Validation(
+                "visual_tolerance_policy.strict_classes must not be empty".to_string(),
+            ));
+        }
+        if vtp.strict_policy.trim().is_empty() {
+            return Err(SemanticContractError::Validation(
+                "visual_tolerance_policy.strict_policy must not be empty".to_string(),
+            ));
+        }
+        if vtp.perceptual_classes.is_empty()
+            || vtp.perceptual_classes.iter().any(|c| c.trim().is_empty())
+        {
+            return Err(SemanticContractError::Validation(
+                "visual_tolerance_policy.perceptual_classes must not be empty".to_string(),
+            ));
+        }
+        if vtp.perceptual_policy.trim().is_empty() {
+            return Err(SemanticContractError::Validation(
+                "visual_tolerance_policy.perceptual_policy must not be empty".to_string(),
+            ));
+        }
+        if !(vtp.max_perceptual_delta > 0.0 && vtp.max_perceptual_delta <= 1.0) {
+            return Err(SemanticContractError::Validation(
+                "visual_tolerance_policy.max_perceptual_delta must be in (0.0, 1.0]".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_improvement_envelope(&self) -> Result<()> {
+        let env = &self.improvement_envelope;
+        for (name, items) in [
+            ("allowed_dimensions", &env.allowed_dimensions),
+            ("forbidden_rewrites", &env.forbidden_rewrites),
+            ("required_safeguards", &env.required_safeguards),
+        ] {
+            if items.is_empty() || items.iter().any(|entry| entry.trim().is_empty()) {
+                return Err(SemanticContractError::Validation(format!(
+                    "improvement_envelope.{name} must contain non-empty entries"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Enforce the contract's `improvement_envelope` policy against a migration run's
+    /// claimed improvement dimensions, applied rewrites, and active safeguards.
+    pub fn check_improvement_envelope(
+        &self,
+        claimed_dimensions: &[&str],
+        applied_rewrites: &[&str],
+        active_safeguards: &[&str],
+    ) -> Result<()> {
+        let env = &self.improvement_envelope;
+        for dim in claimed_dimensions {
+            if !env.allowed_dimensions.iter().any(|d| d == dim) {
+                return Err(SemanticContractError::Validation(format!(
+                    "improvement dimension '{dim}' is not in improvement_envelope.allowed_dimensions"
+                )));
+            }
+        }
+        for rewrite in applied_rewrites {
+            if env.forbidden_rewrites.iter().any(|f| f == rewrite) {
+                return Err(SemanticContractError::Validation(format!(
+                    "forbidden rewrite '{rewrite}' violates improvement_envelope.forbidden_rewrites"
+                )));
+            }
+        }
+        for required in &env.required_safeguards {
+            if !active_safeguards.contains(&required.as_str()) {
+                return Err(SemanticContractError::Validation(format!(
+                    "missing required safeguard '{required}' from improvement_envelope.required_safeguards"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -441,6 +544,22 @@ impl TransformationPolicyMatrix {
                 "certification_projection.required_risk_levels must not be empty".to_string(),
             ));
         }
+        if !self.certification_projection.requires_clause_traceability {
+            return Err(SemanticContractError::Validation(
+                "certification_projection.requires_clause_traceability must be true for release policy matrices".to_string(),
+            ));
+        }
+        if self.certification_projection.requires_clause_traceability
+            && !self
+                .certification_projection
+                .required_fields
+                .iter()
+                .any(|field| field == "semantic_clause_links")
+        {
+            return Err(SemanticContractError::Validation(
+                "certification_projection.required_fields must include 'semantic_clause_links' when requires_clause_traceability is true".to_string(),
+            ));
+        }
 
         let mut category_ids = BTreeSet::new();
         for category in &self.categories {
@@ -560,7 +679,9 @@ impl TransformationPolicyMatrix {
                     cell.construct_signature
                 )));
             }
-            if cell.semantic_clause_links.is_empty() {
+            if self.certification_projection.requires_clause_traceability
+                && cell.semantic_clause_links.is_empty()
+            {
                 return Err(SemanticContractError::Validation(format!(
                     "construct '{}' must map to at least one semantic clause",
                     cell.construct_signature
@@ -1489,9 +1610,33 @@ impl ConfidenceModel {
                 "loss_matrix.accept_incorrect must be > 0 (accepting wrong is costly)".to_string(),
             ));
         }
+        if lm.hold_correct < 0.0 || lm.hold_incorrect <= 0.0 {
+            return Err(SemanticContractError::Validation(
+                "loss_matrix: hold_correct must be >= 0 and hold_incorrect must be > 0".to_string(),
+            ));
+        }
+        if lm.reject_correct < 0.0 || lm.reject_incorrect <= 0.0 {
+            return Err(SemanticContractError::Validation(
+                "loss_matrix: reject_correct must be >= 0 and reject_incorrect must be > 0"
+                    .to_string(),
+            ));
+        }
         if lm.accept_incorrect <= lm.reject_correct {
             return Err(SemanticContractError::Validation(
                 "loss_matrix: accept_incorrect must exceed reject_correct (wrong acceptance is worse than correct rejection)".to_string(),
+            ));
+        }
+        if lm.rollback_cost <= 0.0 || lm.rollback_cost >= lm.accept_incorrect {
+            return Err(SemanticContractError::Validation(
+                "loss_matrix.rollback_cost must be in (0.0, accept_incorrect)".to_string(),
+            ));
+        }
+        if lm.conservative_fallback_cost <= 0.0
+            || lm.conservative_fallback_cost > lm.rollback_cost
+        {
+            return Err(SemanticContractError::Validation(
+                "loss_matrix.conservative_fallback_cost must be in (0.0, rollback_cost]"
+                    .to_string(),
             ));
         }
         Ok(())
@@ -1502,6 +1647,11 @@ impl ConfidenceModel {
         if pc.semantic_pass_rate_alpha <= 0.0 || pc.semantic_pass_rate_beta <= 0.0 {
             return Err(SemanticContractError::Validation(
                 "prior_config: alpha and beta must be > 0 for valid Beta distribution".to_string(),
+            ));
+        }
+        if !pc.performance_mean_prior.is_finite() {
+            return Err(SemanticContractError::Validation(
+                "prior_config.performance_mean_prior must be finite".to_string(),
             ));
         }
         if pc.performance_variance_prior <= 0.0 {
@@ -1722,6 +1872,8 @@ impl ConfidenceModel {
         let el_accept = p * lm.accept_correct + (1.0 - p) * lm.accept_incorrect;
         let el_reject = p * lm.reject_incorrect + (1.0 - p) * lm.reject_correct;
         let el_hold = p * lm.hold_correct + (1.0 - p) * lm.hold_incorrect;
+        let el_rollback = (1.0 - p) * lm.rollback_cost + p * lm.reject_incorrect;
+        let el_fallback = lm.conservative_fallback_cost;
 
         // Select minimum expected loss action, with boundary override.
         let boundary_decision = self.decide(posterior);
@@ -1735,21 +1887,30 @@ impl ConfidenceModel {
 
         // Use boundary decision as override when it is more conservative.
         let decision = match (boundary_decision, el_decision) {
-            (MigrationDecision::ConservativeFallback, _)
-            | (MigrationDecision::Rollback, _)
-            | (MigrationDecision::HardReject, _) => boundary_decision,
+            (MigrationDecision::ConservativeFallback, _) => {
+                if el_fallback <= el_rollback {
+                    MigrationDecision::ConservativeFallback
+                } else {
+                    MigrationDecision::Rollback
+                }
+            }
+            (MigrationDecision::Rollback, _) | (MigrationDecision::HardReject, _) => {
+                boundary_decision
+            }
             (MigrationDecision::Reject, MigrationDecision::AutoApprove) => boundary_decision,
             _ => el_decision,
         };
 
         let rationale = format!(
-            "posterior_mean={:.4}, ci=[{:.4},{:.4}], EL(accept)={:.2}, EL(reject)={:.2}, EL(hold)={:.2}, boundary={}",
+            "posterior_mean={:.4}, ci=[{:.4},{:.4}], EL(accept)={:.2}, EL(reject)={:.2}, EL(hold)={:.2}, EL(rollback)={:.2}, EL(fallback)={:.2}, boundary={}",
             p,
             posterior.credible_lower,
             posterior.credible_upper,
             el_accept,
             el_reject,
             el_hold,
+            el_rollback,
+            el_fallback,
             match boundary_decision {
                 MigrationDecision::AutoApprove => "auto_approve",
                 MigrationDecision::HumanReview => "human_review",
@@ -2040,6 +2201,12 @@ impl LicensingProvenanceContract {
                 "provenance_chain_policy.each_stage_must_record must not be empty".to_string(),
             ));
         }
+        if !pcp.attribution_required {
+            return Err(SemanticContractError::Validation(
+                "provenance_chain_policy.attribution_required must be true for release guardrails"
+                    .to_string(),
+            ));
+        }
         // Validate required recording fields.
         let required_recording = ["input_hash", "output_hash", "tool_version", "timestamp"];
         for required in required_recording {
@@ -2265,17 +2432,9 @@ impl LicensingProvenanceContract {
     ) -> ProvenanceReport {
         let mut unresolved_flags = Vec::new();
         let mut worst_status = IpArtifactStatus::Clear;
+        let mut attribution_entries = Vec::new();
+        let mut missing_attribution = false;
 
-        // The contract already says what to do here, and nothing did it.
-        // `fail_safe_defaults.on_missing_provenance` and `on_broken_chain`
-        // must both be "reject" - `validate_fail_safe_defaults` refuses any
-        // other value "for safety" - and `lp-provenance-gap` is the risk flag
-        // defined for it. But the chain was copied into the report unchecked
-        // and the status came from the artifacts alone, so an empty or
-        // hash-broken chain with no blocked artifact assessed as `Clear`, and
-        // `certification_report` passed its compliance stage. `Blocked` is the
-        // status that carries a rejection: `compliance_status` fails on it
-        // under every profile, and the artifact loop below never lowers it.
         if chain.is_empty() || self.validate_provenance_chain(chain).is_err() {
             worst_status = IpArtifactStatus::Blocked;
             unresolved_flags.push(PROVENANCE_GAP_FLAG.to_string());
@@ -2306,13 +2465,45 @@ impl LicensingProvenanceContract {
                     unresolved_flags.push(flag.clone());
                 }
             }
+            if let Some(spdx) = artifact
+                .license_spdx
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                attribution_entries.push(format!("{} ({spdx})", artifact.artifact_id));
+            } else if artifact.status == IpArtifactStatus::Clear {
+                missing_attribution = true;
+            }
+        }
+
+        let attribution_notice = if attribution_entries.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "{}: {}",
+                self.attribution_template.format,
+                attribution_entries.join(", ")
+            )
+        };
+
+        if self.provenance_chain_policy.attribution_required
+            && (missing_attribution || (!artifacts.is_empty() && attribution_notice.is_empty()))
+        {
+            let flag = "lp-attribution-incomplete".to_string();
+            if !unresolved_flags.contains(&flag) {
+                unresolved_flags.push(flag);
+            }
+            if worst_status == IpArtifactStatus::Clear {
+                worst_status = IpArtifactStatus::Expired;
+            }
         }
 
         ProvenanceReport {
             run_id: run_id.to_string(),
             chain: chain.to_vec(),
             ip_artifacts: artifacts.to_vec(),
-            attribution_notice: String::new(), // Populated by caller
+            attribution_notice,
             unresolved_risk_flags: unresolved_flags,
             overall_status: worst_status,
         }
@@ -4684,4 +4875,113 @@ mod tests {
         let c2 = load_licensing().expect("should parse");
         assert_eq!(c1, c2, "repeated parsing must be deterministic");
     }
+
+    #[test]
+    fn improvement_envelope_enforces_allowed_dimensions_forbidden_rewrites_and_safeguards() {
+        let contract = load().expect("builtin contract should parse");
+        let all_safeguards: Vec<&str> = contract
+            .improvement_envelope
+            .required_safeguards
+            .iter()
+            .map(String::as_str)
+            .collect();
+
+        // Valid claims, no forbidden rewrites, all required safeguards active.
+        contract
+            .check_improvement_envelope(&["latency", "throughput"], &[], &all_safeguards)
+            .expect("valid improvement envelope check must pass");
+
+        // Disallowed improvement dimension fails.
+        let err = contract
+            .check_improvement_envelope(&["unapproved_dimension"], &[], &all_safeguards)
+            .expect_err("disallowed dimension must fail");
+        assert!(
+            matches!(err, SemanticContractError::Validation(ref msg) if msg.contains("allowed_dimensions"))
+        );
+
+        // Forbidden rewrite fails.
+        let err = contract
+            .check_improvement_envelope(
+                &["latency"],
+                &["silent_policy_downgrade"],
+                &all_safeguards,
+            )
+            .expect_err("forbidden rewrite must fail");
+        assert!(
+            matches!(err, SemanticContractError::Validation(ref msg) if msg.contains("forbidden_rewrites"))
+        );
+
+        // Missing required safeguard fails.
+        let err = contract
+            .check_improvement_envelope(&["latency"], &[], &["explicit_clause_traceability"])
+            .expect_err("missing required safeguard must fail");
+        assert!(
+            matches!(err, SemanticContractError::Validation(ref msg) if msg.contains("required_safeguards"))
+        );
+    }
+
+    #[test]
+    fn transformation_policy_enforces_requires_clause_traceability() {
+        let mut matrix = load_policy().expect("builtin policy matrix should parse");
+        matrix.certification_projection.requires_clause_traceability = false;
+        let raw = serde_json::to_string(&matrix).expect("should serialize");
+        let err =
+            super::TransformationPolicyMatrix::parse_and_validate(&raw).expect_err("must fail");
+        assert!(
+            matches!(err, SemanticContractError::Validation(ref msg) if msg.contains("requires_clause_traceability"))
+        );
+    }
+
+    #[test]
+    fn confidence_model_validates_rollback_and_conservative_fallback_costs() {
+        let mut model = load_confidence().expect("builtin confidence model should parse");
+        model.loss_matrix.rollback_cost = 0.0;
+        let raw = serde_json::to_string(&model).expect("should serialize");
+        let err = super::ConfidenceModel::parse_and_validate(&raw).expect_err("must fail");
+        assert!(
+            matches!(err, SemanticContractError::Validation(ref msg) if msg.contains("rollback_cost"))
+        );
+
+        let mut model2 = load_confidence().expect("builtin confidence model should parse");
+        model2.loss_matrix.conservative_fallback_cost = model2.loss_matrix.rollback_cost + 5.0;
+        let raw2 = serde_json::to_string(&model2).expect("should serialize");
+        let err2 = super::ConfidenceModel::parse_and_validate(&raw2).expect_err("must fail");
+        assert!(
+            matches!(err2, SemanticContractError::Validation(ref msg) if msg.contains("conservative_fallback_cost"))
+        );
+    }
+
+    #[test]
+    fn assess_ip_artifacts_enforces_attribution_required_and_populates_notice() {
+        let contract = load_licensing().expect("builtin licensing provenance should parse");
+        let clean = vec![super::IpArtifactRecord {
+            artifact_id: "dep-mit".to_string(),
+            license_spdx: Some("MIT".to_string()),
+            license_class: "permissive".to_string(),
+            status: super::IpArtifactStatus::Clear,
+            risk_flags: vec![],
+            design_around_notes: None,
+        }];
+        let report = contract.assess_ip_artifacts("run-1", &valid_chain(&contract), &clean);
+        assert_eq!(report.overall_status, super::IpArtifactStatus::Clear);
+        assert_eq!(report.attribution_notice, "NOTICE: dep-mit (MIT)");
+
+        let missing_spdx = vec![super::IpArtifactRecord {
+            artifact_id: "dep-no-spdx".to_string(),
+            license_spdx: None,
+            license_class: "permissive".to_string(),
+            status: super::IpArtifactStatus::Clear,
+            risk_flags: vec![],
+            design_around_notes: None,
+        }];
+        let degraded =
+            contract.assess_ip_artifacts("run-2", &valid_chain(&contract), &missing_spdx);
+        assert_eq!(degraded.overall_status, super::IpArtifactStatus::Expired);
+        assert!(
+            degraded
+                .unresolved_risk_flags
+                .contains(&"lp-attribution-incomplete".to_string())
+        );
+    }
 }
+
