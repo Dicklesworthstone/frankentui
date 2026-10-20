@@ -671,11 +671,11 @@ mod tests {
         assert!(entries.iter().any(|entry| entry.key == "capture_output"));
         assert!(entries.iter().any(|entry| entry.key == "evidence_ledger"));
         assert!(entries.iter().any(|entry| entry.key == "artifact_manifest"));
-        assert!(
-            entries
-                .iter()
-                .any(|entry| entry.key == "run_meta" && entry.role == ArtifactRole::Contract)
-        );
+        let run_meta_entry = entries
+            .iter()
+            .find(|entry| entry.key == "run_meta")
+            .expect("run_meta entry");
+        assert_eq!(run_meta_entry.role, ArtifactRole::Contract);
     }
 
     #[test]
@@ -767,20 +767,27 @@ mod tests {
         );
 
         let entries = loaded.artifact_entries();
-        assert!(entries.iter().any(|entry| {
-            entry.key == "capture_output"
-                && entry.path == run_dir.join("capture.mp4").display().to_string()
-                && entry.exists
-        }));
-        assert!(entries.iter().any(|entry| {
-            entry.key == "artifact_manifest"
-                && entry.path
-                    == run_dir
-                        .join("run_artifact_manifest.json")
-                        .display()
-                        .to_string()
-                && !entry.exists
-        }));
+        let capture_output = entries
+            .iter()
+            .find(|entry| entry.key == "capture_output")
+            .expect("capture_output entry");
+        assert_eq!(
+            capture_output.path,
+            run_dir.join("capture.mp4").display().to_string()
+        );
+        assert!(capture_output.exists);
+        let artifact_manifest = entries
+            .iter()
+            .find(|entry| entry.key == "artifact_manifest")
+            .expect("artifact_manifest entry");
+        assert_eq!(
+            artifact_manifest.path,
+            run_dir
+                .join("run_artifact_manifest.json")
+                .display()
+                .to_string()
+        );
+        assert!(!artifact_manifest.exists);
 
         let replay_commands = loaded.replay_commands();
         assert!(replay_commands.iter().any(|command| {
@@ -876,11 +883,13 @@ mod tests {
         assert_eq!(manifest_path, run_dir.join("run_artifact_manifest.json"));
         assert!(manifest_path.exists());
         assert!(!outside_dir.join("run_artifact_manifest.json").exists());
-        assert!(manifest.artifacts.iter().any(|entry| {
-            entry.key == "artifact_manifest"
-                && entry.path == manifest_path.display().to_string()
-                && entry.exists
-        }));
+        let manifest_entry = manifest
+            .artifacts
+            .iter()
+            .find(|entry| entry.key == "artifact_manifest")
+            .expect("artifact_manifest entry");
+        assert_eq!(manifest_entry.path, manifest_path.display().to_string());
+        assert!(manifest_entry.exists);
         assert!(
             !manifest
                 .artifacts
@@ -911,5 +920,74 @@ mod tests {
             retain_run_scoped_artifact_path(&run_dir, &escaping_candidate.display().to_string()),
             None
         );
+    }
+
+    #[test]
+    fn artifact_entries_and_manifest_cover_optional_diagnostics_session_and_empty_run_dir() {
+        let empty = RunMeta::default();
+        assert!(empty.artifact_entries().is_empty());
+        assert!(empty.replay_commands().is_empty());
+        assert!(
+            empty
+                .write_artifact_manifest()
+                .expect("write empty manifest")
+                .is_none()
+        );
+
+        let mut manual_entries = Vec::new();
+        let mut manual_seen = std::collections::BTreeSet::new();
+        RunMeta::push_artifact_entry(
+            &mut manual_entries,
+            &mut manual_seen,
+            "empty_path",
+            ArtifactRole::Contract,
+            "Empty path should be ignored",
+            std::path::PathBuf::new(),
+        );
+        assert!(manual_entries.is_empty());
+
+        let temp = tempdir().expect("tempdir");
+        let run_dir = temp.path().join("run");
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+
+        let meta_all_optional = RunMeta {
+            status: "ok".to_string(),
+            started_at: "2026-02-17T00:00:00Z".to_string(),
+            profile: "analytics-empty".to_string(),
+            run_dir: run_dir.display().to_string(),
+            output: "dup.mp4".to_string(),
+            snapshot: "dup.mp4".to_string(),
+            artifact_manifest: None,
+            ttyd_shim_log: Some("ttyd_shim.log".to_string()),
+            ttyd_runtime_log: Some("ttyd_runtime.log".to_string()),
+            vhs_docker_log: Some("vhs_docker.log".to_string()),
+            tmux_session_file: Some("tmux_session.txt".to_string()),
+            tmux_pane_capture: Some("tmux_pane.txt".to_string()),
+            tmux_pane_log: Some("tmux_pane.log".to_string()),
+            ..RunMeta::default()
+        };
+        let entries = meta_all_optional.artifact_entries();
+        assert!(entries.iter().any(|entry| entry.key == "ttyd_shim_log"));
+        assert!(entries.iter().any(|entry| entry.key == "ttyd_runtime_log"));
+        assert!(entries.iter().any(|entry| entry.key == "vhs_docker_log"));
+        assert!(entries.iter().any(|entry| entry.key == "tmux_session_file"));
+        assert!(entries.iter().any(|entry| entry.key == "tmux_pane_capture"));
+        assert!(entries.iter().any(|entry| entry.key == "tmux_pane_log"));
+        assert!(!entries.iter().any(|entry| entry.key == "snapshot_image"));
+
+        let meta_dup_manifest = RunMeta {
+            status: "ok".to_string(),
+            started_at: "2026-02-17T00:00:00Z".to_string(),
+            profile: "analytics-empty".to_string(),
+            run_dir: run_dir.display().to_string(),
+            output: "shared_manifest.json".to_string(),
+            artifact_manifest: Some("shared_manifest.json".to_string()),
+            ..RunMeta::default()
+        };
+        let written = meta_dup_manifest
+            .write_artifact_manifest()
+            .expect("write dup manifest")
+            .expect("dup manifest path");
+        assert!(written.exists());
     }
 }
