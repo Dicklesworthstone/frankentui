@@ -1,8 +1,6 @@
 # ADR-009: FrankenTerm WebGPU Renderer Architecture (Glyph Atlas, Batching, Present)
 
-## Status
-
-PROPOSED
+Status: ACCEPTED (2026-10-16 — implemented in the adjacent `frankenterm-web` crate; out of scope for this repository)
 
 ## Context
 

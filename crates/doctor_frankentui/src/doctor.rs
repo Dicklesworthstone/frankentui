@@ -39,7 +39,7 @@ pub struct DoctorArgs {
     )]
     pub app_command: String,
 
-    #[arg(long = "project-dir", default_value = "/data/projects/frankentui")]
+    #[arg(long = "project-dir", default_value_os_t = crate::util::default_project_dir())]
     pub project_dir: PathBuf,
 
     #[arg(long)]

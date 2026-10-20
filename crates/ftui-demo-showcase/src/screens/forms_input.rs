@@ -352,6 +352,9 @@ impl FormsInput {
     }
 
     fn update_focus_states(&mut self) {
+        self.form_state
+            .borrow_mut()
+            .set_panel_focused(self.focus == FocusPanel::Form);
         self.search_input
             .set_focused(self.focus == FocusPanel::SearchInput);
         self.password_input
@@ -777,6 +780,7 @@ impl FormsInput {
         }
 
         let mut state = self.form_state.borrow_mut();
+        state.set_panel_focused(self.focus == FocusPanel::Form);
         let show_header = inner.height >= 4;
         let show_footer = inner.height >= 6;
 
@@ -1541,5 +1545,39 @@ mod tests {
         };
 
         assert_eq!(before, after, "disabled field should not change");
+    }
+
+    #[test]
+    fn panel_switch_moves_accessibility_tree_focus() {
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let render_focused_id = |screen: &FormsInput| -> Option<u64> {
+            let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+            let mut builder = A11yTreeBuilder::new();
+            let mut frame = Frame::new(100, 30, &mut pool);
+            frame.set_a11y(&mut builder);
+            screen.view(&mut frame, Rect::new(0, 0, 100, 30));
+            frame.finish_a11y();
+            drop(frame);
+            builder.build().focused_id()
+        };
+
+        let mut screen = FormsInput::new();
+        let form_id = render_focused_id(&screen).expect("initial form field focused");
+
+        screen.update(&ctrl_press(KeyCode::Right));
+        let search_id = render_focused_id(&screen).expect("search input focused");
+        assert_ne!(search_id, form_id);
+
+        screen.update(&ctrl_press(KeyCode::Right));
+        let password_id = render_focused_id(&screen).expect("password input focused");
+        assert_ne!(password_id, form_id);
+        assert_ne!(password_id, search_id);
+
+        screen.update(&ctrl_press(KeyCode::Left));
+        assert_eq!(render_focused_id(&screen), Some(search_id));
+
+        screen.update(&ctrl_press(KeyCode::Left));
+        assert_eq!(render_focused_id(&screen), Some(form_id));
     }
 }

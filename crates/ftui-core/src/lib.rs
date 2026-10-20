@@ -21,6 +21,8 @@
 //! deterministic render pipeline.
 
 pub mod animation;
+pub mod arena;
+pub use arena::{BumpVec, DEFAULT_ARENA_CAPACITY, FrameArena};
 pub mod capability_override;
 pub mod cursor;
 pub mod cx;
@@ -48,7 +50,14 @@ pub mod session_teardown;
 pub mod terminal_capabilities;
 #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 pub mod terminal_session;
+pub mod voi;
 pub use session_teardown::with_panic_cleanup_suppressed;
+
+/// Tracing target for input parser protocol events (DCS, APC, XTWINOPS, SGR-Pixels).
+pub const TARGET_INPUT_PARSER: &str = "ftui.input.parser";
+
+/// Tracing target for e-process throttle and budget gate decisions.
+pub const TARGET_EPROCESS: &str = "ftui.eprocess";
 
 pub mod shutdown_signal {
     //! Process-wide graceful-termination signal state shared by runtime and backends.
@@ -389,7 +398,7 @@ pub mod text_width {
 
     use unicode_display_width::width as unicode_display_width;
     use unicode_segmentation::UnicodeSegmentation;
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    use unicode_width::UnicodeWidthChar;
 
     #[inline]
     fn env_flag(value: &str) -> bool {
@@ -733,21 +742,32 @@ pub mod text_width {
         if grapheme.chars().all(is_zero_width_codepoint) {
             return 0;
         }
-        if cjk {
-            return grapheme.width_cjk();
-        }
         // Terminal-realistic VS16 handling: most terminals render text-default
         // emoji (Emoji_Presentation=No) at 1 cell even with VS16 appended.
         // Strip VS16 so unicode_display_width returns the text-presentation width.
-        if !trust_vs16_width()
+        let base_width = if !trust_vs16_width()
             && let Some(stripped) = strip_vs16(grapheme)
         {
             if stripped.is_empty() {
                 return 0;
             }
-            return unicode_display_width(&stripped) as usize;
+            unicode_display_width(&stripped) as usize
+        } else {
+            unicode_display_width(grapheme) as usize
+        };
+        if cjk
+            && base_width == 1
+            && grapheme
+                .chars()
+                .any(|c| !is_zero_width_codepoint(c) && c.width_cjk() == Some(2))
+        {
+            // East Asian Ambiguous characters (e.g. 'Ω', '●', '—', '…', '→', '①')
+            // have non-CJK width 1 and CJK width 2, while multi-codepoint emoji
+            // clusters (ZWJ, skin-tone modifiers, flags) already have base_width 2
+            // and must not sum constituent codepoints to 4 or 8.
+            return 2;
         }
-        unicode_display_width(grapheme) as usize
+        base_width
     }
 
     /// Width of a single Unicode scalar.
@@ -772,6 +792,11 @@ pub mod text_width {
     }
 
     /// Width of a string in terminal cells.
+    ///
+    /// Printable ASCII runs take the inline/SIMD fast path (`ascii_width`);
+    /// strings containing non-ASCII bytes segment into grapheme clusters and
+    /// route every non-ASCII cluster (`<= 128` bytes) through the per-thread
+    /// S3-FIFO width cache (`grapheme_width`).
     #[inline]
     #[must_use]
     pub fn display_width(text: &str) -> usize {
@@ -780,13 +805,6 @@ pub mod text_width {
         }
         if text.is_ascii() {
             return ascii_display_width(text);
-        }
-        let cjk_width = use_cjk_width();
-        if !text.chars().any(is_zero_width_codepoint) {
-            if cjk_width {
-                return text.width_cjk();
-            }
-            return unicode_display_width(text) as usize;
         }
         text.graphemes(true).map(grapheme_width).sum()
     }
@@ -1347,6 +1365,125 @@ pub mod text_width {
         fn grapheme_width_zwj_cluster() {
             // ZWJ alone is zero-width
             assert_eq!(grapheme_width("\u{200D}"), 0);
+        }
+
+        #[test]
+        fn grapheme_width_with_cjk_preserves_multi_codepoint_emoji_and_widens_ambiguous() {
+            // Multi-codepoint emoji clusters must occupy 2 cells in both
+            // non-CJK and CJK modes (never summing scalar codepoints to 4 or 8).
+            for emoji in ["😀", "👨‍👩‍👧‍👦", "👋🏽", "👍🏻", "🇯🇵", "🇺🇸", "🏳️‍🌈", "🏃🏿‍♂️", "👩🏻‍💻"]
+            {
+                assert_eq!(
+                    grapheme_width_with_cjk(emoji, false),
+                    2,
+                    "non-CJK emoji width for {emoji:?}"
+                );
+                assert_eq!(
+                    grapheme_width_with_cjk(emoji, true),
+                    2,
+                    "CJK emoji width for {emoji:?}"
+                );
+            }
+
+            // East Asian Ambiguous symbols/punctuation/box-drawing/arrows widen
+            // from 1 cell (non-CJK) to 2 cells (CJK).
+            for ambiguous in ["●", "—", "…", "→", "①", "│", "─"] {
+                assert_eq!(
+                    grapheme_width_with_cjk(ambiguous, false),
+                    1,
+                    "non-CJK ambiguous width for {ambiguous:?}"
+                );
+                assert_eq!(
+                    grapheme_width_with_cjk(ambiguous, true),
+                    2,
+                    "CJK ambiguous width for {ambiguous:?}"
+                );
+            }
+
+            // Non-East-Asian script letters ('Ω', 'Ж') remain 1 cell in both modes.
+            for letter in ["Ω", "Ж", "é"] {
+                assert_eq!(grapheme_width_with_cjk(letter, false), 1);
+                assert_eq!(grapheme_width_with_cjk(letter, true), 1);
+            }
+
+            // Text-default emoji + VS16 ('❤' U+2764, '☂' U+2602) stay 1 cell
+            // when VS16 is untrusted in both non-CJK and CJK modes.
+            if !vs16_width_trusted() {
+                assert_eq!(grapheme_width_with_cjk("❤\u{FE0F}", false), 1);
+                assert_eq!(grapheme_width_with_cjk("❤\u{FE0F}", true), 1);
+                assert_eq!(grapheme_width_with_cjk("☂\u{FE0F}", false), 1);
+                assert_eq!(grapheme_width_with_cjk("☂\u{FE0F}", true), 1);
+            }
+        }
+
+        #[test]
+        fn display_width_routes_non_ascii_through_s3_fifo_cache() {
+            clear_width_cache();
+            let before = width_cache_stats();
+            // Pure non-ASCII and mixed strings with no zero-width codepoints
+            // must still populate and hit the S3-FIFO width cache.
+            let samples = [
+                "名前 │ 状態 │ 更新 │ 備考",
+                "hello 世界 👋🏽 done",
+                "résumé café naïve",
+                "مرحبا بالعالم",
+            ];
+            for sample in samples {
+                let expected: usize = sample.graphemes(true).map(grapheme_width_uncached).sum();
+                assert_eq!(display_width(sample), expected, "first pass {sample:?}");
+            }
+            let after_cold = width_cache_stats();
+            for sample in samples {
+                let expected: usize = sample.graphemes(true).map(grapheme_width_uncached).sum();
+                assert_eq!(display_width(sample), expected, "second pass {sample:?}");
+            }
+            if let (Some(before), Some(after_cold), Some(after_warm)) =
+                (before, after_cold, width_cache_stats())
+            {
+                assert!(
+                    after_cold.misses > before.misses,
+                    "cold display_width pass must populate S3-FIFO cache: before={before:?} after_cold={after_cold:?}"
+                );
+                assert!(
+                    after_warm.hits > after_cold.hits,
+                    "warm display_width pass must hit S3-FIFO cache: after_cold={after_cold:?} after_warm={after_warm:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn grapheme_width_identical_with_simd() {
+            // Verify grapheme_width and display_width parity across CORPUS,
+            // multi-chunk ASCII strings, and mixed ASCII + Unicode strings.
+            for &grapheme in CORPUS {
+                assert_eq!(
+                    grapheme_width(grapheme),
+                    grapheme_width_uncached(grapheme),
+                    "grapheme_width parity for {grapheme:?}"
+                );
+            }
+
+            for len in [0_usize, 1, 31, 63, 64, 65, 127, 128, 129, 512, 2048] {
+                let ascii_run: String = (0..len)
+                    .map(|i| char::from(b' ' + (i % 95) as u8))
+                    .collect();
+                assert_eq!(ascii_width(&ascii_run), ascii_width_scalar(&ascii_run));
+                assert_eq!(display_width(&ascii_run), len);
+                let by_graphemes: usize = ascii_run.graphemes(true).map(grapheme_width).sum();
+                assert_eq!(display_width(&ascii_run), by_graphemes);
+            }
+
+            for &grapheme in CORPUS {
+                let mixed = format!("{}{}{}", "a".repeat(64), grapheme, "z".repeat(65));
+                assert_eq!(ascii_width(&mixed), None);
+                assert_eq!(ascii_width(&mixed), ascii_width_scalar(&mixed));
+                let expected = 64 + grapheme_width_uncached(grapheme) + 65;
+                assert_eq!(
+                    display_width(&mixed),
+                    expected,
+                    "mixed display_width for {grapheme:?}"
+                );
+            }
         }
     }
 }

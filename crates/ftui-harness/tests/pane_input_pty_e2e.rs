@@ -117,6 +117,16 @@ struct PaneResult {
     active_pane: String,
     /// Whether a pane is maximized (keymap mode).
     maximized: bool,
+    engine_strategy: String,
+    engine_mode: String,
+    engine_applies: u64,
+    engine_persistent_applies: u64,
+    engine_checkpointed_applies: u64,
+    engine_conservative_applies: u64,
+    engine_switches: u64,
+    engine_fallbacks: u64,
+    engine_undos: u64,
+    engine_redos: u64,
 }
 
 fn parse_marker(output: &[u8]) -> PaneResult {
@@ -152,6 +162,16 @@ fn parse_marker(output: &[u8]) -> PaneResult {
     let mut recovered_bytes = None;
     let mut active_pane = None;
     let mut maximized = None;
+    let mut engine_strategy = None;
+    let mut engine_mode = None;
+    let mut engine_applies = None;
+    let mut engine_persistent_applies = None;
+    let mut engine_checkpointed_applies = None;
+    let mut engine_conservative_applies = None;
+    let mut engine_switches = None;
+    let mut engine_fallbacks = None;
+    let mut engine_undos = None;
+    let mut engine_redos = None;
     for pair in kv.split_whitespace() {
         let Some((key, value)) = pair.split_once('=') else {
             continue;
@@ -179,6 +199,16 @@ fn parse_marker(output: &[u8]) -> PaneResult {
             "recovered_bytes" => recovered_bytes = value.parse().ok(),
             "active_pane" => active_pane = Some(value.to_string()),
             "maximized" => maximized = Some(value == "true"),
+            "engine_strategy" => engine_strategy = Some(value.to_string()),
+            "engine_mode" => engine_mode = Some(value.to_string()),
+            "engine_applies" => engine_applies = value.parse().ok(),
+            "engine_persistent_applies" => engine_persistent_applies = value.parse().ok(),
+            "engine_checkpointed_applies" => engine_checkpointed_applies = value.parse().ok(),
+            "engine_conservative_applies" => engine_conservative_applies = value.parse().ok(),
+            "engine_switches" => engine_switches = value.parse().ok(),
+            "engine_fallbacks" => engine_fallbacks = value.parse().ok(),
+            "engine_undos" => engine_undos = value.parse().ok(),
+            "engine_redos" => engine_redos = value.parse().ok(),
             _ => {}
         }
     }
@@ -207,6 +237,16 @@ fn parse_marker(output: &[u8]) -> PaneResult {
         recovered_bytes: recovered_bytes.expect("recovered_bytes field"),
         active_pane: active_pane.expect("active_pane field"),
         maximized: maximized.expect("maximized field"),
+        engine_strategy: engine_strategy.unwrap_or_default(),
+        engine_mode: engine_mode.unwrap_or_default(),
+        engine_applies: engine_applies.unwrap_or_default(),
+        engine_persistent_applies: engine_persistent_applies.unwrap_or_default(),
+        engine_checkpointed_applies: engine_checkpointed_applies.unwrap_or_default(),
+        engine_conservative_applies: engine_conservative_applies.unwrap_or_default(),
+        engine_switches: engine_switches.unwrap_or_default(),
+        engine_fallbacks: engine_fallbacks.unwrap_or_default(),
+        engine_undos: engine_undos.unwrap_or_default(),
+        engine_redos: engine_redos.unwrap_or_default(),
     }
 }
 
@@ -653,6 +693,7 @@ fn pty_escape_cancels_armed_interaction_cleanly() {
                 focus_events: false,
                 kitty_keyboard: false,
                 intercept_signals: true,
+                pixel_mouse: false,
             };
             assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
                 .expect("cancel restores terminal modes");
@@ -723,6 +764,7 @@ fn pty_escape_cancels_dragging_without_committing_or_mutating_again() {
                 focus_events: false,
                 kitty_keyboard: false,
                 intercept_signals: true,
+                pixel_mouse: false,
             };
             assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
                 .expect("drag cancel restores terminal modes");
@@ -798,6 +840,7 @@ fn pty_cancel_preserves_real_undo_history_and_keyboard_pane_focus() {
                     focus_events: false,
                     kitty_keyboard: false,
                     intercept_signals: true,
+                    pixel_mouse: false,
                 };
                 assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
                     .expect("history/focus cancel restores terminal modes");
@@ -846,6 +889,7 @@ fn pty_safety_timeout_restores_terminal_with_an_uncommitted_pointer() {
                 focus_events: false,
                 kitty_keyboard: false,
                 intercept_signals: true,
+                pixel_mouse: false,
             };
             assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
                 .expect("safety expiry restores terminal modes");
@@ -934,6 +978,7 @@ fn pty_keyboard_resize_across_terminal_capability_matrix() {
             focus_events: false,
             kitty_keyboard: false,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let expectations = CleanupExpectations::for_session(&options);
         assert_terminal_restored(&output, &expectations)
@@ -1044,5 +1089,86 @@ fn pty_keymap_focus_nav_across_terminal_capability_matrix() {
         let expectations = CleanupExpectations::for_session(&options);
         assert_terminal_restored(&output, &expectations)
             .unwrap_or_else(|err| panic!("[{term}] terminal cleanup verification failed: {err}"));
+    }
+}
+
+#[test]
+fn pty_pane_execution_engine_strategy_switch_drag_undo_redo_and_fallback() {
+    const RIGHT_COMMIT_DRAG: &[u8] = b"\x1b[<0;41;3M\x1b[<32;56;3M\x1b[<32;65;3M\x1b[<0;65;3m";
+    for (mode, alternate_screen) in [("alt", true), ("inline", false)] {
+        let output = run(&Scenario::new(
+            mode,
+            vec![
+                b"e",
+                KEY_RIGHT,
+                b"u",
+                b"eee",
+                b"r",
+                b"u",
+                b"ep",
+                RIGHT_COMMIT_DRAG,
+            ],
+        ));
+        let result = parse_marker(&output);
+        assert_eq!(result.mode, mode);
+        assert!(result.tree_valid, "[{mode}] tree must remain valid");
+        assert!(result.down_resolved, "[{mode}] drag down must resolve");
+        assert!(result.committed, "[{mode}] drag must commit");
+        assert!(result.termios_restored, "[{mode}] termios must be restored");
+        assert_eq!(
+            result.engine_strategy, "checkpointed",
+            "[{mode}] latency violation must fall back to checkpointed"
+        );
+        assert_eq!(
+            result.engine_mode, "conservative",
+            "[{mode}] latency violation must mark engine conservative"
+        );
+        assert_eq!(
+            result.engine_switches, 4,
+            "[{mode}] expected 4 substrate switches (Checkpointed->Persistent->Conservative->Persistent->Fallback)"
+        );
+        assert_eq!(
+            result.engine_fallbacks, 2,
+            "[{mode}] expected 2 conservative transitions (explicit Conservative cycle + latency violation)"
+        );
+        assert_eq!(
+            result.engine_undos, 2,
+            "[{mode}] expected 2 undo operations"
+        );
+        assert_eq!(result.engine_redos, 1, "[{mode}] expected 1 redo operation");
+        assert!(
+            result.engine_persistent_applies >= 2,
+            "[{mode}] expected key resize and first drag delta to apply on persistent: {}",
+            result.engine_persistent_applies
+        );
+        assert!(
+            result.engine_conservative_applies >= 1,
+            "[{mode}] expected post-fallback drag delta to apply on conservative checkpointed: {}",
+            result.engine_conservative_applies
+        );
+        assert_eq!(
+            result.engine_applies,
+            result.engine_persistent_applies
+                + result.engine_checkpointed_applies
+                + result.engine_conservative_applies,
+            "[{mode}] per-strategy applies must sum to total engine applies"
+        );
+        assert!(
+            result.final_bps > INITIAL_BPS + 500,
+            "[{mode}] final committed drag must grow first pane: {}",
+            result.final_bps
+        );
+
+        let options = SessionOptions {
+            alternate_screen,
+            mouse_capture: false,
+            bracketed_paste: false,
+            focus_events: false,
+            kitty_keyboard: false,
+            intercept_signals: true,
+            pixel_mouse: false,
+        };
+        assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
+            .unwrap_or_else(|err| panic!("[{mode}] terminal cleanup verification failed: {err}"));
     }
 }

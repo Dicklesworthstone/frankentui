@@ -380,25 +380,18 @@ fn snapshot_table_layout_spacing_padding_row_height() {
         .with_padding(1)
         .with_column_gap(2)
         .with_row_height(2);
-    let column_gap = theme.column_gap;
     let row_height = theme.row_height;
-    let pad = " ".repeat(theme.padding as usize);
-    let padded = |text: &str| Text::raw(format!("{pad}{text}{pad}"));
 
     let table = Table::new(
         [
-            Row::new([
-                Text::raw(format!("{pad}ID{pad}\n{pad}--{pad}")),
-                Text::raw(format!("{pad}Name{pad}\n{pad}----{pad}")),
-            ])
-            .height(row_height as u16),
-            Row::new([padded("01"), padded("Alice")]).height(row_height as u16),
+            Row::new([Text::raw("ID\n--"), Text::raw("Name\n----")]).height(row_height as u16),
+            Row::new(["01", "Alice"]).height(row_height as u16),
         ],
         [Constraint::Fixed(8), Constraint::Fixed(10)],
     )
     .theme(theme)
     .theme_phase(0.0)
-    .column_spacing(column_gap as u16);
+    .use_theme_padding(true);
 
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(22, 5, &mut pool);

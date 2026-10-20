@@ -308,6 +308,32 @@ pub fn demo_logger(
     )
 }
 
+/// Emit a key dispatch JSONL line when `FTUI_DEMO_KEY_JSONL` is set to a non-empty path
+/// (or `"stderr"` / `"-"`).
+pub fn emit_key_dispatch_jsonl(outcome: &str, chord: &str, action: &str) {
+    let Ok(path) = std::env::var("FTUI_DEMO_KEY_JSONL") else {
+        return;
+    };
+    let path = path.trim();
+    if path.is_empty() {
+        return;
+    }
+    let sink = if path == "-" || path.eq_ignore_ascii_case("stderr") {
+        JsonlSink::Stderr
+    } else {
+        JsonlSink::File(path.to_string())
+    };
+    let escaped_action = escape_json(action);
+    let line = format!(
+        "{{\"event\":\"key_dispatch\",\"outcome\":\"{}\",\"chord\":\"{}\",\"action\":\"{}\",\"binding\":\"{}\"}}",
+        escape_json(outcome),
+        escape_json(chord),
+        escaped_action,
+        escaped_action,
+    );
+    sink.write_line(&line);
+}
+
 /// Validate the Mermaid mega showcase recompute JSONL schema.
 pub fn validate_mega_recompute_jsonl_schema(line: &str) -> Result<(), String> {
     let required_fields = [

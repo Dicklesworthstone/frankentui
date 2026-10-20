@@ -1465,11 +1465,14 @@ fn now_iso8601() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::net::TcpListener;
     use std::thread;
     use std::time::{Duration, Instant};
 
+    #[cfg(unix)]
     use tungstenite::stream::MaybeTlsStream;
+    #[cfg(unix)]
     use tungstenite::{Message, connect};
 
     fn request(uri: &str, origin: Option<&str>) -> Request {

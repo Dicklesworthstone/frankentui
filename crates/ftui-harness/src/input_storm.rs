@@ -203,6 +203,7 @@ fn generate_mouse_flood(count: usize, width: u16, height: u16, rng: &mut Rng) ->
             kind: MouseEventKind::Moved,
             x,
             y,
+            pixel: None,
             modifiers: Modifiers::empty(),
         }));
     }
@@ -236,6 +237,7 @@ fn generate_mixed_burst(count: usize, width: u16, height: u16, rng: &mut Rng) ->
                     kind: MouseEventKind::Moved,
                     x: mouse_x,
                     y: mouse_y,
+                    pixel: None,
                     modifiers: Modifiers::empty(),
                 })
             }
@@ -354,6 +356,7 @@ pub fn event_type_name(event: &Event) -> &'static str {
         Event::Resize { .. } => "resize",
         Event::Focus(_) => "focus",
         Event::Clipboard(_) => "clipboard",
+        Event::TerminalResponse(_) => "terminal_response",
         Event::Tick => "tick",
     }
 }

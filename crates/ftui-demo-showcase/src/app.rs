@@ -43,10 +43,17 @@ pub(crate) const TARGET_ACCESSIBILITY_PANEL: &str = "ftui.demo.a11y";
 
 /// Tracing target for the widget gallery's diagnostics section.
 pub(crate) const TARGET_WIDGET_GALLERY: &str = "ftui.demo.gallery";
+/// Tracing target for the virtualized search screen's telemetry.
+pub(crate) const TARGET_VIRTUALIZED_SEARCH: &str = "ftui.demo.vsearch";
+/// Tracing target for the action timeline screen's aggregate telemetry.
+pub(crate) const TARGET_ACTION_TIMELINE: &str = "ftui.demo.timeline";
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ftui_core::geometry::Rect;
+use ftui_core::keybinding::{
+    Chord, ContextId, Dispatch, KeyDispatcher, KeyMap, KeyMapConfig, Priority, SequenceConfig,
+};
 use ftui_core::with_panic_cleanup_suppressed;
 #[cfg(feature = "screen-mermaid")]
 use ftui_extras::mermaid::MermaidConfig;
@@ -2758,6 +2765,154 @@ fn open_vfx_writer(path: &str) -> std::io::Result<Box<dyn Write + Send>> {
 }
 
 // ---------------------------------------------------------------------------
+// AppAction & KeyMap
+// ---------------------------------------------------------------------------
+
+/// Global actions dispatched through [`AppModel`]'s [`KeyMap`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppAction {
+    Quit,
+    OpenPalette,
+    ToggleHelp,
+    ToggleDebug,
+    ToggleMouseCapture,
+    TogglePerfHud,
+    ToggleInspector,
+    Undo,
+    Redo,
+    ToggleA11yPanel,
+    CycleTheme,
+    NextScreen(&'static str),
+    PrevScreen(&'static str),
+    NumberScreen(char),
+    Custom(&'static str),
+    PassThrough,
+}
+
+impl AppAction {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Quit => "quit",
+            Self::OpenPalette => "open_palette",
+            Self::ToggleHelp => "toggle_help",
+            Self::ToggleDebug => "toggle_debug",
+            Self::ToggleMouseCapture => "toggle_mouse_capture",
+            Self::TogglePerfHud => "toggle_perf_hud",
+            Self::ToggleInspector => "toggle_inspector",
+            Self::Undo => "undo",
+            Self::Redo => "redo",
+            Self::ToggleA11yPanel => "toggle_a11y_panel",
+            Self::CycleTheme => "cycle_theme",
+            Self::NextScreen(_) => "next_screen",
+            Self::PrevScreen(_) => "prev_screen",
+            Self::NumberScreen(_) => "number_screen",
+            Self::Custom(label) => label,
+            Self::PassThrough => "pass_through",
+        }
+    }
+
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Quit => "Quit application",
+            Self::OpenPalette => "Open command palette",
+            Self::ToggleHelp => "Toggle this help overlay",
+            Self::ToggleDebug => "Toggle debug overlay",
+            Self::ToggleMouseCapture => "Toggle mouse capture",
+            Self::TogglePerfHud => "Toggle performance HUD",
+            Self::ToggleInspector => "Toggle evidence inspector",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+            Self::ToggleA11yPanel => "Toggle A11y panel",
+            Self::CycleTheme => "Cycle color theme",
+            Self::NextScreen(_) => "Next screen",
+            Self::PrevScreen(_) => "Previous screen",
+            Self::NumberScreen(_) => "Jump to screen 1-10",
+            Self::Custom(label) => label,
+            Self::PassThrough => "Pass through to focused widget",
+        }
+    }
+}
+
+fn default_app_keymap() -> (KeyMap<AppAction>, ContextId, ContextId) {
+    let mut map = KeyMap::with_config(
+        KeyMapConfig::default().with_esc(SequenceConfig::default().disable_sequences()),
+    );
+    let text_input_ctx = map.context("text_input");
+    let screen_owns_key_ctx = map.context("screen_owns_key");
+
+    for (chord, action) in [
+        ("q", AppAction::Quit),
+        ("Ctrl+c", AppAction::Quit),
+        ("Ctrl+k", AppAction::OpenPalette),
+        ("?", AppAction::ToggleHelp),
+        ("Shift+?", AppAction::ToggleHelp),
+        ("F12", AppAction::ToggleDebug),
+        ("F6", AppAction::ToggleMouseCapture),
+        ("Ctrl+p", AppAction::TogglePerfHud),
+        ("Ctrl+i", AppAction::ToggleInspector),
+        ("Ctrl+z", AppAction::Undo),
+        ("Ctrl+y", AppAction::Redo),
+        ("Ctrl+Z", AppAction::Redo),
+        ("A", AppAction::ToggleA11yPanel),
+        ("Ctrl+t", AppAction::CycleTheme),
+        ("m", AppAction::ToggleMouseCapture),
+        ("Tab", AppAction::NextScreen("tab_next")),
+        ("BackTab", AppAction::PrevScreen("tab_prev")),
+        ("Shift+BackTab", AppAction::PrevScreen("tab_prev")),
+        ("L", AppAction::NextScreen("shift_l")),
+        ("H", AppAction::PrevScreen("shift_h")),
+        ("1", AppAction::NumberScreen('1')),
+        ("2", AppAction::NumberScreen('2')),
+        ("3", AppAction::NumberScreen('3')),
+        ("4", AppAction::NumberScreen('4')),
+        ("5", AppAction::NumberScreen('5')),
+        ("6", AppAction::NumberScreen('6')),
+        ("7", AppAction::NumberScreen('7')),
+        ("8", AppAction::NumberScreen('8')),
+        ("9", AppAction::NumberScreen('9')),
+        ("0", AppAction::NumberScreen('0')),
+    ] {
+        let parsed = Chord::parse(chord).expect("valid app chord");
+        let id = map.bind_in(parsed, action, Priority::Global, None);
+        map.set_label(id, action.description());
+    }
+
+    // Intentional PassThrough shadowing when a text input is focused (unlabelled so
+    // Help::from_keymap hides the shadowed global binding without adding PassThrough).
+    for chord in ["q", "?", "Shift+?"] {
+        let parsed = Chord::parse(chord).expect("valid text_input shadow chord");
+        map.bind_in(
+            parsed,
+            AppAction::PassThrough,
+            Priority::Widget,
+            Some(text_input_ctx),
+        );
+    }
+
+    // Intentional PassThrough shadowing when the current screen owns single-key bindings.
+    for chord in [
+        "A", "m", "L", "H", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+    ] {
+        let parsed = Chord::parse(chord).expect("valid screen_owns_key shadow chord");
+        map.bind_in(
+            parsed,
+            AppAction::PassThrough,
+            Priority::Widget,
+            Some(screen_owns_key_ctx),
+        );
+    }
+
+    let conflicts = map.conflicts();
+    tracing::debug!(
+        conflict_count = conflicts.len(),
+        "Constructed AppModel keymap with intentional context shadowing"
+    );
+    (map, text_input_ctx, screen_owns_key_ctx)
+}
+
+// ---------------------------------------------------------------------------
 // AppModel
 // ---------------------------------------------------------------------------
 
@@ -2857,6 +3012,12 @@ pub struct AppModel {
     a11y_telemetry: Option<A11yTelemetryHooks>,
     /// Central mouse dispatcher for priority-based event routing (bd-iuvb.17.2).
     mouse_dispatcher: MouseDispatcher,
+    /// Central keyboard shortcut dispatcher (bd-g00-root-epic-ewths.20.3).
+    key_dispatcher: KeyDispatcher<AppAction>,
+    /// Context ID active when focused widget consumes text input.
+    text_input_context: ContextId,
+    /// Context ID active when current screen owns single-key global shortcuts.
+    screen_owns_key_context: ContextId,
     /// Pending terminal mouse-capture command requested by a status-bar click.
     pending_mouse_capture_cmd: Option<bool>,
     /// Optional filesystem-backed LayoutLab pane workspace persistence path.
@@ -2889,6 +3050,7 @@ impl AppModel {
         let deterministic_tick_ms = determinism::demo_tick_ms_override();
         let exit_after_ticks = determinism::demo_exit_after_ticks();
         init_showcase_diagnostics();
+        let (keymap, text_input_context, screen_owns_key_context) = default_app_keymap();
         let mut app = Self {
             last_content_area: Cell::new(Rect::default()),
             tour_pointer_origin: None,
@@ -2931,6 +3093,9 @@ impl AppModel {
             history: HistoryManager::default(),
             a11y_telemetry: None,
             mouse_dispatcher: MouseDispatcher::default(),
+            key_dispatcher: KeyDispatcher::new(keymap),
+            text_input_context,
+            screen_owns_key_context,
             pending_mouse_capture_cmd: None,
             pane_workspace_path: None,
             pane_workspace_next_save_tick: 0,
@@ -2960,6 +3125,60 @@ impl AppModel {
     pub fn with_a11y_telemetry_hooks(mut self, hooks: A11yTelemetryHooks) -> Self {
         self.a11y_telemetry = Some(hooks);
         self
+    }
+
+    /// Access the application's global [`KeyMap`].
+    #[must_use]
+    pub fn keymap(&self) -> &KeyMap<AppAction> {
+        self.key_dispatcher.map()
+    }
+
+    /// Mutably access the application's global [`KeyMap`].
+    pub fn keymap_mut(&mut self) -> &mut KeyMap<AppAction> {
+        self.key_dispatcher.map_mut()
+    }
+
+    /// Return the interned [`ContextId`] active when a text input is focused.
+    #[must_use]
+    pub const fn text_input_context(&self) -> ContextId {
+        self.text_input_context
+    }
+
+    /// Return the interned [`ContextId`] active when the current screen owns single-key bindings.
+    #[must_use]
+    pub const fn screen_owns_key_context(&self) -> ContextId {
+        self.screen_owns_key_context
+    }
+
+    /// Compute the currently active keybinding contexts for [`AppModel`].
+    #[must_use]
+    pub fn active_key_contexts(&self) -> Vec<ContextId> {
+        let mut contexts = Vec::new();
+        let text_input_active = self.screens.consumes_text_input(self.display_screen());
+        let screen_owns_key = text_input_active
+            || self.display_screen() == ScreenId::QuakeEasterEgg
+            || self.display_screen() == ScreenId::KanbanBoard;
+        if text_input_active {
+            contexts.push(self.text_input_context);
+        }
+        if screen_owns_key {
+            contexts.push(self.screen_owns_key_context);
+        }
+        contexts
+    }
+
+    /// Build a [`ftui_widgets::help::Help`] widget from the live application [`KeyMap`].
+    #[must_use]
+    pub fn help_from_keymap(&self) -> ftui_widgets::help::Help {
+        let active = self.active_key_contexts();
+        ftui_widgets::help::Help::from_keymap(self.keymap(), &active)
+    }
+
+    /// Build [`ftui_widgets::help::KeybindingHints`] from the live application [`KeyMap`].
+    #[must_use]
+    pub fn help_hints_from_keymap(&self) -> ftui_widgets::help::KeybindingHints {
+        let active = self.active_key_contexts();
+        ftui_widgets::help::KeybindingHints::from_keymap(self.keymap(), &active)
     }
 
     /// Force deterministic mode for parity/snapshot-style test harnesses.
@@ -4353,150 +4572,164 @@ impl AppModel {
                         }
                     }
 
-                    match (*code, *modifiers) {
-                        // Quit (suppressed when a text field has focus)
-                        (KeyCode::Char('q'), Modifiers::NONE) if !text_input_active => {
-                            return Cmd::Quit;
-                        }
-                        (KeyCode::Char('c'), Modifiers::CTRL) => return Cmd::Quit,
-                        // Command palette (Ctrl+K)
-                        (KeyCode::Char('k'), Modifiers::CTRL) => {
-                            let log_screen = self.display_screen();
-                            let log_category = screens::screen_category(log_screen);
-                            self.command_palette.open();
-                            emit_palette_jsonl(
-                                "open",
-                                self.command_palette.query(),
-                                Some(log_screen),
-                                Some(log_category),
-                                "ok",
-                            );
-                            return Cmd::None;
-                        }
-                        // Help (suppressed when a text field has focus)
-                        (KeyCode::Char('?'), _) if !text_input_active => {
-                            self.help_visible = !self.help_visible;
-                            return Cmd::None;
-                        }
-                        // Debug
-                        (KeyCode::F(12), _) => {
-                            self.debug_visible = !self.debug_visible;
-                            return Cmd::None;
-                        }
-                        // Mouse capture toggle
-                        (KeyCode::F(6), _) => {
-                            return self.handle_msg(AppMsg::ToggleMouseCapture, source);
-                        }
-                        // Performance HUD
-                        (KeyCode::Char('p'), Modifiers::CTRL) => {
-                            self.perf_hud_visible = !self.perf_hud_visible;
-                            return Cmd::None;
-                        }
-                        // Inspector / evidence ledger (Ctrl+I)
-                        (KeyCode::Char('i'), Modifiers::CTRL) => {
-                            return self.handle_msg(AppMsg::ToggleEvidenceLedger, source);
-                        }
-                        // Undo (Ctrl+Z)
-                        (KeyCode::Char('z'), Modifiers::CTRL) => {
-                            if self.handle_screen_undo(UndoAction::Undo) {
-                                return Cmd::None;
-                            }
-                            if self.history.can_undo() {
-                                let _ = self.history.undo();
-                            }
-                            return Cmd::None;
-                        }
-                        // Redo (Ctrl+Y or Ctrl+Shift+Z)
-                        (KeyCode::Char('y'), Modifiers::CTRL) => {
-                            if self.handle_screen_undo(UndoAction::Redo) {
-                                return Cmd::None;
-                            }
-                            if self.history.can_redo() {
-                                let _ = self.history.redo();
-                            }
-                            return Cmd::None;
-                        }
-                        (KeyCode::Char('Z'), m) if m.contains(Modifiers::CTRL) => {
-                            // Ctrl+Shift+Z for redo
-                            if self.handle_screen_undo(UndoAction::Redo) {
-                                return Cmd::None;
-                            }
-                            if self.history.can_redo() {
-                                let _ = self.history.redo();
-                            }
-                            return Cmd::None;
-                        }
-                        // A11y panel
-                        (KeyCode::Char('A'), Modifiers::NONE | Modifiers::SHIFT)
-                            if !screen_owns_key =>
-                        {
-                            return self.handle_msg(AppMsg::ToggleA11yPanel, source);
-                        }
-                        // Theme cycling
-                        (KeyCode::Char('t'), Modifiers::CTRL) => {
-                            return self.handle_msg(AppMsg::CycleTheme, source);
-                        }
-                        // Mouse capture toggle (F6 always works)
-                        (KeyCode::Char('m'), Modifiers::NONE) if !screen_owns_key => {
-                            return self.handle_msg(AppMsg::ToggleMouseCapture, source);
-                        }
-                        // Dashboard: activate currently highlighted tile
-                        (KeyCode::Enter, Modifiers::NONE)
-                            if !text_input_active
-                                && self.display_screen() == ScreenId::Dashboard =>
-                        {
-                            if let Some(target) = self.screens.dashboard.preferred_link_target() {
-                                return self.handle_msg(AppMsg::SwitchScreen(target), source);
-                            }
-                        }
-                        // Tab cycling (Tab/BackTab, or Shift+H/Shift+L for Vim users)
-                        // Always handled at app level for screen navigation.
-                        (KeyCode::Tab, Modifiers::NONE) => {
-                            let target = self.display_screen().next();
-                            if self.tour.is_active() {
-                                self.stop_tour(false, "tab_next");
-                            }
-                            self.current_screen = target;
-                            return Cmd::None;
-                        }
-                        (KeyCode::BackTab, _) => {
-                            let target = self.display_screen().prev();
-                            if self.tour.is_active() {
-                                self.stop_tour(false, "tab_prev");
-                            }
-                            self.current_screen = target;
-                            return Cmd::None;
-                        }
-                        (KeyCode::Char('L'), Modifiers::NONE | Modifiers::SHIFT)
-                            if !screen_owns_key =>
-                        {
-                            let target = self.display_screen().next();
-                            if self.tour.is_active() {
-                                self.stop_tour(false, "shift_l");
-                            }
-                            self.current_screen = target;
-                            return Cmd::None;
-                        }
-                        (KeyCode::Char('H'), Modifiers::NONE | Modifiers::SHIFT)
-                            if !screen_owns_key =>
-                        {
-                            let target = self.display_screen().prev();
-                            if self.tour.is_active() {
-                                self.stop_tour(false, "shift_h");
-                            }
-                            self.current_screen = target;
-                            return Cmd::None;
-                        }
-                        (KeyCode::Char(ch @ '0'..='9'), Modifiers::NONE) if !screen_owns_key => {
-                            if let Some(id) = ScreenId::from_number_key(ch) {
-                                if self.tour.is_active() {
-                                    self.stop_tour(false, "number_key");
+                    let mut active_contexts = Vec::new();
+                    if text_input_active {
+                        active_contexts.push(self.text_input_context);
+                    }
+                    if screen_owns_key {
+                        active_contexts.push(self.screen_owns_key_context);
+                    }
+                    self.key_dispatcher.set_active_contexts(&active_contexts);
+
+                    let key_event = KeyEvent {
+                        code: *code,
+                        modifiers: *modifiers,
+                        kind: KeyEventKind::Press,
+                    };
+                    let mut mapped_action = None;
+                    for dispatch in self.key_dispatcher.feed(&key_event, Instant::now()) {
+                        match dispatch {
+                            Dispatch::Action { action, chord, .. } => {
+                                if action != AppAction::PassThrough {
+                                    crate::test_logging::emit_key_dispatch_jsonl(
+                                        "dispatched",
+                                        &chord.to_string(),
+                                        action.as_str(),
+                                    );
                                 }
-                                self.current_screen = id;
+                                mapped_action = Some(action);
+                            }
+                            Dispatch::Pending { prefix } => {
+                                crate::test_logging::emit_key_dispatch_jsonl(
+                                    "pending",
+                                    &prefix.to_string(),
+                                    "",
+                                );
+                            }
+                            Dispatch::Expired { prefix } => {
+                                crate::test_logging::emit_key_dispatch_jsonl(
+                                    "expired",
+                                    &prefix.to_string(),
+                                    "",
+                                );
+                            }
+                            Dispatch::Unbound(_) | Dispatch::Esc(_) => {}
+                        }
+                    }
+
+                    // Fallback for modifier-wildcard bindings (F12/F6/BackTab/?/Ctrl+Z)
+                    if mapped_action.is_none() {
+                        mapped_action = match (*code, *modifiers) {
+                            (KeyCode::Char('?'), _) if !text_input_active => {
+                                Some(AppAction::ToggleHelp)
+                            }
+                            (KeyCode::F(12), _) => Some(AppAction::ToggleDebug),
+                            (KeyCode::F(6), _) => Some(AppAction::ToggleMouseCapture),
+                            (KeyCode::Char('Z'), m) if m.contains(Modifiers::CTRL) => {
+                                Some(AppAction::Redo)
+                            }
+                            (KeyCode::BackTab, _) => Some(AppAction::PrevScreen("tab_prev")),
+                            _ => None,
+                        };
+                    }
+
+                    if let Some(action) = mapped_action {
+                        match action {
+                            AppAction::PassThrough => {}
+                            AppAction::Quit => return Cmd::Quit,
+                            AppAction::OpenPalette => {
+                                let log_screen = self.display_screen();
+                                let log_category = screens::screen_category(log_screen);
+                                self.command_palette.open();
+                                emit_palette_jsonl(
+                                    "open",
+                                    self.command_palette.query(),
+                                    Some(log_screen),
+                                    Some(log_category),
+                                    "ok",
+                                );
+                                return Cmd::None;
+                            }
+                            AppAction::ToggleHelp => {
+                                self.help_visible = !self.help_visible;
+                                return Cmd::None;
+                            }
+                            AppAction::ToggleDebug => {
+                                self.debug_visible = !self.debug_visible;
+                                return Cmd::None;
+                            }
+                            AppAction::ToggleMouseCapture => {
+                                return self.handle_msg(AppMsg::ToggleMouseCapture, source);
+                            }
+                            AppAction::TogglePerfHud => {
+                                self.perf_hud_visible = !self.perf_hud_visible;
+                                return Cmd::None;
+                            }
+                            AppAction::ToggleInspector => {
+                                return self.handle_msg(AppMsg::ToggleEvidenceLedger, source);
+                            }
+                            AppAction::Undo => {
+                                if self.handle_screen_undo(UndoAction::Undo) {
+                                    return Cmd::None;
+                                }
+                                if self.history.can_undo() {
+                                    let _ = self.history.undo();
+                                }
+                                return Cmd::None;
+                            }
+                            AppAction::Redo => {
+                                if self.handle_screen_undo(UndoAction::Redo) {
+                                    return Cmd::None;
+                                }
+                                if self.history.can_redo() {
+                                    let _ = self.history.redo();
+                                }
+                                return Cmd::None;
+                            }
+                            AppAction::ToggleA11yPanel => {
+                                return self.handle_msg(AppMsg::ToggleA11yPanel, source);
+                            }
+                            AppAction::CycleTheme => {
+                                return self.handle_msg(AppMsg::CycleTheme, source);
+                            }
+                            AppAction::NextScreen(reason) => {
+                                let target = self.display_screen().next();
+                                if self.tour.is_active() {
+                                    self.stop_tour(false, reason);
+                                }
+                                self.current_screen = target;
+                                return Cmd::None;
+                            }
+                            AppAction::PrevScreen(reason) => {
+                                let target = self.display_screen().prev();
+                                if self.tour.is_active() {
+                                    self.stop_tour(false, reason);
+                                }
+                                self.current_screen = target;
+                                return Cmd::None;
+                            }
+                            AppAction::NumberScreen(ch) => {
+                                if let Some(id) = ScreenId::from_number_key(ch) {
+                                    if self.tour.is_active() {
+                                        self.stop_tour(false, "number_key");
+                                    }
+                                    self.current_screen = id;
+                                    return Cmd::None;
+                                }
+                            }
+                            AppAction::Custom(_) => {
                                 return Cmd::None;
                             }
                         }
-                        _ => {}
+                    }
+
+                    // Dashboard: activate currently highlighted tile
+                    if (*code, *modifiers) == (KeyCode::Enter, Modifiers::NONE)
+                        && !text_input_active
+                        && self.display_screen() == ScreenId::Dashboard
+                        && let Some(target) = self.screens.dashboard.preferred_link_target()
+                    {
+                        return self.handle_msg(AppMsg::SwitchScreen(target), source);
                     }
                 }
 
@@ -4646,7 +4879,14 @@ impl Model for AppModel {
         // Help overlay (chrome module)
         if self.help_visible {
             let bindings = self.current_screen_keybindings();
-            crate::chrome::render_help_overlay(self.display_screen(), &bindings, frame, area);
+            let keymap_help = self.help_from_keymap();
+            crate::chrome::render_help_overlay_with_keymap(
+                self.display_screen(),
+                &bindings,
+                Some(&keymap_help),
+                frame,
+                area,
+            );
         }
 
         // Debug overlay
@@ -10653,6 +10893,57 @@ mod tests {
         assert!(
             !app.evidence_ledger_visible,
             "Ctrl+I should close evidence ledger"
+        );
+    }
+
+    #[test]
+    fn q_is_inactive_while_text_input_focused() {
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::LogSearch;
+        let text_ctx = app.text_input_context();
+        assert!(!app.active_key_contexts().contains(&text_ctx));
+
+        // Open LogSearch search bar so text_input context becomes active.
+        app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('/')))));
+        assert!(app.active_key_contexts().contains(&text_ctx));
+
+        // Pressing 'q' resolves to PassThrough in text_input context and types into the query.
+        let cmd = app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('q')))));
+        assert!(!matches!(cmd, Cmd::Quit), "q must not quit while typing");
+        assert_eq!(app.screens.log_search.current_query(), "q");
+    }
+
+    #[test]
+    fn question_mark_opens_help_from_keymap() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut app = AppModel::new();
+        let id = app.keymap_mut().bind_in(
+            Chord::parse("Ctrl+Alt+m").unwrap(),
+            AppAction::Custom("Custom macro diagnostic"),
+            Priority::Global,
+            None,
+        );
+        app.keymap_mut().set_label(id, "Custom macro diagnostic");
+
+        let help = app.help_from_keymap();
+        assert!(
+            help.entries()
+                .iter()
+                .any(|e| e.desc == "Custom macro diagnostic")
+        );
+
+        assert!(!app.help_visible);
+        app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('?')))));
+        assert!(app.help_visible);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        let rendered = frame_text(&frame);
+        assert!(
+            rendered.contains("Custom macro diagnostic"),
+            "Help overlay should render custom binding from keymap:\n{rendered}"
         );
     }
 }

@@ -4,9 +4,10 @@
 //!
 //! We compare two control strategies for resize frame pacing:
 //!
-//! ### PI Controller (baseline)
+//! ### PI Controller (baseline) and Production PID
 //!
-//! The existing `BudgetController` uses a PID controller with gains:
+//! Production `BudgetController` (`PidGains::default()`) uses a full 3-term PID
+//! controller with gains:
 //!
 //! ```text
 //! u_t = Kp·e_t + Ki·Σe_j + Kd·(e_t − e_{t−1})
@@ -14,7 +15,7 @@
 //! where:
 //!   Kp = 0.5  (proportional gain)
 //!   Ki = 0.05 (integral gain — eliminates steady-state error)
-//!   Kd = 0.2  (derivative gain — damping)
+//!   Kd = 0.2  (derivative gain — damping; set to 0.0 in the stripped PI baseline below)
 //!   e_t = (frame_time − target) / target   (normalized error)
 //! ```
 //!

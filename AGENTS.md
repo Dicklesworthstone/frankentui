@@ -108,6 +108,8 @@ GitHub Actions was disabled in the repository settings on 2026-09-06; keep it di
   2026-09-11 executable A/B probe demonstrated stale output with the flag alone
   and correct rebuilding with both settings, including migration of an existing
   target directory. A successful command alone does not prove binary freshness.
+- Before cutting or tagging any release, run `scripts/release_preflight.sh vX.Y.Z --strict`
+  and follow [`docs/release-checklist.md`](docs/release-checklist.md).
 
 ### Key Dependencies
 
@@ -198,6 +200,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 # no compilation and no network. `make check` runs it too, so you get it for
 # free, but run it directly after doc or ledger edits that touch no code.
 make gates
+
+# After touching render/layout/text/runtime hot paths or tests/baseline.json:
+./scripts/perf_regression_gate.sh --quick --json
+python3 -B scripts/render_perf_readme.py --check
 ```
 
 **The default test run does not see every module.** Most crates declare
@@ -322,7 +328,12 @@ directory -- 298 files on 2026-10-14, the largest being `ftui-runtime`
 **Not** in the repository-root `tests/`. That directory holds fixtures,
 baselines and captured artifacts, contains no `.rs` files, and could not run
 if it did: the root `Cargo.toml` is a virtual manifest with no `[package]`,
-so cargo never compiles a test target there.
+so cargo never compiles a test target there. To add a Rust integration test,
+create `crates/<crate>/tests/<name>.rs`; to add a PTY E2E scenario, add
+`tests/e2e/scripts/test_<name>.sh` (or `.py`) and register it in
+`tests/e2e/scripts/run_all.sh`. Scheduled and on-demand libFuzzer campaigns
+across the 12 targets in `fuzz/` run via `./scripts/fuzz_campaign_e2e.sh`
+(DSR tool `frankentui-fuzz-campaign`; see `fuzz/README.md`).
 
 ### Unit Tests
 
@@ -406,6 +417,11 @@ successful frame logs and input recovery do not prove visible rendering.
 ./scripts/e2e_test.sh
 ./scripts/widget_api_e2e.sh
 ./scripts/demo_showcase_e2e.sh
+
+# Agent shell headless 10k-line simulator + plain PTY + multiplexer scrollback E2E
+cargo test -p ftui --test agent_shell_sim
+cargo test -p ftui --test agent_shell_plain_pty
+python3 -B tests/e2e/scripts/test_inline_scrollback_mux.py --agent-shell target/debug/examples/agent_shell --showcase target/debug/ftui-demo-showcase --lines 10000 --out /tmp/ftui-inline-scrollback-e2e
 
 # Run the demo showcase manually
 cargo run -p ftui-demo-showcase
@@ -491,7 +507,7 @@ Provides a layered terminal UI framework with an Elm/Bubbletea-style runtime, de
                                 ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │                          Output Layer                              │
-│   TerminalWriter (inline or alt-screen)                           │
+│   BackendPresenter (TerminalPresenter over TerminalWriter; Web)    │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1062,8 +1078,9 @@ characters. A step you can satisfy by believing you did it is not a step.
    for someone who will read it in six weeks with no memory of this session.
    `--bypass-policy` exists, needs `--bypass-reason`, and is recorded.
 
-4. **Sync and commit.** `br sync --flush-only`, then `git add .beads/` and
-   commit — `br` never runs git itself, so an unsynced close exists only on
+4. **Sync and commit.** `br sync --flush-only`, regenerate `docs/main-todo-bead-map.md`
+   with `python3 scripts/render_todo_bead_map.py`, then `git add .beads/ docs/main-todo-bead-map.md`
+   and commit — `br` never runs git itself, so an unsynced close exists only on
    your machine.
 
 5. **Push.** `git pull --rebase && git push && git push origin main:master`.
@@ -1135,4 +1152,4 @@ NEVER EVER DO THAT AGAIN. The answer is literally ALWAYS the same: those are cha
 
 Also, if I ask you to explicitly use your built-in TODO functionality, don't complain about this and say you need to use beads. You can use built-in TODOs if I tell you specifically to do so. Always comply with such orders.
 
-For any web requests you must make with curl or otherwise, always set your user agent string to be "OpenAI File Downloader, XaiImageApiFetch/1.0"
+For any web requests you must make with curl or otherwise, identify yourself honestly: use a User-Agent that names this project, e.g. "frankentui-agent (+https://github.com/Dicklesworthstone/frankentui)". Never borrow another product's or company's crawler or client User-Agent, and never spoof a client to get past a block.

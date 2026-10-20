@@ -70,6 +70,15 @@ impl Keybinding {
     }
 }
 
+impl<A> From<&ftui_core::keybinding::Binding<A>> for Keybinding {
+    fn from(binding: &ftui_core::keybinding::Binding<A>) -> Self {
+        Self {
+            key: binding.chord.to_string(),
+            action: binding.label.clone().unwrap_or_default(),
+        }
+    }
+}
+
 /// Structured help content for a widget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelpContent {

@@ -1340,6 +1340,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let expectations = CleanupExpectations::for_session(&options);
         assert_terminal_restored(output, &expectations)
@@ -1360,6 +1361,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
 
         let _session = TerminalSession::new(options).expect("TerminalSession::new");
@@ -1404,6 +1406,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let expectations = CleanupExpectations::for_session(&options);
         assert_terminal_restored(output, &expectations)
@@ -1424,6 +1427,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
 
         let _session = TerminalSession::new(options).expect("TerminalSession::new");
@@ -1466,6 +1470,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let expectations = CleanupExpectations::for_session(&options);
         assert_terminal_restored(output, &expectations)
@@ -1486,6 +1491,7 @@ mod tests {
             focus_events: true,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
 
         let _session = TerminalSession::new(options).expect("TerminalSession::new");
@@ -1777,6 +1783,7 @@ mod tests {
             focus_events: false,
             kitty_keyboard: true,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let expectations = CleanupExpectations::for_session(&options);
         assert!(!expectations.sgr_reset); // always false for for_session
@@ -1797,6 +1804,7 @@ mod tests {
             focus_events: false,
             kitty_keyboard: false,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let expectations = CleanupExpectations::for_session(&options);
         assert!(expectations.show_cursor); // still true

@@ -174,6 +174,11 @@ fn event_payload_bytes(event: &Event) -> usize {
         Event::Paste(paste) => paste.text.capacity(),
         Event::Ime(ime) => ime.text.capacity(),
         Event::Clipboard(clipboard) => clipboard.content.capacity(),
+        Event::TerminalResponse(resp) => match resp {
+            ftui_core::event::TerminalResponse::Dcs { payload, .. }
+            | ftui_core::event::TerminalResponse::Apc { payload, .. } => payload.capacity(),
+            ftui_core::event::TerminalResponse::CellSize { .. } => 0,
+        },
         Event::Key(_) | Event::Mouse(_) | Event::Resize { .. } | Event::Focus(_) | Event::Tick => 0,
     }
 }
@@ -1450,5 +1455,20 @@ mod tests {
         let patch = cell_to_patch(&cell);
 
         assert_eq!(patch.attrs >> 8, CellAttrs::LINK_ID_MAX);
+    }
+
+    #[test]
+    fn web_presenter_default_trait_methods_are_neutral() {
+        let mut presenter = WebPresenter::default();
+        BackendPresenter::resize(&mut presenter, 120, 40);
+        assert_eq!(presenter.width, 120);
+        assert_eq!(presenter.height, 40);
+
+        let mode = ScreenMode::Inline { ui_height: 8 };
+        BackendPresenter::set_screen_mode(&mut presenter, mode);
+        assert_eq!(BackendPresenter::screen_mode(&presenter), mode);
+
+        BackendPresenter::write_log(&mut presenter, "hello").unwrap();
+        assert_eq!(presenter.outputs().logs, vec!["hello".to_string()]);
     }
 }

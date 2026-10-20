@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-09-01).** This review's "Release Ready" verdict was not evidence-backed. The current assessment, with file:line evidence and DSR verification receipts, is `docs/planning/reality-check-2026-09-01.md`; the vision-delivery table at its top is maintained by `g42-docs`.
+
 # FrankenTUI Deep Codebase Review - Final Report
 
 ## Executive Summary

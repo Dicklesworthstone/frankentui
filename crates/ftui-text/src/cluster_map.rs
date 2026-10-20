@@ -11,9 +11,13 @@
 //!
 //! The cluster map guarantees:
 //!
-//! 1. **Round-trip preservation**: `byte → cell → byte` returns the original
-//!    cluster start (never a mid-cluster position).
-//! 2. **Monotonicity**: visual cell offsets increase with byte offsets.
+//! 1. **Round-trip preservation**: for any cluster whose visual column is
+//!    in-bounds (`cell_start < total_cells`), `byte → cell → byte` snaps to
+//!    the first cluster owning that visual column (`<= byte_start`, and never
+//!    a mid-cluster byte). Trailing or all-zero-width clusters sit at visual
+//!    EOF (`cell_start == total_cells`), where `cell_to_byte(total_cells)`
+//!    returns `total_bytes`.
+//! 2. **Monotonicity**: visual cell offsets are non-decreasing with byte offsets.
 //! 3. **Boundary alignment**: lookups always snap to grapheme cluster
 //!    boundaries — never splitting a grapheme or shaped glyph cluster.
 //! 4. **Continuation cell handling**: wide characters that span 2+ cells
@@ -635,6 +639,90 @@ mod tests {
 
         // Cell column 1 is owned by the first (lowest-byte) cluster there.
         assert_eq!(map.cell_to_byte(1), 1);
+    }
+
+    #[test]
+    fn fuzz_crash_0x0b_and_zero_width_only_eof_contract() {
+        // Minimized 1-byte fuzz input 0x0b (VT) and multi-cluster zero-width-only
+        // inputs have total_cells == 0, so every cluster sits at the visual EOF
+        // column (cell_start == total_cells == 0). Forward lookup maps every byte
+        // to cell 0, and reverse lookup at cell_col >= total_cells returns
+        // total_bytes (the documented EOF boundary).
+        for text in ["\x0b", "\0", "\u{200B}\u{200C}\x0b"] {
+            let map = ClusterMap::from_text(text);
+            assert!(!map.is_empty());
+            assert_eq!(map.total_cells(), 0);
+            assert_eq!(map.total_bytes(), text.len());
+
+            for entry in map.entries() {
+                assert_eq!(entry.cell_start, 0);
+                assert_eq!(entry.cell_width, 0);
+                let cell = map.byte_to_cell(entry.byte_start as usize);
+                assert_eq!(cell, 0);
+                assert_eq!(map.cell_to_byte(cell), text.len());
+                assert!(map.cell_to_entry(cell).is_none());
+            }
+            assert_eq!(map.cell_range_to_byte_range(0, 0), (0, 0));
+        }
+    }
+
+    #[test]
+    fn zero_width_leading_interior_trailing_and_wide_continuations() {
+        // 1. Leading zero-width group before visible ASCII:
+        //    clusters at bytes 0..3 (\u{200B}), 3..4 (\x0b), and 4..5 ('A')
+        //    all share cell_start == 0, while total_cells == 1.
+        let leading = "\u{200B}\x0bA";
+        let map_leading = ClusterMap::from_text(leading);
+        assert_eq!(map_leading.total_cells(), 1);
+        assert_eq!(map_leading.total_bytes(), 5);
+        assert_eq!(map_leading.cell_to_byte(0), 0);
+        assert_eq!(map_leading.cell_to_entry(0).unwrap().byte_start, 0);
+        for entry in map_leading.entries() {
+            let cell = map_leading.byte_to_cell(entry.byte_start as usize);
+            assert_eq!(cell, 0);
+            assert_eq!(map_leading.cell_to_byte(cell), 0);
+        }
+        assert_eq!(map_leading.cell_to_byte(1), 5);
+        assert_eq!(map_leading.extract_text_for_cells(leading, 0, 1), leading);
+
+        // 2. Trailing zero-width group after visible ASCII:
+        //    'A' (bytes 0..1, cell 0..1) followed by \u{200B} (1..4, cell 1..1)
+        //    and \x0b (4..5, cell 1..1). Visual width is 1; cell 1 is visual EOF.
+        let trailing = "A\u{200B}\x0b";
+        let map_trailing = ClusterMap::from_text(trailing);
+        assert_eq!(map_trailing.total_cells(), 1);
+        assert_eq!(map_trailing.total_bytes(), 5);
+        assert_eq!(map_trailing.cell_to_byte(0), 0);
+        assert_eq!(map_trailing.cell_to_byte(1), 5);
+        assert!(map_trailing.cell_to_entry(1).is_none());
+        assert_eq!(map_trailing.byte_to_cell(0), 0);
+        assert_eq!(map_trailing.byte_to_cell(1), 1);
+        assert_eq!(map_trailing.byte_to_cell(4), 1);
+        // Full-line extraction [0, total_cells) includes trailing zero-width bytes.
+        assert_eq!(
+            map_trailing.extract_text_for_cells(trailing, 0, 1),
+            trailing
+        );
+
+        // 3. Wide continuations + interior & trailing zero-width clusters:
+        //    '世' (0..3, cells 0..2), '\u{200B}' (3..6, cell 2..2),
+        //    '界' (6..9, cells 2..4), '\x0b' (9..10, cell 4..4).
+        let mixed = "\u{4E16}\u{200B}\u{754C}\x0b";
+        let map_mixed = ClusterMap::from_text(mixed);
+        assert_eq!(map_mixed.total_cells(), 4);
+        assert_eq!(map_mixed.total_bytes(), 10);
+        // Cell 0 and continuation cell 1 both resolve to '世' (byte 0).
+        assert_eq!(map_mixed.cell_to_byte(0), 0);
+        assert_eq!(map_mixed.cell_to_byte(1), 0);
+        // Cell 2 resolves to the first owner at column 2 ('\u{200B}' at byte 3).
+        assert_eq!(map_mixed.cell_to_byte(2), 3);
+        assert_eq!(map_mixed.cell_to_entry(2).unwrap().byte_start, 3);
+        // Continuation cell 3 resolves to the wide cluster '界' (byte 6).
+        assert_eq!(map_mixed.cell_to_byte(3), 6);
+        assert_eq!(map_mixed.cell_to_entry(3).unwrap().byte_start, 6);
+        // Cell 4 (== total_cells) is visual EOF (byte 10).
+        assert_eq!(map_mixed.cell_to_byte(4), 10);
+        assert!(map_mixed.cell_to_entry(4).is_none());
     }
 
     #[test]

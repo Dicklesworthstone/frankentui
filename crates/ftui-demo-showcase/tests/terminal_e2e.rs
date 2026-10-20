@@ -11,6 +11,7 @@
 //!
 //! Run: `cargo test -p ftui-demo-showcase --test terminal_e2e`
 
+#[cfg(unix)]
 use std::time::Duration;
 
 use ftui_pty::input_forwarding::{

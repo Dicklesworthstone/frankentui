@@ -377,6 +377,7 @@ mod file_storage {
             // Validate format version
             if state_file.format_version != StateFile::FORMAT_VERSION {
                 tracing::warn!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     stored = state_file.format_version,
                     expected = StateFile::FORMAT_VERSION,
                     "state file format version mismatch, ignoring stored state"
@@ -388,15 +389,19 @@ mod file_storage {
             let mut result = HashMap::new();
             for (key, entry) in state_file.entries {
                 use base64::Engine;
-                let data = match base64::engine::general_purpose::STANDARD
-                    .decode(&entry.data_base64)
-                {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::warn!(key = %key, error = %e, "failed to decode state entry, skipping");
-                        continue;
-                    }
-                };
+                let data =
+                    match base64::engine::general_purpose::STANDARD.decode(&entry.data_base64) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            tracing::warn!(
+                                target: crate::telemetry_schema::TARGET_RUNTIME,
+                                key = %key,
+                                error = %e,
+                                "failed to decode state entry, skipping"
+                            );
+                            continue;
+                        }
+                    };
                 result.insert(
                     key.clone(),
                     StoredEntry {
@@ -451,6 +456,7 @@ mod file_storage {
             saved?;
 
             tracing::debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 path = %self.path.display(),
                 entries = entries.len(),
                 "saved widget state"
@@ -582,7 +588,12 @@ impl StateRegistry {
             .map_err(|_| StorageError::Corruption("dirty lock poisoned".into()))?;
         *dirty = false;
 
-        tracing::debug!(backend = %self.backend.name(), count, "loaded widget state");
+        tracing::debug!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
+            backend = %self.backend.name(),
+            count,
+            "loaded widget state"
+        );
         Ok(count)
     }
 

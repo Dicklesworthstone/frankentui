@@ -1316,6 +1316,7 @@ fn format_event(event: &Event) -> String {
         Event::Resize { width, height } => format!("Resize {}x{}", width, height),
         Event::Focus(focus) => format!("Focus({:?})", focus),
         Event::Clipboard(_) => "Clipboard".to_string(),
+        Event::TerminalResponse(_) => "TerminalResponse".to_string(),
         Event::Tick => "Tick".to_string(),
     }
 }

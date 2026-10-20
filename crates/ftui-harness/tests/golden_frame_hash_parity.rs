@@ -1894,16 +1894,37 @@ fn regress_12_composite_layout_determinism() {
 
 #[test]
 fn parity_suite_summary() {
+    let source = include_str!("golden_frame_hash_parity.rs");
+    let count_prefix = |prefix: &str| {
+        source
+            .lines()
+            .filter(|line| line.trim_start().starts_with(prefix))
+            .count()
+    };
+    let simple = count_prefix("fn simple_");
+    let layout = count_prefix("fn layout_");
+    let interact = count_prefix("fn interact_");
+    let edge = count_prefix("fn edge_");
+    let regress = count_prefix("fn regress_");
+    let total = simple + layout + interact + edge + regress;
+
+    assert_eq!(simple, 20, "Expected 20 simple_* parity scenarios");
+    assert_eq!(layout, 20, "Expected 20 layout_* parity scenarios");
+    assert_eq!(interact, 30, "Expected 30 interact_* parity scenarios");
+    assert_eq!(edge, 20, "Expected 20 edge_* parity scenarios");
+    assert_eq!(regress, 12, "Expected 12 regress_* parity scenarios");
+    assert_eq!(total, 102, "Expected 102 total parity scenarios");
+
     log_jsonl(
         "summary",
         &[
             ("bead", "bd-1pys5.6"),
-            ("category_simple", "20"),
-            ("category_layout", "20"),
-            ("category_interact", "30"),
-            ("category_edge", "20"),
-            ("category_regress", "12"),
-            ("total_scenarios", "102"),
+            ("category_simple", &simple.to_string()),
+            ("category_layout", &layout.to_string()),
+            ("category_interact", &interact.to_string()),
+            ("category_edge", &edge.to_string()),
+            ("category_regress", &regress.to_string()),
+            ("total_scenarios", &total.to_string()),
         ],
     );
 }

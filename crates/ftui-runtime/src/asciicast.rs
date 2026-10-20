@@ -50,6 +50,7 @@ impl AsciicastRecorder<BufWriter<File>> {
         let recorder =
             AsciicastRecorder::build(writer, width, height, timestamp, Some(path.to_path_buf()))?;
         info!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             path = ?path,
             width = width,
             height = height,
@@ -66,6 +67,7 @@ impl<W: Write> AsciicastRecorder<W> {
     pub fn with_writer(output: W, width: u16, height: u16, timestamp: i64) -> io::Result<Self> {
         let recorder = Self::build(output, width, height, timestamp, None)?;
         info!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             width = width,
             height = height,
             timestamp = timestamp,
@@ -114,6 +116,7 @@ impl<W: Write> AsciicastRecorder<W> {
         self.output.flush()?;
         if let Some(path) = &self.path {
             info!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 path = ?path,
                 duration_secs = duration,
                 events = self.event_count,
@@ -121,6 +124,7 @@ impl<W: Write> AsciicastRecorder<W> {
             );
         } else {
             info!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 duration_secs = duration,
                 events = self.event_count,
                 "Asciicast recording complete"
@@ -136,6 +140,7 @@ impl<W: Write> AsciicastRecorder<W> {
         writeln!(self.output, "[{:.6},\"{}\",\"{}\"]", time, kind, escaped)?;
         self.event_count += 1;
         trace!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             bytes = data.len(),
             elapsed_secs = time,
             kind = kind,

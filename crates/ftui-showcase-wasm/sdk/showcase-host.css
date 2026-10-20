@@ -1,0 +1,41 @@
+/* In-tree DOM <pre> text host styles for ftui-showcase-wasm.
+   Implements style flags from docs/spec/wasm-showcase-runner-contract.md Section 3. */
+
+.ftui-grid {
+  margin: 0;
+  padding: 0;
+  font-family: "Pragmasevka NF", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.2;
+  white-space: pre;
+  user-select: text;
+  background-color: #0a0a0a;
+  color: #e6e6e6;
+  overflow: hidden;
+  outline: none;
+}
+
+.ftui-cell-probe {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: pre;
+  font-family: "Pragmasevka NF", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+/* StyleFlags bit 0..7 mapping */
+.ftui-bold          { font-weight: 700; }
+.ftui-dim           { opacity: 0.6; }
+.ftui-italic        { font-style: italic; }
+.ftui-underline     { text-decoration: underline; }
+.ftui-blink         { animation: ftui-cell-blink 1s step-end infinite; }
+.ftui-inverse       { filter: invert(1); }
+.ftui-hidden        { color: transparent !important; }
+.ftui-strikethrough { text-decoration: line-through; }
+.ftui-underline.ftui-strikethrough { text-decoration: underline line-through; }
+
+@keyframes ftui-cell-blink {
+  50% { opacity: 0.25; }
+}

@@ -46,9 +46,12 @@ config collects nothing.
 Per rendered frame the runtime then:
 
 1. builds the `A11yTree` (the first parentless node becomes the root
-   unless the view set one; the first node whose state reports `focused`
-   becomes the tree focus unless a focused ID was set explicitly) and
-   records the reading order (push order);
+   unless the view set one; if the view called `frame.set_a11y_focused(id)` or
+   `focus_manager.sync_to_frame(frame)`, `finish_a11y` reconciles node focus
+   flags to that single authoritative ID—delegating to a composite container's
+   active focused descendant when the container ID itself is focused—and
+   otherwise derives focus from the first node whose state reports `focused`)
+   and records the reading order (push order);
 2. diffs it against the previous frame's tree;
 3. derives bounded screen-reader announcements (`ScreenReaderPolicy`
    caps count and text length): focus changes, retained-focus control
@@ -94,11 +97,11 @@ What is **not** done:
   a screen reader still needs a host bridge. The packaged browser text bridge
   described below uses DOM live regions instead.
 - Tabs content panes and pane workspaces do not automatically gain a semantic
-  container. Generic `Modal<C>`, built-in `Dialog` presets, and
+  container. Generic `Modal<C>`, built-in `Dialog` presets, `Tree`, and
   `ftui-extras::Form` contribute scoped controls from their render paths.
-- Focus is derived from `A11yState::focused` on the pushed nodes (first in
-  reading order) unless the view sets a focused ID on the builder; integrating
-  application-wide focus ownership with the accessibility tree is future work.
+- Focus reconciliation is opt-in per view via `FocusManager::sync_to_frame(frame)`
+  or `Frame::set_a11y_focused(id)` (falling back to the first `A11yState::focused`
+  node in reading order when not called).
 
 ### Host-driven web runner (`StepProgram`)
 
@@ -252,6 +255,7 @@ manual assistive-technology testing and a full semantic control bridge remain.
 | `CommandPalette` | Dialog + TextInput + Menu/MenuItem | quiet query focus, selected command, descriptions/categories, polite selection status |
 | `ftui-widgets::FilePicker` | List + ListItem | current directory, file/directory kind, selected item, explicit focus ownership |
 | `ftui-extras::FilePicker` | List + ListItem | filtered window, file kind/size, selection, reusable manual-render semantics |
+| `Tree` | List + nested ListItem hierarchy | root/filtered count, canonical tree-path IDs across sibling collapse and search, expanded/selected/focused state |
 
 ### Built-in dialogs
 
@@ -314,7 +318,10 @@ FrankenTUI has a focus management subsystem (`ftui-widgets::focus`):
 - **`FocusGraph`** -- directed graph encoding focus navigation
   relationships (up/down/left/right/next/prev). O(1) navigation.
 - **`FocusManager`** -- manages focus state, tab-order traversal, and
-  focus groups.
+  focus groups. `FocusManager::sync_to_frame(&mut Frame)` (and
+  `FocusManager::apply_to_a11y`) synchronizes focus ownership, composite
+  descendant delegation (`List`, `Tree`, `Form`, `Dialog`), and modal
+  `FocusTrap` transitions with the rendered `A11yTree`.
 - **`FocusIndicator`** -- configurable visual focus cues: reverse video
   overlay (default), underline, border highlight, or none.
 - **`FocusTrap`** -- constrains tab navigation within modal regions
@@ -348,6 +355,7 @@ it is no longer the only description available after the packaged runner starts.
 | `0`-`9` | Jump to screen by number |
 | `q` | Quit (suppressed when text input is active) |
 | `Ctrl+C` | Quit |
+| `h` / `l` | Switch panel (on multi-panel screens like File Browser) |
 | `?` | Toggle help overlay |
 | `F12` | Toggle debug overlay |
 | `Ctrl+K` | Open command palette |
@@ -396,7 +404,7 @@ Most interactive widgets respond to standard terminal key conventions:
 
 3. **Widget coverage and container scoping are incomplete.** Tabs content
    panes, pane workspaces, and specialized widgets still require auditing.
-   Generic `Modal<C>`, built-in `Dialog`, `Form`, and `TextArea` paths
+   Generic `Modal<C>`, built-in `Dialog`, `Form`, `Tree`, and `TextArea` paths
    contribute metadata.
 
 4. **Focus feedback is not yet delivered to a native screen reader.**
@@ -430,9 +438,9 @@ Most interactive widgets respond to standard terminal key conventions:
 
 ### Phase 5: Remaining widget coverage
 
-- Continue auditing Tree plus tab-panel and pane-workspace hierarchy
+- Continue auditing tab-panel and pane-workspace hierarchy
   for names, state, focus and hierarchy coverage. Extend the role vocabulary
-  where needed. Built-in Dialog presets and multiline TextArea have metadata.
+  where needed. Built-in Dialog presets, Tree, and multiline TextArea have metadata.
 
 ### Phase 6: Automated accessibility testing
 

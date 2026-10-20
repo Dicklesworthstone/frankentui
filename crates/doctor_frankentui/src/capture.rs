@@ -243,12 +243,14 @@ struct ResolvedCaptureConfig {
 
 impl ResolvedCaptureConfig {
     fn defaults(profile: &str) -> Self {
+        let project_dir = crate::util::default_project_dir();
+        let binary = crate::util::default_demo_showcase_binary(&project_dir);
         Self {
             profile: profile.to_string(),
             profile_description: "ad-hoc run".to_string(),
-            binary: PathBuf::from("/data/tmp/cargo-target/debug/ftui-demo-showcase"),
+            binary,
             app_command: Some("cargo run -q -p ftui-demo-showcase".to_string()),
-            project_dir: PathBuf::from("/data/projects/frankentui"),
+            project_dir,
             host: "127.0.0.1".to_string(),
             port: "8879".to_string(),
             http_path: "/mcp/".to_string(),
@@ -1252,7 +1254,11 @@ fn build_docker_mounts(cfg: &ResolvedCaptureConfig, run_dir: &Path) -> Vec<PathB
         }
     };
 
-    push_unique(run_dir.to_path_buf());
+    if cfg.run_root.exists() && run_dir.starts_with(&cfg.run_root) {
+        push_unique(cfg.run_root.clone());
+    } else {
+        push_unique(run_dir.to_path_buf());
+    }
     push_unique(cfg.project_dir.clone());
 
     if using_legacy_binary(cfg)
@@ -1420,6 +1426,7 @@ fn detach_vhs_log_pump_join(handle: thread::JoinHandle<()>, stream: &'static str
         });
 }
 
+#[cfg(any(unix, test))]
 fn parse_defunct_ttyd_from_ps(stdout: &[u8]) -> bool {
     String::from_utf8_lossy(stdout).lines().any(|line| {
         let mut parts = line.split_whitespace();

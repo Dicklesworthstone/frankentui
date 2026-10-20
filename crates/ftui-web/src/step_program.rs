@@ -48,6 +48,7 @@
 //! ```
 
 use core::time::Duration;
+use std::sync::Arc;
 
 use ftui_a11y::tree::{
     A11yTree, A11yTreeBuilder, ScreenReaderAnnouncement, ScreenReaderAnnouncements,
@@ -60,6 +61,8 @@ use ftui_render::diff::BufferDiff;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_runtime::program::{AccessibilityFrame, Cmd, Model};
+use ftui_runtime::state_persistence::StateRegistry;
+use ftui_runtime::tick_strategy::{TickDecision, TickStrategy};
 
 use crate::{WebBackend, WebBackendError, WebOutputs};
 
@@ -130,6 +133,10 @@ pub struct StepProgram<M: Model> {
     frame_idx: u64,
     tick_rate: Option<Duration>,
     last_tick: Duration,
+    tick_count: u64,
+    tick_strategy: Option<Box<dyn TickStrategy>>,
+    last_active_screen_for_strategy: Option<String>,
+    state_registry: Option<Arc<StateRegistry>>,
     width: u16,
     height: u16,
     /// Double-buffered render target: O(1) swap instead of O(w*h) clone.
@@ -160,6 +167,10 @@ impl<M: Model> StepProgram<M> {
             frame_idx: 0,
             tick_rate: None,
             last_tick: Duration::ZERO,
+            tick_count: 0,
+            tick_strategy: None,
+            last_active_screen_for_strategy: None,
+            state_registry: None,
             width,
             height,
             dbl_buf: None,
@@ -189,6 +200,10 @@ impl<M: Model> StepProgram<M> {
             frame_idx: 0,
             tick_rate: None,
             last_tick: Duration::ZERO,
+            tick_count: 0,
+            tick_strategy: None,
+            last_active_screen_for_strategy: None,
+            state_registry: None,
             width,
             height,
             dbl_buf: None,
@@ -200,6 +215,37 @@ impl<M: Model> StepProgram<M> {
             a11y_announcements: Vec::new(),
             a11y_dropped: 0,
         }
+    }
+
+    /// Attach a [`StateRegistry`] for `Cmd::SaveState` and `Cmd::RestoreState` commands.
+    #[must_use]
+    pub fn with_registry(mut self, registry: Arc<StateRegistry>) -> Self {
+        self.state_registry = Some(registry);
+        self
+    }
+
+    /// Set or clear the [`StateRegistry`] used by `Cmd::SaveState` and `Cmd::RestoreState`.
+    pub fn set_state_registry(&mut self, registry: Option<Arc<StateRegistry>>) {
+        self.state_registry = registry;
+    }
+
+    /// Access the configured [`StateRegistry`], if any.
+    #[must_use]
+    pub fn state_registry(&self) -> Option<&Arc<StateRegistry>> {
+        self.state_registry.as_ref()
+    }
+
+    /// Attach a [`TickStrategy`] for selective background screen ticking.
+    #[must_use]
+    pub fn with_tick_strategy(mut self, strategy: impl TickStrategy + 'static) -> Self {
+        self.tick_strategy = Some(Box::new(strategy));
+        self
+    }
+
+    /// Name of the active [`TickStrategy`], if any.
+    #[must_use]
+    pub fn tick_strategy_name(&self) -> Option<&str> {
+        self.tick_strategy.as_ref().map(|s| s.name())
     }
 
     /// Enable the local accessibility channel, normally before [`init`](Self::init).
@@ -311,6 +357,7 @@ impl<M: Model> StepProgram<M> {
         let cmd = self.model.init();
         self.execute_cmd(cmd);
         if self.running {
+            self.check_screen_transition();
             self.render_frame()?;
         } else {
             self.backend.events.set_size(self.width, self.height);
@@ -364,10 +411,57 @@ impl<M: Model> StepProgram<M> {
                     let rem = Duration::from_nanos(rem_ns as u64);
                     self.last_tick = now.saturating_sub(rem);
                 }
-                let msg = M::Message::from(Event::Tick);
-                let cmd = self.model.update(msg);
-                self.dirty = true;
-                self.execute_cmd(cmd);
+                self.tick_count = self.tick_count.wrapping_add(1);
+                let tick_count = self.tick_count;
+                let mut used_screen_dispatch = false;
+
+                // Per-screen tick dispatch using the active TickStrategy when
+                // the model implements ScreenTickDispatch.
+                if let Some(strategy) = self.tick_strategy.as_mut() {
+                    let dispatch_snapshot = self.model.as_screen_tick_dispatch().map(|dispatch| {
+                        let active = dispatch.active_screen_id();
+                        let all_screens = dispatch.screen_ids();
+                        (active, all_screens)
+                    });
+
+                    if let Some((active, all_screens)) = dispatch_snapshot {
+                        used_screen_dispatch = true;
+                        if let Some(previous_active) =
+                            self.last_active_screen_for_strategy.as_deref()
+                            && previous_active != active
+                        {
+                            strategy.on_screen_transition(previous_active, &active);
+                        }
+                        self.last_active_screen_for_strategy = Some(active.clone());
+
+                        let mut tick_targets = Vec::with_capacity(all_screens.len().max(1));
+                        tick_targets.push(active.clone());
+                        for screen_id in all_screens {
+                            if screen_id != active
+                                && strategy.should_tick(&screen_id, tick_count, &active)
+                                    == TickDecision::Tick
+                            {
+                                tick_targets.push(screen_id);
+                            }
+                        }
+
+                        if let Some(dispatch) = self.model.as_screen_tick_dispatch() {
+                            for screen_id in &tick_targets {
+                                dispatch.tick_screen(screen_id, tick_count);
+                            }
+                        }
+                        strategy.maintenance_tick(tick_count);
+                        self.dirty = true;
+                    }
+                }
+
+                if !used_screen_dispatch {
+                    self.last_active_screen_for_strategy = None;
+                    let msg = M::Message::from(Event::Tick);
+                    let cmd = self.model.update(msg);
+                    self.dirty = true;
+                    self.execute_cmd(cmd);
+                }
             }
         }
 
@@ -531,6 +625,35 @@ impl<M: Model> StepProgram<M> {
 
     // --- Private helpers ---
 
+    fn check_screen_transition(&mut self) {
+        if self.tick_strategy.is_none() || !self.running {
+            return;
+        }
+        let current_active = match self.model.as_screen_tick_dispatch() {
+            Some(dispatch) => dispatch.active_screen_id(),
+            None => return,
+        };
+        let previous = match self.last_active_screen_for_strategy.take() {
+            Some(prev) => prev,
+            None => {
+                self.last_active_screen_for_strategy = Some(current_active);
+                return;
+            }
+        };
+        if previous == current_active {
+            self.last_active_screen_for_strategy = Some(current_active);
+            return;
+        }
+        if let Some(strategy) = self.tick_strategy.as_mut() {
+            strategy.on_screen_transition(&previous, &current_active);
+        }
+        if let Some(dispatch) = self.model.as_screen_tick_dispatch() {
+            dispatch.tick_screen(&current_active, self.tick_count);
+            self.dirty = true;
+        }
+        self.last_active_screen_for_strategy = Some(current_active);
+    }
+
     fn handle_event(&mut self, event: Event) {
         if let Event::Resize { width, height } = &event {
             let (prev_width, prev_height) = (self.width, self.height);
@@ -551,6 +674,9 @@ impl<M: Model> StepProgram<M> {
         let cmd = self.model.update(msg);
         self.dirty = true;
         self.execute_cmd(cmd);
+        if self.running {
+            self.check_screen_transition();
+        }
     }
 
     fn render_frame(&mut self) -> Result<(), WebBackendError> {
@@ -714,6 +840,9 @@ impl<M: Model> StepProgram<M> {
             Cmd::None => {}
             Cmd::Quit => {
                 self.running = false;
+                if let Some(ref mut strategy) = self.tick_strategy {
+                    strategy.shutdown();
+                }
             }
             Cmd::Msg(m) => {
                 return Some(self.model.update(m));
@@ -747,11 +876,35 @@ impl<M: Model> StepProgram<M> {
             Cmd::GetClipboard => self
                 .clipboard_requests
                 .push(ftui_runtime::program::ClipboardRequest::Get),
-            Cmd::SaveState | Cmd::RestoreState => {
-                // No persistence in WASM (yet).
+            Cmd::SaveState => {
+                if let Some(ref registry) = self.state_registry
+                    && let Err(error) = registry.flush()
+                {
+                    let msg = format!("state save failed: {error}");
+                    let _ = self.backend.presenter_mut().write_log(&msg);
+                    return Some(self.model.on_error(&msg));
+                }
             }
-            Cmd::SetTickStrategy(_) => {
-                // Runtime tick strategy selection is handled by host configuration.
+            Cmd::RestoreState => {
+                if let Some(ref registry) = self.state_registry {
+                    match registry.load() {
+                        Ok(_) => {
+                            self.dirty = true;
+                        }
+                        Err(error) => {
+                            let msg = format!("state restore failed: {error}");
+                            let _ = self.backend.presenter_mut().write_log(&msg);
+                            return Some(self.model.on_error(&msg));
+                        }
+                    }
+                }
+            }
+            Cmd::SetTickStrategy(strategy) => {
+                if let Some(ref mut prev) = self.tick_strategy {
+                    prev.shutdown();
+                }
+                self.tick_strategy = Some(strategy);
+                self.last_active_screen_for_strategy = None;
             }
         }
         None
@@ -1689,5 +1842,109 @@ mod tests {
             final_pool_len <= (POOL_GC_INTERVAL_FRAMES as usize).saturating_add(2),
             "final grapheme pool length should stay bounded by GC interval (final={final_pool_len})"
         );
+    }
+
+    #[test]
+    fn save_restore_and_tick_strategy_work_in_step_program() {
+        use ftui_runtime::tick_strategy::{ActiveOnly, ScreenTickDispatch, Uniform};
+
+        let registry = Arc::new(StateRegistry::in_memory());
+        registry.set("viewer", 3, vec![4, 5, 6]);
+        assert!(registry.is_dirty());
+
+        struct WebMultiScreenModel {
+            active: &'static str,
+            active_ticks: Vec<u64>,
+            bg_ticks: Vec<u64>,
+        }
+
+        enum WebMultiMsg {
+            Tick,
+        }
+
+        impl From<Event> for WebMultiMsg {
+            fn from(_: Event) -> Self {
+                Self::Tick
+            }
+        }
+
+        impl Model for WebMultiScreenModel {
+            type Message = WebMultiMsg;
+
+            fn init(&mut self) -> Cmd<Self::Message> {
+                Cmd::batch(vec![
+                    Cmd::tick(Duration::from_millis(10)),
+                    Cmd::set_tick_strategy(ActiveOnly),
+                    Cmd::save_state(),
+                ])
+            }
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, _frame: &mut Frame) {}
+
+            fn as_screen_tick_dispatch(&mut self) -> Option<&mut dyn ScreenTickDispatch> {
+                Some(self)
+            }
+        }
+
+        impl ScreenTickDispatch for WebMultiScreenModel {
+            fn active_screen_id(&self) -> String {
+                self.active.to_owned()
+            }
+
+            fn screen_ids(&self) -> Vec<String> {
+                vec!["alpha".to_owned(), "beta".to_owned()]
+            }
+
+            fn tick_screen(&mut self, screen_id: &str, tick_count: u64) {
+                if screen_id == self.active {
+                    self.active_ticks.push(tick_count);
+                } else {
+                    self.bg_ticks.push(tick_count);
+                }
+            }
+        }
+
+        let mut prog = StepProgram::new(
+            WebMultiScreenModel {
+                active: "alpha",
+                active_ticks: Vec::new(),
+                bg_ticks: Vec::new(),
+            },
+            40,
+            10,
+        )
+        .with_registry(Arc::clone(&registry));
+
+        prog.init().unwrap();
+        assert!(!registry.is_dirty(), "init SaveState should flush registry");
+        assert_eq!(prog.tick_strategy_name(), Some("ActiveOnly"));
+
+        // Remove entry from in-memory cache and restore from backing storage via Cmd::RestoreState.
+        assert!(registry.remove("viewer").is_some());
+        assert!(registry.get("viewer").is_none());
+        prog.execute_cmd(Cmd::restore_state());
+        let restored = registry
+            .get("viewer")
+            .expect("entry restored by Cmd::RestoreState");
+        assert_eq!(restored.version, 3);
+        assert_eq!(restored.data, vec![4, 5, 6]);
+
+        // Under ActiveOnly, background screen "beta" is skipped on ticks.
+        prog.advance_time(Duration::from_millis(10));
+        prog.step().unwrap();
+        assert_eq!(prog.model().active_ticks, vec![1]);
+        assert!(prog.model().bg_ticks.is_empty());
+
+        // Switch strategy to Uniform(2): tick_count=2 (even) ticks background screen "beta".
+        prog.execute_cmd(Cmd::set_tick_strategy(Uniform::new(2)));
+        assert_eq!(prog.tick_strategy_name(), Some("Uniform"));
+        prog.advance_time(Duration::from_millis(10));
+        prog.step().unwrap();
+        assert_eq!(prog.model().active_ticks, vec![1, 2]);
+        assert_eq!(prog.model().bg_ticks, vec![2]);
     }
 }

@@ -26,7 +26,7 @@ esac
 mkdir "$out"
 export CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never
 export CARGO_BUILD_FINGERPRINT=content
-export CARGO_HTTP_USER_AGENT='OpenAI File Downloader, XaiImageApiFetch/1.0'
+export CARGO_HTTP_USER_AGENT='frankentui-release (+https://github.com/Dicklesworthstone/frankentui)'
 source_commit="$(git rev-parse HEAD)"
 git status --porcelain=v1 --untracked-files=normal > "$out/source-status.txt"
 if [[ -s "$out/source-status.txt" ]]; then

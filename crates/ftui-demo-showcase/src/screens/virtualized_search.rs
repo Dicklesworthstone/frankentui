@@ -36,12 +36,16 @@ use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
 use ftui_text::{Span, Text, display_width};
-use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
+use ftui_widgets::height_predictor::PredictorConfig;
 use ftui_widgets::input::TextInput;
 use ftui_widgets::paragraph::Paragraph;
-use std::cell::Cell;
+use ftui_widgets::virtualized::{
+    BetaPosterior, RemeasurePolicy, RenderItem, VirtualizedList, VirtualizedListState,
+};
+use ftui_widgets::{StatefulWidget, Widget};
+use std::cell::{Cell, RefCell};
 
 use super::{HelpEntry, Screen};
 use crate::determinism;
@@ -52,6 +56,7 @@ use crate::theme;
 // ---------------------------------------------------------------------------
 
 const TOTAL_ITEMS: usize = 10_000;
+const VSEARCH_LIST_HIT_ID: u32 = 4201;
 
 /// Match highlight color (bright yellow/gold).
 const MATCH_HIGHLIGHT: PackedRgba = PackedRgba::rgb(255, 215, 0);
@@ -596,6 +601,182 @@ fn fuzzy_match(query: &str, target: &str) -> Option<FuzzyMatch> {
     }
 }
 
+/// A rendered row in the virtualized search results list.
+#[derive(Debug, Clone)]
+pub struct SearchRow {
+    /// Index into the original items list.
+    pub index: usize,
+    /// Primary item text.
+    pub text: String,
+    /// Optional preview lines displayed beneath the primary line.
+    pub preview_lines: Vec<String>,
+    /// Match score (higher = better match).
+    pub score: i32,
+    /// Positions of matched characters in the primary item text.
+    pub positions: Vec<usize>,
+}
+
+impl SearchRow {
+    /// Construct a new search row with explicit preview lines.
+    #[must_use]
+    pub fn new(
+        index: usize,
+        text: impl Into<String>,
+        preview_lines: Vec<String>,
+        score: i32,
+        positions: Vec<usize>,
+    ) -> Self {
+        Self {
+            index,
+            text: text.into(),
+            preview_lines,
+            score,
+            positions,
+        }
+    }
+
+    /// Deterministic preview lines for corpus item `index`.
+    #[must_use]
+    pub fn preview_for_item(index: usize) -> Vec<String> {
+        if index % 4 == 3 {
+            vec![format!(
+                "  ↳ trace_id=0x{:04x} latency={}ms",
+                (index.wrapping_mul(31).wrapping_add(7)) & 0xffff,
+                (index % 17) + 1
+            )]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+impl RenderItem for SearchRow {
+    fn render(&self, area: Rect, frame: &mut Frame, selected: bool, skip_rows: u16) {
+        if area.is_empty() {
+            return;
+        }
+        let mut row_y = area.y;
+        let max_y = area.bottom();
+
+        if skip_rows == 0 && row_y < max_y {
+            let line_area = Rect::new(area.x, row_y, area.width, 1);
+            render_highlighted_row_into(
+                frame,
+                line_area,
+                &self.text,
+                &self.positions,
+                selected,
+                self.score,
+            );
+            row_y = row_y.saturating_add(1);
+        }
+
+        let preview_skip = skip_rows.saturating_sub(1) as usize;
+        let preview_style = if selected {
+            Style::new()
+                .fg(theme::fg::MUTED)
+                .bg(theme::alpha::HIGHLIGHT)
+        } else {
+            Style::new().fg(theme::fg::MUTED)
+        };
+        for preview in self.preview_lines.iter().skip(preview_skip) {
+            if row_y >= max_y {
+                break;
+            }
+            let p_area = Rect::new(area.x, row_y, area.width, 1);
+            Paragraph::new(preview.as_str())
+                .style(preview_style)
+                .render(p_area, frame);
+            row_y = row_y.saturating_add(1);
+        }
+    }
+
+    fn height(&self) -> u16 {
+        (1 + self.preview_lines.len() as u16).max(1)
+    }
+
+    fn category(&self) -> usize {
+        usize::from(!self.preview_lines.is_empty())
+    }
+}
+
+fn render_highlighted_row_into(
+    frame: &mut Frame,
+    area: Rect,
+    text: &str,
+    positions: &[usize],
+    is_selected: bool,
+    score: i32,
+) {
+    let has_matches = !positions.is_empty();
+
+    // Base row style: selection overrides everything, otherwise matched rows are promoted
+    // to PRIMARY while non-matches remain SECONDARY.
+    let base_style = if is_selected {
+        Style::new()
+            .fg(theme::fg::PRIMARY)
+            .bg(theme::alpha::HIGHLIGHT)
+    } else if has_matches {
+        Style::new().fg(theme::fg::PRIMARY)
+    } else {
+        Style::new().fg(theme::fg::SECONDARY)
+    };
+
+    // Char-level match style. Background is handled by the paragraph base style; spans only
+    // override foreground + attrs to avoid repeated BG compositing in Paragraph.
+    let match_style = Style::new().fg(MATCH_HIGHLIGHT).bold();
+
+    // Build spans with match segments highlighted at character indices in `positions`.
+    // `positions` is produced by `fuzzy_match()` and is sorted in ascending order.
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut pos_idx = 0usize;
+    let mut seg_is_match = false;
+    let mut started = false;
+    let mut seg = String::new();
+
+    for (i, ch) in text.chars().enumerate() {
+        let is_match = pos_idx < positions.len() && positions[pos_idx] == i;
+        if is_match {
+            pos_idx += 1;
+        }
+
+        if !started {
+            seg_is_match = is_match;
+            started = true;
+        } else if is_match != seg_is_match {
+            let flushed = std::mem::take(&mut seg);
+            if seg_is_match {
+                spans.push(Span::styled(flushed, match_style));
+            } else {
+                spans.push(Span::raw(flushed));
+            }
+            seg_is_match = is_match;
+        }
+
+        seg.push(ch);
+    }
+
+    if !seg.is_empty() || spans.is_empty() {
+        if seg_is_match {
+            spans.push(Span::styled(seg, match_style));
+        } else {
+            spans.push(Span::raw(seg));
+        }
+    }
+
+    // Append score for matched rows (existing behavior), but keep it un-highlighted.
+    if has_matches && score != 0 {
+        spans.push(Span::styled(
+            format!(" [{score}]"),
+            Style::new().fg(theme::fg::MUTED),
+        ));
+    }
+
+    Paragraph::new(Text::from_spans(spans))
+        .style(base_style)
+        .render(area, frame);
+}
+
 // ---------------------------------------------------------------------------
 // Focus State
 // ---------------------------------------------------------------------------
@@ -613,12 +794,10 @@ enum Focus {
 pub struct VirtualizedSearch {
     /// All items in the list.
     items: Vec<String>,
-    /// Filtered matches (indices into items + scores).
-    filtered: Vec<FuzzyMatch>,
-    /// Current selection index (into filtered list).
-    selected: usize,
-    /// Scroll offset.
-    scroll_offset: usize,
+    /// Filtered rows rendered by `VirtualizedList`.
+    filtered_rows: Vec<SearchRow>,
+    /// Variable-height Fenwick state for `VirtualizedList`.
+    list_state: RefCell<VirtualizedListState>,
     /// Viewport height (cached from render, interior-mutable so `view(&self)` can update it).
     viewport_height: Cell<usize>,
     /// Search input widget.
@@ -646,6 +825,17 @@ impl Default for VirtualizedSearch {
 }
 
 impl VirtualizedSearch {
+    fn new_list_state(total_items: usize) -> VirtualizedListState {
+        let mut state = VirtualizedListState::variable(1)
+            .with_predictor(PredictorConfig::default())
+            .with_remeasure_policy(RemeasurePolicy::new(BetaPosterior::new(1.0, 1.0), 0.001, 6));
+        state.resize_heights(total_items);
+        if total_items > 0 {
+            state.select(Some(0));
+        }
+        state
+    }
+
     pub fn new() -> Self {
         // Generate diverse test data
         let items: Vec<String> = (0..TOTAL_ITEMS)
@@ -693,16 +883,15 @@ impl VirtualizedSearch {
 
         // Enable diagnostic log if diagnostics are enabled
         let diagnostic_log = if diagnostics_enabled() {
-            Some(DiagnosticLog::new().with_stderr())
+            Some(DiagnosticLog::new())
         } else {
             None
         };
 
         let mut screen = Self {
             items,
-            filtered: Vec::new(),
-            selected: 0,
-            scroll_offset: 0,
+            filtered_rows: Vec::new(),
+            list_state: RefCell::new(Self::new_list_state(0)),
             viewport_height: Cell::new(20),
             search_input,
             query: String::new(),
@@ -767,19 +956,27 @@ impl VirtualizedSearch {
         &self.query
     }
 
+    /// Set the search query and rebuild the filtered rows.
+    pub fn set_query(&mut self, query: impl Into<String>) {
+        self.query = query.into();
+        self.update_filter();
+    }
+
     /// Number of filtered results.
     pub fn filtered_count(&self) -> usize {
-        self.filtered.len()
+        self.filtered_rows.len()
     }
 
     /// Current selection index.
     pub fn selected_index(&self) -> usize {
-        self.selected
+        self.list_state.borrow().selected().unwrap_or(0)
     }
 
     /// Current scroll offset.
     pub fn current_scroll_offset(&self) -> usize {
-        self.scroll_offset
+        self.list_state
+            .borrow()
+            .scroll_offset_clamped(self.filtered_rows.len())
     }
 
     /// Whether search is focused.
@@ -792,150 +989,214 @@ impl VirtualizedSearch {
         self.items.len()
     }
 
+    /// Scroll to the end of the filtered results and select the last match.
+    pub fn scroll_to_end(&mut self) {
+        self.select_last();
+    }
+
+    /// Return the Fenwick row offset of item `idx` in the filtered list.
+    pub fn offset_of_item(&self, idx: usize) -> u32 {
+        self.list_state.borrow().offset_of_item(idx)
+    }
+
     /// Update the filtered list based on current query.
     fn update_filter(&mut self) {
-        self.filtered.clear();
+        self.filtered_rows.clear();
 
         if self.query.is_empty() {
             // No query: show all items with default ordering
-            self.filtered = (0..self.items.len())
-                .map(|i| FuzzyMatch {
-                    index: i,
-                    score: 0,
-                    positions: Vec::new(),
+            self.filtered_rows = self
+                .items
+                .iter()
+                .enumerate()
+                .map(|(i, text)| {
+                    SearchRow::new(
+                        i,
+                        text.clone(),
+                        SearchRow::preview_for_item(i),
+                        0,
+                        Vec::new(),
+                    )
                 })
                 .collect();
         } else {
             // Fuzzy match against all items
+            let mut matches = Vec::new();
             for (idx, item) in self.items.iter().enumerate() {
                 if let Some(mut m) = fuzzy_match(&self.query, item) {
                     m.index = idx;
-                    self.filtered.push(m);
+                    matches.push(m);
                 }
             }
 
             // Sort by score (descending), then by index for stable tie-breaking
-            self.filtered
-                .sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.index.cmp(&b.index)));
+            matches.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.index.cmp(&b.index)));
+            self.filtered_rows = matches
+                .into_iter()
+                .map(|m| {
+                    SearchRow::new(
+                        m.index,
+                        self.items[m.index].clone(),
+                        SearchRow::preview_for_item(m.index),
+                        m.score,
+                        m.positions,
+                    )
+                })
+                .collect();
         }
 
-        // Reset selection and scroll
-        self.selected = 0;
-        self.scroll_offset = 0;
+        // Reset selection and scroll via VirtualizedListState
+        let len = self.filtered_rows.len();
+        *self.list_state.borrow_mut() = Self::new_list_state(len);
 
         // Record filter update diagnostic
-        let top_score = self.filtered.first().map_or(0, |m| m.score);
+        let top_score = self.filtered_rows.first().map_or(0, |m| m.score);
         let diag = DiagnosticEntry::new(DiagnosticEventKind::FilterUpdate, self.tick_count)
             .with_query(&self.query)
-            .with_filtered_count(self.filtered.len())
-            .with_selection(self.selected, self.scroll_offset)
+            .with_filtered_count(len)
+            .with_selection(self.selected_index(), self.current_scroll_offset())
             .with_match_score(top_score);
         self.record_diagnostic(diag);
     }
 
-    fn ensure_visible(&mut self) {
-        if self.filtered.is_empty() {
-            return;
-        }
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        }
-        let vh = self.viewport_height.get();
-        if vh == 0 {
-            return;
-        }
-        if self.selected >= self.scroll_offset + vh {
-            self.scroll_offset = self.selected.saturating_sub(vh - 1);
-        }
-    }
-
     fn select_previous(&mut self) {
-        if !self.filtered.is_empty() && self.selected > 0 {
-            self.selected -= 1;
-            self.ensure_visible();
+        let len = self.filtered_rows.len();
+        if len > 0 && self.selected_index() > 0 {
+            {
+                let mut state = self.list_state.borrow_mut();
+                state.select_previous(len);
+                let sel = state.selected().unwrap_or(0);
+                if sel < state.scroll_offset_clamped(len) {
+                    state.scroll_to(sel, len);
+                }
+            }
 
             let diag = DiagnosticEntry::new(DiagnosticEventKind::Navigate, self.tick_count)
                 .with_direction("up")
-                .with_selection(self.selected, self.scroll_offset)
-                .with_filtered_count(self.filtered.len());
+                .with_selection(self.selected_index(), self.current_scroll_offset())
+                .with_filtered_count(len);
             self.record_diagnostic(diag);
         }
     }
 
     fn select_next(&mut self) {
-        if !self.filtered.is_empty() && self.selected < self.filtered.len() - 1 {
-            self.selected += 1;
-            self.ensure_visible();
+        let len = self.filtered_rows.len();
+        if len > 0 && self.selected_index() < len - 1 {
+            {
+                let mut state = self.list_state.borrow_mut();
+                state.select_next(len);
+                let sel = state.selected().unwrap_or(0);
+                let vh = state.visible_count().max(self.viewport_height.get());
+                let scroll = state.scroll_offset_clamped(len);
+                if vh > 0 && sel >= scroll + vh {
+                    state.scroll_to(sel.saturating_sub(vh - 1), len);
+                }
+            }
 
             let diag = DiagnosticEntry::new(DiagnosticEventKind::Navigate, self.tick_count)
                 .with_direction("down")
-                .with_selection(self.selected, self.scroll_offset)
-                .with_filtered_count(self.filtered.len());
+                .with_selection(self.selected_index(), self.current_scroll_offset())
+                .with_filtered_count(len);
             self.record_diagnostic(diag);
         }
     }
 
     fn select_first(&mut self) {
-        let moved = self.selected != 0 || self.scroll_offset != 0;
-        self.selected = 0;
-        self.scroll_offset = 0;
+        let len = self.filtered_rows.len();
+        let moved = self.selected_index() != 0 || self.current_scroll_offset() != 0;
+        {
+            let mut state = self.list_state.borrow_mut();
+            state.select(if len == 0 { None } else { Some(0) });
+            state.scroll_to_top();
+        }
 
         if moved {
             let diag = DiagnosticEntry::new(DiagnosticEventKind::JumpToEdge, self.tick_count)
                 .with_direction("first")
-                .with_selection(self.selected, self.scroll_offset)
-                .with_filtered_count(self.filtered.len());
+                .with_selection(self.selected_index(), self.current_scroll_offset())
+                .with_filtered_count(len);
             self.record_diagnostic(diag);
         }
     }
 
     fn select_last(&mut self) {
-        if !self.filtered.is_empty() {
-            let old_selected = self.selected;
-            self.selected = self.filtered.len() - 1;
-            self.ensure_visible();
+        let len = self.filtered_rows.len();
+        if len > 0 {
+            let old_selected = self.selected_index();
+            {
+                let mut state = self.list_state.borrow_mut();
+                state.select(Some(len - 1));
+                state.scroll_to_bottom(len);
+            }
 
-            if old_selected != self.selected {
+            if old_selected != self.selected_index() {
                 let diag = DiagnosticEntry::new(DiagnosticEventKind::JumpToEdge, self.tick_count)
                     .with_direction("last")
-                    .with_selection(self.selected, self.scroll_offset)
-                    .with_filtered_count(self.filtered.len());
+                    .with_selection(self.selected_index(), self.current_scroll_offset())
+                    .with_filtered_count(len);
                 self.record_diagnostic(diag);
             }
         }
     }
 
     fn page_up(&mut self) {
-        let vh = self.viewport_height.get();
-        if vh > 0 {
-            let old_selected = self.selected;
-            self.selected = self.selected.saturating_sub(vh);
-            self.ensure_visible();
+        let len = self.filtered_rows.len();
+        let vh = self
+            .list_state
+            .borrow()
+            .visible_count()
+            .max(self.viewport_height.get());
+        if vh > 0 && len > 0 {
+            let old_selected = self.selected_index();
+            let new_selected = old_selected.saturating_sub(vh);
+            {
+                let mut state = self.list_state.borrow_mut();
+                state.select(Some(new_selected));
+                state.page_up(len);
+                if new_selected == 0 {
+                    state.scroll_to_top();
+                } else if new_selected < state.scroll_offset_clamped(len) {
+                    state.scroll_to(new_selected, len);
+                }
+            }
 
-            if old_selected != self.selected {
+            if old_selected != new_selected {
                 let diag = DiagnosticEntry::new(DiagnosticEventKind::PageScroll, self.tick_count)
                     .with_direction("page_up")
-                    .with_selection(self.selected, self.scroll_offset)
-                    .with_filtered_count(self.filtered.len())
-                    .with_context(format!("moved {} items", old_selected - self.selected));
+                    .with_selection(self.selected_index(), self.current_scroll_offset())
+                    .with_filtered_count(len)
+                    .with_context(format!("moved {} items", old_selected - new_selected));
                 self.record_diagnostic(diag);
             }
         }
     }
 
     fn page_down(&mut self) {
-        let vh = self.viewport_height.get();
-        if !self.filtered.is_empty() && vh > 0 {
-            let old_selected = self.selected;
-            self.selected = (self.selected + vh).min(self.filtered.len() - 1);
-            self.ensure_visible();
+        let len = self.filtered_rows.len();
+        let vh = self
+            .list_state
+            .borrow()
+            .visible_count()
+            .max(self.viewport_height.get());
+        if len > 0 && vh > 0 {
+            let old_selected = self.selected_index();
+            let new_selected = (old_selected + vh).min(len - 1);
+            {
+                let mut state = self.list_state.borrow_mut();
+                state.select(Some(new_selected));
+                state.page_down(len);
+                let scroll = state.scroll_offset_clamped(len);
+                if new_selected >= scroll + vh {
+                    state.scroll_to(new_selected.saturating_sub(vh - 1), len);
+                }
+            }
 
-            if old_selected != self.selected {
+            if old_selected != new_selected {
                 let diag = DiagnosticEntry::new(DiagnosticEventKind::PageScroll, self.tick_count)
                     .with_direction("page_down")
-                    .with_selection(self.selected, self.scroll_offset)
-                    .with_filtered_count(self.filtered.len())
-                    .with_context(format!("moved {} items", self.selected - old_selected));
+                    .with_selection(self.selected_index(), self.current_scroll_offset())
+                    .with_filtered_count(len)
+                    .with_context(format!("moved {} items", new_selected - old_selected));
                 self.record_diagnostic(diag);
             }
         }
@@ -994,7 +1255,7 @@ impl VirtualizedSearch {
         } else {
             format!(
                 "Results ({} of {} match)",
-                self.filtered.len(),
+                self.filtered_rows.len(),
                 self.items.len()
             )
         };
@@ -1013,10 +1274,7 @@ impl VirtualizedSearch {
             return;
         }
 
-        // Store viewport height for navigation
-        let viewport = inner.height as usize;
-
-        if self.filtered.is_empty() {
+        if self.filtered_rows.is_empty() {
             let msg = if self.query.is_empty() {
                 "No items"
             } else {
@@ -1028,32 +1286,20 @@ impl VirtualizedSearch {
             return;
         }
 
-        let end = (self.scroll_offset + viewport).min(self.filtered.len());
-
-        for (row, filter_idx) in (self.scroll_offset..end).enumerate() {
-            let y = inner.y + row as u16;
-            if y >= inner.y + inner.height {
-                break;
-            }
-
-            let m = &self.filtered[filter_idx];
-            let item_text = &self.items[m.index];
-            let is_selected = filter_idx == self.selected;
-
-            let row_area = Rect::new(inner.x, y, inner.width, 1);
-
-            // Render with match highlighting
-            self.render_highlighted_row(
-                frame,
-                row_area,
-                item_text,
-                &m.positions,
-                is_selected,
-                m.score,
-            );
-        }
+        let mut state = self.list_state.borrow_mut();
+        VirtualizedList::new(&self.filtered_rows)
+            .variable_heights()
+            .style(Style::new().fg(theme::fg::SECONDARY))
+            .highlight_style(
+                Style::new()
+                    .fg(theme::fg::PRIMARY)
+                    .bg(theme::alpha::HIGHLIGHT),
+            )
+            .hit_id(ftui_render::frame::HitId::new(VSEARCH_LIST_HIT_ID))
+            .render(inner, frame, &mut state);
     }
 
+    #[cfg(test)]
     fn render_highlighted_row(
         &self,
         frame: &mut Frame,
@@ -1063,73 +1309,7 @@ impl VirtualizedSearch {
         is_selected: bool,
         score: i32,
     ) {
-        let has_matches = !positions.is_empty();
-
-        // Base row style: selection overrides everything, otherwise matched rows are promoted
-        // to PRIMARY while non-matches remain SECONDARY.
-        let base_style = if is_selected {
-            Style::new()
-                .fg(theme::fg::PRIMARY)
-                .bg(theme::alpha::HIGHLIGHT)
-        } else if has_matches {
-            Style::new().fg(theme::fg::PRIMARY)
-        } else {
-            Style::new().fg(theme::fg::SECONDARY)
-        };
-
-        // Char-level match style. Background is handled by the paragraph base style; spans only
-        // override foreground + attrs to avoid repeated BG compositing in Paragraph.
-        let match_style = Style::new().fg(MATCH_HIGHLIGHT).bold();
-
-        // Build spans with match segments highlighted at character indices in `positions`.
-        // `positions` is produced by `fuzzy_match()` and is sorted in ascending order.
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        let mut pos_idx = 0usize;
-        let mut seg_is_match = false;
-        let mut started = false;
-        let mut seg = String::new();
-
-        for (i, ch) in text.chars().enumerate() {
-            let is_match = pos_idx < positions.len() && positions[pos_idx] == i;
-            if is_match {
-                pos_idx += 1;
-            }
-
-            if !started {
-                seg_is_match = is_match;
-                started = true;
-            } else if is_match != seg_is_match {
-                let flushed = std::mem::take(&mut seg);
-                if seg_is_match {
-                    spans.push(Span::styled(flushed, match_style));
-                } else {
-                    spans.push(Span::raw(flushed));
-                }
-                seg_is_match = is_match;
-            }
-
-            seg.push(ch);
-        }
-
-        if !seg.is_empty() || spans.is_empty() {
-            if seg_is_match {
-                spans.push(Span::styled(seg, match_style));
-            } else {
-                spans.push(Span::raw(seg));
-            }
-        }
-
-        // Append score for matched rows (existing behavior), but keep it un-highlighted.
-        if has_matches && score != 0 {
-            spans.push(Span::styled(
-                format!(" [{score}]"),
-                Style::new().fg(theme::fg::MUTED),
-            ));
-        }
-
-        Paragraph::new(Text::from_spans(spans))
-            .style(base_style)
-            .render(area, frame);
+        render_highlighted_row_into(frame, area, text, positions, is_selected, score);
     }
 
     fn render_stats_panel(&self, frame: &mut Frame, area: Rect) {
@@ -1147,22 +1327,28 @@ impl VirtualizedSearch {
             return;
         }
 
-        let top_score = self.filtered.first().map_or(0, |m| m.score);
+        let top_score = self.filtered_rows.first().map_or(0, |m| m.score);
+        let fenwick_line = if diagnostics_enabled() {
+            let sel = self.selected_index();
+            format!("Fenwick:  {}", self.offset_of_item(sel))
+        } else {
+            String::new()
+        };
 
         let stats = [
             format!("Total:    {} items", self.items.len()),
-            format!("Matches:  {}", self.filtered.len()),
+            format!("Matches:  {}", self.filtered_rows.len()),
             format!(
                 "Selected: {}",
-                if self.filtered.is_empty() {
+                if self.filtered_rows.is_empty() {
                     0
                 } else {
-                    self.selected + 1
+                    self.selected_index() + 1
                 }
             ),
             format!("Query:    \"{}\"", self.query),
             format!("Top score: {}", top_score),
-            String::new(),
+            fenwick_line,
             "Keybindings:".into(),
             "  /      Focus search".into(),
             "  Esc    Clear search".into(),
@@ -1194,6 +1380,7 @@ impl VirtualizedSearch {
         if let Event::Mouse(mouse) = event {
             let list_area = self.last_list_area.get();
             let search_area = self.last_search_area.get();
+            let len = self.filtered_rows.len();
 
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -1207,7 +1394,7 @@ impl VirtualizedSearch {
                                 .with_focused(true);
                         }
                     } else if list_area.contains(mouse.x, mouse.y) {
-                        // Click list: select item based on y position
+                        // Click list: select item based on y position in Fenwick index
                         if self.focus == Focus::Search {
                             self.focus = Focus::List;
                             self.search_input = TextInput::new()
@@ -1215,20 +1402,39 @@ impl VirtualizedSearch {
                                 .with_style(Style::new().fg(theme::fg::PRIMARY))
                                 .with_focused(false);
                         }
-                        let inner_y = mouse.y.saturating_sub(list_area.y + 1) as usize;
-                        let target = self.scroll_offset + inner_y;
-                        if target < self.filtered.len() {
-                            self.selected = target;
+                        let inner_y = u32::from(mouse.y.saturating_sub(list_area.y + 1));
+                        let target = {
+                            let state = self.list_state.borrow();
+                            let top_idx = state.scroll_offset_clamped(len);
+                            let top_offset = state.offset_of_item(top_idx);
+                            state.find_item_at_offset(top_offset.saturating_add(inner_y))
+                        };
+                        if target < len {
+                            self.list_state.borrow_mut().select(Some(target));
                         }
                     }
                 }
-                MouseEventKind::ScrollUp if list_area.contains(mouse.x, mouse.y) => {
-                    self.selected = self.selected.saturating_sub(3);
-                    self.ensure_visible();
+                MouseEventKind::ScrollUp if list_area.contains(mouse.x, mouse.y) && len > 0 => {
+                    let target = self.selected_index().saturating_sub(3);
+                    let mut state = self.list_state.borrow_mut();
+                    state.select(Some(target));
+                    if target < state.scroll_offset_clamped(len) {
+                        state.scroll_to(target, len);
+                    }
                 }
-                MouseEventKind::ScrollDown if list_area.contains(mouse.x, mouse.y) => {
-                    self.selected = (self.selected + 3).min(self.filtered.len().saturating_sub(1));
-                    self.ensure_visible();
+                MouseEventKind::ScrollDown if list_area.contains(mouse.x, mouse.y) && len > 0 => {
+                    let target = (self.selected_index() + 3).min(len - 1);
+                    let vh = self
+                        .list_state
+                        .borrow()
+                        .visible_count()
+                        .max(self.viewport_height.get());
+                    let mut state = self.list_state.borrow_mut();
+                    state.select(Some(target));
+                    let scroll = state.scroll_offset_clamped(len);
+                    if vh > 0 && target >= scroll + vh {
+                        state.scroll_to(target.saturating_sub(vh - 1), len);
+                    }
                 }
                 _ => {}
             }
@@ -1242,6 +1448,14 @@ impl Screen for VirtualizedSearch {
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
         if matches!(event, Event::Mouse(_)) {
             self.handle_mouse(event);
+            tracing::debug!(
+                target: crate::app::TARGET_VIRTUALIZED_SEARCH,
+                query_len = self.query.len(),
+                filtered = self.filtered_rows.len(),
+                selected = self.selected_index(),
+                scroll_offset = self.current_scroll_offset(),
+                "virtualized_search mouse update"
+            );
             return Cmd::none();
         }
         if let Event::Key(KeyEvent {
@@ -1280,7 +1494,7 @@ impl Screen for VirtualizedSearch {
                                 self.tick_count,
                             )
                             .with_query("")
-                            .with_filtered_count(self.filtered.len())
+                            .with_filtered_count(self.filtered_rows.len())
                             .with_context("cleared via escape");
                             self.record_diagnostic(diag);
                         }
@@ -1303,7 +1517,7 @@ impl Screen for VirtualizedSearch {
                         let diag =
                             DiagnosticEntry::new(DiagnosticEventKind::QueryChange, self.tick_count)
                                 .with_query(&self.query)
-                                .with_filtered_count(self.filtered.len())
+                                .with_filtered_count(self.filtered_rows.len())
                                 .with_context("backspace");
                         self.record_diagnostic(diag);
                     }
@@ -1314,7 +1528,7 @@ impl Screen for VirtualizedSearch {
                         let diag =
                             DiagnosticEntry::new(DiagnosticEventKind::QueryChange, self.tick_count)
                                 .with_query(&self.query)
-                                .with_filtered_count(self.filtered.len())
+                                .with_filtered_count(self.filtered_rows.len())
                                 .with_context(format!("typed '{c}'"));
                         self.record_diagnostic(diag);
                     }
@@ -1338,7 +1552,7 @@ impl Screen for VirtualizedSearch {
                         let diag =
                             DiagnosticEntry::new(DiagnosticEventKind::QueryChange, self.tick_count)
                                 .with_query("")
-                                .with_filtered_count(self.filtered.len())
+                                .with_filtered_count(self.filtered_rows.len())
                                 .with_context("cleared via escape (from list)");
                         self.record_diagnostic(diag);
                     }
@@ -1386,7 +1600,7 @@ impl Screen for VirtualizedSearch {
                         let diag =
                             DiagnosticEntry::new(DiagnosticEventKind::QueryChange, self.tick_count)
                                 .with_query(&self.query)
-                                .with_filtered_count(self.filtered.len())
+                                .with_filtered_count(self.filtered_rows.len())
                                 .with_context(format!("typed '{c}' (auto-focus)"));
                         self.record_diagnostic(diag);
                     }
@@ -1394,6 +1608,14 @@ impl Screen for VirtualizedSearch {
                 },
             }
         }
+        tracing::debug!(
+            target: crate::app::TARGET_VIRTUALIZED_SEARCH,
+            query_len = self.query.len(),
+            filtered = self.filtered_rows.len(),
+            selected = self.selected_index(),
+            scroll_offset = self.current_scroll_offset(),
+            "virtualized_search update"
+        );
         Cmd::none()
     }
 
@@ -1930,7 +2152,7 @@ mod tests {
             (KeyCode::Home, Modifiers::NONE, 0),
             (KeyCode::End, Modifiers::NONE, last),
         ] {
-            screen.selected = TOTAL_ITEMS / 2;
+            screen.list_state.borrow_mut().select(Some(TOTAL_ITEMS / 2));
             screen.update(&Event::Key(KeyEvent::new(code).with_modifiers(modifiers)));
             assert_eq!(
                 screen.selected_index(),
@@ -2127,12 +2349,11 @@ mod tests {
 
     #[test]
     fn virtualized_search_row_highlights_matching_characters() {
-        let screen = VirtualizedSearch::new();
         let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
         let mut frame = Frame::new(32, 1, &mut pool);
         let area = Rect::new(0, 0, 32, 1);
 
-        screen.render_highlighted_row(&mut frame, area, "abcdef", &[0, 3, 5], false, 123);
+        render_highlighted_row_into(&mut frame, area, "abcdef", &[0, 3, 5], false, 123);
 
         let fg = |x: u16| frame.buffer.get(x, 0).unwrap().fg;
 
@@ -2162,10 +2383,15 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: list_area.x + 2,
             y: list_area.y + 3,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         screen.update(&event);
-        assert_eq!(screen.selected, 2, "click should select item at row");
+        assert_eq!(
+            screen.selected_index(),
+            2,
+            "click should select item at row"
+        );
     }
 
     #[test]
@@ -2182,6 +2408,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: search_area.x + 2,
             y: search_area.y + 1,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         screen.update(&event);
@@ -2204,10 +2431,15 @@ mod tests {
             kind: MouseEventKind::ScrollDown,
             x: list_area.x + 2,
             y: list_area.y + 2,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         screen.update(&scroll_down);
-        assert_eq!(screen.selected, 3, "scroll down should advance 3 items");
+        assert_eq!(
+            screen.selected_index(),
+            3,
+            "scroll down should advance 3 items"
+        );
     }
 
     #[test]
@@ -2223,5 +2455,60 @@ mod tests {
             bindings.iter().any(|h| h.key == "Scroll"),
             "missing Scroll keybinding"
         );
+    }
+
+    #[test]
+    fn filter_then_scroll_to_end_selects_last_match() {
+        use crate::screens::Screen;
+        let mut screen = VirtualizedSearch::new();
+        // Set query to filter items down to ~20 results
+        screen.items = (0..20)
+            .map(|i| format!("[00{i:02}] match_target_{i}"))
+            .collect();
+        screen.query = "match_target".to_string();
+        screen.update_filter();
+        assert_eq!(screen.filtered_count(), 20);
+
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(80, 16, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 80, 16));
+
+        // Press End in List focus
+        screen.focus = Focus::List;
+        screen.update(&Event::Key(KeyEvent::new(KeyCode::End)));
+        screen.view(&mut frame, Rect::new(0, 0, 80, 16));
+
+        assert_eq!(screen.selected_index(), 19);
+        let item_offset = screen.offset_of_item(19) as usize;
+        let scroll_offset = screen.offset_of_item(screen.current_scroll_offset()) as usize;
+        let vp_height = screen.viewport_height.get();
+        assert!(
+            item_offset >= scroll_offset && item_offset < scroll_offset + vp_height,
+            "item_offset {item_offset} must be within [{scroll_offset}, {})",
+            scroll_offset + vp_height
+        );
+    }
+
+    #[test]
+    fn search_rows_report_category_by_preview_lines() {
+        let row_no_preview = SearchRow {
+            index: 0,
+            text: "[0000] Configuration::validate_token".to_string(),
+            preview_lines: Vec::new(),
+            score: 10,
+            positions: vec![0, 1],
+        };
+        assert_eq!(row_no_preview.category(), 0);
+        assert_eq!(row_no_preview.height(), 1);
+
+        let row_with_preview = SearchRow {
+            index: 3,
+            text: "[0003] Network::parse_header".to_string(),
+            preview_lines: vec!["      ↳ context: row #0003 detail preview".to_string()],
+            score: 20,
+            positions: vec![0, 1],
+        };
+        assert_eq!(row_with_preview.category(), 1);
+        assert_eq!(row_with_preview.height(), 2);
     }
 }

@@ -81,6 +81,7 @@ impl Predictive {
     #[must_use]
     pub fn new(config: PredictiveStrategyConfig) -> Self {
         info!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             strategy = "Predictive",
             fallback_divisor = config.fallback_divisor,
             min_observations = config.min_observations,
@@ -112,6 +113,7 @@ impl Predictive {
         counter: TransitionCounter<String>,
     ) -> Self {
         info!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             strategy = "Predictive",
             fallback_divisor = config.fallback_divisor,
             min_observations = config.min_observations,
@@ -152,6 +154,7 @@ impl Predictive {
         let counter = match super::persistence::load_transitions(path) {
             Ok(c) => {
                 info!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     path = %path.display(),
                     loaded_transitions = %c.total(),
                     known_screens = c.state_ids().len(),
@@ -161,6 +164,7 @@ impl Predictive {
             }
             Err(e) => {
                 tracing::warn!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     path = %path.display(),
                     error = %e,
                     "tick_strategy.persistence_load_failed (falling back to cold start)"
@@ -181,6 +185,7 @@ impl Predictive {
                 strategy.dirty = true;
             }
             info!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 load_decay_factor = factor,
                 remaining_total = %total_after,
                 "tick_strategy.load_decay_applied"
@@ -227,6 +232,7 @@ impl Predictive {
                 self.dirty = false;
                 self.ticks_since_save = 0;
                 info!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     path = %path.display(),
                     total = %self.predictor.counter().total(),
                     "tick_strategy.auto_save"
@@ -234,6 +240,7 @@ impl Predictive {
             }
             Err(e) => {
                 tracing::warn!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     path = %path.display(),
                     error = %e,
                     "tick_strategy.auto_save_failed"
@@ -255,6 +262,7 @@ impl Predictive {
         if is_cold {
             let obs = self.predictor.counter().total_from(&active.to_owned()) as u64;
             info!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 screen = active,
                 observations = obs,
                 min_required = self.predictor.min_observations(),
@@ -266,6 +274,7 @@ impl Predictive {
         for p in &predictions {
             let divisor = self.allocation.divisor_for(p.probability);
             trace!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 screen = %p.screen,
                 divisor,
                 probability = %p.probability,
@@ -276,6 +285,7 @@ impl Predictive {
         }
 
         debug!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             strategy = "Predictive",
             active_screen = active,
             num_screens = predictions.len(),
@@ -315,6 +325,7 @@ impl TickStrategy for Predictive {
             .record_transition(from.to_owned(), to.to_owned());
         self.dirty = true;
         debug!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             from,
             to,
             total_transitions = %self.predictor.counter().total(),
@@ -337,6 +348,7 @@ impl TickStrategy for Predictive {
             let entries_after = self.predictor.counter().state_ids().len();
             let total_after = self.predictor.counter().total();
             debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 factor = self.decay_factor,
                 entries_before,
                 entries_after,

@@ -41,14 +41,11 @@ the input row. The streaming demo retains its 15-row default and requires
 do in a terminal: color, line-buffered output, prompts. stdout and stderr share
 the PTY, so stderr lines arrive as ordinary output (`E:` stays 0); stdin is the
 PTY too, each queued line is typed input, and Ctrl-D sends one end-of-file. The
-line discipline is non-canonical, so a long line arrives whole and control bytes
-in it are data; echo is off and LF stays LF, unless the child changes its
-terminal settings. A carriage return without a line feed starts the line over,
-as on a terminal, so progress bars show their latest state. The PTY starts at
-the terminal's size, follows resizes (SIGWINCH reaches the child's group) and
-keeps it across an F5 restart. The child leads its own session with the PTY as
-its controlling terminal: `/dev/tty` is the PTY, so password prompts and pagers
-work, and the host terminal stays out of reach. Ctrl-C sends SIGINT
+line discipline holds at most 4095 bytes of one unfinished input line on Linux.
+Echo is off and LF stays LF unless the child changes its terminal settings. The
+PTY starts at the terminal's size and follows resizes (SIGWINCH reaches the
+child's group). The child leads its own session without a controlling terminal,
+so it cannot write to the host terminal through `/dev/tty`. Ctrl-C sends SIGINT
 to its whole process group, as a terminal would; when the child exits, or the
 shell quits, every process left in that group is killed, so a background job
 cannot hold output open or outlive the session. A descendant that starts its
@@ -620,17 +617,18 @@ child runs under a pseudo-terminal inside its own session (`setsid`) while all
 terminal output still flows through `Cmd::log` / `Cmd::log_text` and the
 one-writer `TerminalWriter`:
 
-```rust
+```rust,ignore
+// (fragment)
 use ftui::runtime::{ProcessControl, ProcessEvent, ProcessSubscription};
 
 let control = ProcessControl::new();
-let sub = ProcessSubscription::new("my-agent", "python3", |event: ProcessEvent| {
+let sub = ProcessSubscription::new("python3", |event: ProcessEvent| {
     Msg::Child(event)
 })
 .arg("-u")
 .arg("agent.py")
 .pty(true) // Unix: allocates a PTY, setsid(), forwards resize via control.request_resize(w, h)
-.with_control(control.clone());
+.control(control.clone());
 ```
 
 When the terminal resizes, forward `Event::Resize { width, height }` to the
@@ -649,6 +647,9 @@ Verify inline scrollback retention and `--pty` child cleanup across real
 `tmux`, `screen`, `zellij`, and a plain PTY:
 
 ```bash
+# Headless 10k-line simulator and wire-invariant checks
+cargo test -p ftui --test agent_shell_sim
+
 # Plain PTY with and without CPR replies
 cargo test -p ftui --test agent_shell_plain_pty
 

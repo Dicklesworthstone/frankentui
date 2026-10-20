@@ -40,17 +40,26 @@ tools:
       - python3 -B scripts/check_env_docs.py
       - python3 -B scripts/check_close_evidence.py --self-test
       - python3 -B scripts/check_close_evidence.py
+      - python3 -B scripts/check_close_evidence.py --alerts
+      - mkdir -p "${DSR_TRUTH_GATES_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_truth_gates/dsr}" && bv --robot-alerts > "${DSR_TRUTH_GATES_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_truth_gates/dsr}/bv_alerts.json"
       - python3 -B scripts/check_baseline_benches.py --self-test
       - python3 -B scripts/check_baseline_benches.py
+      # Ensure standalone fuzz/Cargo.toml [workspace.lints.clippy] stays in sync
+      # with the root Cargo.toml (bd-g00-root-epic-ewths.6.9 / .6.10).
+      - python3 -c 'import sys, tomllib; r = tomllib.load(open("Cargo.toml", "rb"))["workspace"]["lints"]["clippy"]; f = tomllib.load(open("fuzz/Cargo.toml", "rb"))["workspace"]["lints"]["clippy"]; sys.exit(0 if r == f else f"fuzz/Cargo.toml clippy lints drifted ({f} != {r})")'
       # The perf gate's own decisions, on synthetic fixtures. Nothing is
       # benchmarked or timed here, so it belongs with the stdlib gates rather
       # than in a perf lane.
       - bash scripts/check_perf_gate_decisions_e2e.sh "${DSR_PERF_GATE_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_perf_gate_decisions/dsr}"
+      - python3 -B scripts/render_perf_readme.py --self-test
+      - python3 -B scripts/render_perf_readme.py --check
       # Proves the installed `br` still enforces .beads/policy.yaml, which the
       # audit's own self-test cannot see: a br upgrade or a schema rename would
       # leave the audit green while every close sailed through. Builds a
       # throwaway beads project under the run root and never deletes it.
       - bash scripts/check_close_policy_e2e.sh "${DSR_CLOSE_POLICY_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_close_policy/dsr}"
+      # Release preflight gate self-tests (bd-g00-root-epic-ewths.10.1).
+      - bash scripts/release_preflight_test.sh
   # The AGENTS.md "Landing the Plane" gate set on the native host, without RCH
   # (forbidden until bd-g00-root-epic-ewths.6.24): `cargo` on this host's PATH
   # is an RCH shim, so every cargo line carries RCH_CARGO_WRAPPER_BYPASS=1, the
@@ -124,3 +133,58 @@ tools:
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-core -p ftui-render -p ftui-style -p ftui-text -p ftui-layout -p ftui-runtime -p ftui-web
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-web --features input-parser,tracing
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-showcase-wasm
+  # Feature-gated modules (bd-g00-root-epic-ewths.6.38): ~2,160+ tests across
+  # experimental runtime modules, ftui-extras features, normalization, and
+  # telemetry that default `--workspace` never compiles.
+  frankentui-all-features:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --all-features --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTDOCFLAGS="-D warnings" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness doc --workspace --all-features --no-deps --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --workspace --all-features --no-fail-fast --locked
+  # Release-profile performance budget suites (bd-g00-root-epic-ewths.6.38):
+  # perf_hud_regression, mermaid_perf_budget, and visual_effects_pty skip their
+  # release-only frame budget assertions when debug_assertions are enabled.
+  frankentui-release-perf-budgets:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --cargo-profile release --locked -p ftui-demo-showcase --test perf_hud_regression --test mermaid_perf_budget --test visual_effects_pty --no-fail-fast
+  # Scheduled and on-demand DSR fuzz campaign (bd-g00-root-epic-ewths.6.10,
+  # bd-g00-root-epic-ewths.8.1): builds all 12 declared cargo-fuzz targets with
+  # the pinned nightly toolchain and content fingerprints, runs the retained
+  # libFuzzer binaries directly against fuzz/corpus/<target>, emits JSONL
+  # execution/coverage/corpus_size evidence and corpus_stats.txt, and fails on
+  # any crash or incomplete target.
+  frankentui-fuzz-campaign:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - RCH_CARGO_WRAPPER_BYPASS=1 FUZZ_DURATION_SECS="${FUZZ_DURATION_SECS:-60}" bash scripts/fuzz_campaign_e2e.sh
+  # Pre-release preflight verification gate (bd-g00-root-epic-ewths.10.1):
+  # runs the synthetic fixture tests plus strict 14-check preflight against the
+  # workspace version (or DSR_RELEASE_TAG).
+  frankentui-release-preflight:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - bash scripts/release_preflight_test.sh
+      - bash scripts/release_preflight.sh "${DSR_RELEASE_TAG:-v$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')}" --strict --out "${DSR_PREFLIGHT_OUT:-${TMPDIR:-/tmp}/ftui_release_preflight.jsonl}"
+  # Windows cross-target and start/stop smoke verification (bd-g00-root-epic-ewths.6.5,
+  # bd-g00-root-epic-ewths.36.1, bd-g00-root-epic-ewths.36.2).
+  frankentui-windows-cross:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - bash scripts/cross_platform_e2e.sh --windows-smoke
+  # Full G25 performance regression gate E2E (bd-g00-root-epic-ewths.31.6):
+  # runs the 27-threshold Criterion + byte-budget + FrameArena allocation gate,
+  # validates the JSONL report schema, verifies injected regression detection,
+  # and checks README/baseline markdown provenance.
+  frankentui-perf-gate:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - RCH_CARGO_WRAPPER_BYPASS=1 bash scripts/perf_gate_e2e.sh --full
+

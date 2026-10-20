@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Line-breaking throughput for the wrap modes the render path uses
 //! (bd-g00-root-epic-ewths.31.2).
 //!
@@ -12,7 +14,7 @@
 //! The corpora are generated from fixed formulas rather than random text: a
 //! bench whose input changes between runs cannot detect a regression.
 
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group};
 use ftui_text::wrap::{WrapMode, wrap_text, wrap_text_optimal};
 use std::hint::black_box;
 
@@ -104,25 +106,80 @@ fn bench_wrap(c: &mut Criterion) {
     let ascii = ascii_corpus();
     let unicode = unicode_corpus();
 
-    let mut group = c.benchmark_group("wrap");
+    let mut word_group = c.benchmark_group("wrap/word");
     // Throughput in lines makes the three numbers directly comparable even
     // though the Unicode corpus is far larger in bytes.
-    group.throughput(Throughput::Elements(200));
+    word_group.throughput(Throughput::Elements(200));
 
-    group.bench_function("word/200_lines_80_cols", |b| {
+    word_group.bench_function("200_lines_80_cols", |b| {
         b.iter(|| black_box(wrap_text(black_box(&ascii), 80, WrapMode::Word)));
     });
 
-    group.bench_function("word/200_lines_80_cols_unicode", |b| {
+    word_group.bench_function("200_lines_80_cols_unicode", |b| {
         b.iter(|| black_box(wrap_text(black_box(&unicode), 80, WrapMode::Word)));
     });
+    word_group.finish();
 
-    group.bench_function("optimal/200_lines_80_cols", |b| {
+    let mut optimal_group = c.benchmark_group("wrap/optimal");
+    optimal_group.throughput(Throughput::Elements(200));
+    optimal_group.bench_function("200_lines_80_cols", |b| {
         b.iter(|| black_box(wrap_text_optimal(black_box(&ascii), 80)));
     });
+    optimal_group.finish();
+}
 
-    group.finish();
+fn emit_criterion_jsonl(bench_name: &str, ids: &[&str]) {
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    for &id in ids {
+        let estimates_path = std::path::Path::new(&target_dir)
+            .join("criterion")
+            .join(id)
+            .join("new")
+            .join("estimates.json");
+        if let Ok(text) = std::fs::read_to_string(&estimates_path)
+            && let Some(mean_ns) = extract_point_estimate(&text, "mean")
+        {
+            let p50_ns = extract_point_estimate(&text, "median").unwrap_or(mean_ns);
+            let p99_ns = extract_upper_ci(&text, "mean").unwrap_or(mean_ns);
+            eprintln!(
+                r#"{{"bench":"{bench_name}","id":"{id}","mean_ns":{mean_ns:.2},"p50_ns":{p50_ns:.2},"p99_ns":{p99_ns:.2}}}"#
+            );
+        }
+    }
+}
+
+fn extract_point_estimate(json: &str, section: &str) -> Option<f64> {
+    let key = format!("\"{section}\":");
+    let start = json.find(&key)? + key.len();
+    let rest = &json[start..];
+    let pe_key = "\"point_estimate\":";
+    let pe_start = rest.find(pe_key)? + pe_key.len();
+    let tail = rest[pe_start..].trim_start();
+    let end = tail.find([',', '}', ' ', '\n', '\r'])?;
+    tail[..end].parse::<f64>().ok()
+}
+
+fn extract_upper_ci(json: &str, section: &str) -> Option<f64> {
+    let key = format!("\"{section}\":");
+    let start = json.find(&key)? + key.len();
+    let rest = &json[start..];
+    let ci_key = "\"upper_bound\":";
+    let ci_start = rest.find(ci_key)? + ci_key.len();
+    let tail = rest[ci_start..].trim_start();
+    let end = tail.find([',', '}', ' ', '\n', '\r'])?;
+    tail[..end].parse::<f64>().ok()
 }
 
 criterion_group!(benches, bench_wrap);
-criterion_main!(benches);
+
+fn main() {
+    benches();
+    emit_criterion_jsonl(
+        "wrap_bench",
+        &[
+            "wrap/word/200_lines_80_cols",
+            "wrap/word/200_lines_80_cols_unicode",
+            "wrap/optimal/200_lines_80_cols",
+        ],
+    );
+}

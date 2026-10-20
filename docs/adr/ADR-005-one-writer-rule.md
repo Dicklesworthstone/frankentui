@@ -1,6 +1,8 @@
 # ADR-005: One-Writer Rule Enforcement
 
-Status: PROPOSED
+Status: ACCEPTED (2026-10-16)
+
+Realization: `TerminalWriter` + `terminal_output_lock()` + `LogSink` (`crates/ftui-runtime/src/terminal_writer.rs`, `crates/ftui-runtime/src/log_sink.rs`); guidance in `docs/one-writer-rule.md`; enforced by `cmd_log_dispatches_to_writer_modes` and `a_recovered_task_panic_is_reported_after_the_teardown_not_over_the_ui`.
 
 ## Context
 In inline mode, FrankenTUI must preserve scrollback and keep cursor state stable while rendering UI and streaming logs.

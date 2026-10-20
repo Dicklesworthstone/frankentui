@@ -1,6 +1,6 @@
 # State Machines: Terminal + Rendering Pipeline
 
-This document is the formal-ish specification backbone for FrankenTUI.
+This document is the informal specification (prose + tables; no TLA+/Alloy models exist) for FrankenTUI.
 
 It is intentionally written to be directly useful for:
 - implementation structure (which module owns what)
@@ -12,6 +12,8 @@ See Bead: bd-10i.13.1.
 ---
 
 ## 1) Terminal State Machine
+
+Enforced by: `tests/e2e/scripts/test_cleanup.sh` (9 cleanup cases including `cleanup_tstp_cont_inline` and `cleanup_tstp_cont_alt_screen`), `crates/ftui-harness/tests/pty_terminal_lifecycle.rs` (`pty_log_injection_preserves_text_style_and_terminal_state`, `alt_screen_mode_is_the_only_path_to_1049h`), `crates/ftui-core/src/terminal_session.rs` (`terminal_session_panic_cleanup_idempotent`, `best_effort_cleanup_emits_kitty_pop_once`).
 
 ### 1.1 State Variables
 We model the terminal as a state machine that consumes bytes and updates a display grid.
@@ -51,6 +53,8 @@ Implementation module targets (will be updated as code lands):
 ---
 
 ## 2) Rendering Pipeline State Machine
+
+Enforced by: `crates/ftui-harness/tests/proptest_terminal_model_invariants.rs`, `crates/ftui-harness/tests/render_no_flicker_proof.rs`, `crates/ftui-harness/tests/sync_bracket_completeness_proof.rs`, `crates/ftui-harness/tests/no_flicker_fault_invariant.rs`, `crates/ftui-harness/tests/proptest_flicker_invariants.rs` (`inline_never_clears_screen`), `crates/ftui-render/tests/proptest_diff_invariants.rs` (`presented_certified_diff_reproduces_the_target_buffer`), `crates/ftui-render/tests/no_flicker_proof.rs`.
 
 ### 2.1 States
 States (from plan):
@@ -99,6 +103,8 @@ Implementation module targets (will be updated as code lands):
 ---
 
 ## 3) Responsive Reflow Spec (Resize / Relayout)
+
+Enforced by: `crates/ftui-runtime/src/resize_coalescer.rs` (`config_default_leaves_bocpd_off_with_heuristic_fallback`, `steady_regime_delay_is_16ms_and_burst_is_40ms`), `crates/ftui-runtime/src/conformal_predictor.rs` (`default_config_matches_the_documented_values`), `crates/ftui-runtime/tests/e2e_inline_mode_scrollback.rs` (`overlay_transport_delivers_random_interleavings`), `crates/ftui-render/tests/proptest_diff_invariants.rs` (`certified_diff_matches_full_diff_and_respects_span_bound`).
 
 This spec defines the invariants and observable behavior for resize-driven
 reflow in FrankenTUI. It is deliberately testable: every rule below maps to

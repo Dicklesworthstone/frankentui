@@ -21,6 +21,18 @@ fn default_features_select_a_terminal_backend() {
     }
 }
 
+#[cfg(all(unix, feature = "backend"))]
+#[test]
+fn default_backend_is_native_on_unix() {
+    assert_eq!(ftui::DEFAULT_BACKEND, "native");
+}
+
+#[cfg(all(windows, feature = "backend"))]
+#[test]
+fn default_backend_is_crossterm_on_windows() {
+    assert_eq!(ftui::DEFAULT_BACKEND, "crossterm");
+}
+
 /// The README example compiles against the prelude alone plus the widget it
 /// renders: `Widget` (for `.render`), `Rect`, `Frame`, `Event`, `App`, `Cmd`,
 /// `Model`, `ScreenMode` all come from `ftui::prelude::*`.

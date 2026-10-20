@@ -111,20 +111,17 @@ impl<'a> Span<'a> {
             );
         }
 
-        let total_width = self.width();
-        if cell_pos >= total_width {
-            return (
+        match split_prefix_by_cells(&self.content, cell_pos, false) {
+            PrefixSplit::Fits { .. } => (
                 self.clone(),
                 Self {
                     content: Cow::Borrowed(""),
                     style: self.style,
                     link: self.link.clone(),
                 },
-            );
+            ),
+            PrefixSplit::Split { byte_pos, .. } => self.split_at_byte_boundary(byte_pos),
         }
-
-        let (byte_pos, _actual_width) = find_cell_boundary(&self.content, cell_pos);
-        self.split_at_byte_boundary(byte_pos)
     }
 
     // Callers establish a UTF-8 boundary through grapheme traversal or the
@@ -721,26 +718,67 @@ impl<'a> Text<'a> {
 // Wrap Helpers (style-preserving)
 // ---------------------------------------------------------------------------
 
-fn find_cell_boundary(text: &str, target_cells: usize) -> (usize, usize) {
-    let mut current_cells = 0;
-    let mut byte_pos = 0;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefixSplit {
+    Fits { width: usize },
+    Split { byte_pos: usize, width: usize },
+}
+
+fn split_prefix_by_cells(text: &str, target_cells: usize, printable_ascii: bool) -> PrefixSplit {
+    if printable_ascii {
+        let len = text.len();
+        return if len <= target_cells {
+            PrefixSplit::Fits { width: len }
+        } else {
+            PrefixSplit::Split {
+                byte_pos: target_cells,
+                width: target_cells,
+            }
+        };
+    }
+
+    let mut total_cells = 0;
+    let mut split_cells = 0;
+    let mut split_byte_pos = 0;
+    let mut split_locked = target_cells == 0;
 
     for grapheme in graphemes(text) {
-        let grapheme_width = grapheme_width(grapheme);
+        let g_width = grapheme_width(grapheme);
 
-        if current_cells + grapheme_width > target_cells {
-            break;
+        if total_cells + g_width > target_cells {
+            return PrefixSplit::Split {
+                byte_pos: split_byte_pos,
+                width: split_cells,
+            };
         }
 
-        current_cells += grapheme_width;
-        byte_pos += grapheme.len();
-
-        if current_cells >= target_cells {
-            break;
+        total_cells += g_width;
+        if !split_locked {
+            split_cells += g_width;
+            split_byte_pos += grapheme.len();
+            if split_cells >= target_cells {
+                split_locked = true;
+            }
         }
     }
 
-    (byte_pos, current_cells)
+    PrefixSplit::Fits { width: total_cells }
+}
+
+fn slice_span<'a>(
+    span: &Span<'a>,
+    borrowed_base: Option<&'a str>,
+    range: std::ops::Range<usize>,
+) -> Span<'a> {
+    let content = match borrowed_base {
+        Some(base) => Cow::Borrowed(&base[range]),
+        None => Cow::Owned(span.as_str()[range].to_string()),
+    };
+    Span {
+        content,
+        style: span.style,
+        link: span.link.clone(),
+    }
 }
 
 fn span_is_whitespace(span: &Span<'_>) -> bool {
@@ -889,13 +927,21 @@ fn wrap_line_chars<'a>(line: &Line<'a>, width: usize) -> Vec<Line<'a>> {
     let mut current = Line::new();
     let mut current_width = 0;
 
-    for span in line.spans.iter().cloned() {
+    for span in &line.spans {
+        let text = span.as_str();
+        if text.is_empty() {
+            continue;
+        }
+        let borrowed_base = match &span.content {
+            Cow::Borrowed(s) => Some(*s),
+            Cow::Owned(_) => None,
+        };
         // Every suffix of printable ASCII has one cell per byte. Classify only
-        // once; rescanning each shrinking suffix makes narrow wrapping quadratic.
-        // Unicode and control-containing spans retain their existing width path.
-        let printable_ascii = crate::ascii_width(span.as_str()).is_some();
-        let mut remaining = span;
-        while !remaining.is_empty() {
+        // once; non-ASCII or control-containing spans use bounded prefix cell
+        // scans without rescanning or copying the remaining suffix.
+        let printable_ascii = crate::ascii_width(text).is_some();
+        let mut offset = 0;
+        while offset < text.len() {
             if current_width >= width && !current.is_empty() {
                 lines.push(trim_line_trailing(current));
                 current = Line::new();
@@ -903,45 +949,43 @@ fn wrap_line_chars<'a>(line: &Line<'a>, width: usize) -> Vec<Line<'a>> {
             }
 
             let available = width.saturating_sub(current_width).max(1);
-            let span_width = if printable_ascii {
-                remaining.as_str().len()
-            } else {
-                remaining.width()
-            };
+            let rest = &text[offset..];
+            match split_prefix_by_cells(rest, available, printable_ascii) {
+                PrefixSplit::Fits { width: span_width } => {
+                    current_width += span_width;
+                    push_span_merged(
+                        &mut current,
+                        slice_span(span, borrowed_base, offset..text.len()),
+                    );
+                    break;
+                }
+                PrefixSplit::Split {
+                    mut byte_pos,
+                    width: _,
+                } => {
+                    // Force progress if the first grapheme is too wide for `available`
+                    // and we are at the start of a line (so we can't wrap further).
+                    if byte_pos == 0 && current.is_empty() {
+                        let first_w = rest.graphemes(true).next().map(grapheme_width).unwrap_or(1);
+                        byte_pos =
+                            match split_prefix_by_cells(rest, first_w.max(1), printable_ascii) {
+                                PrefixSplit::Fits { .. } => rest.len(),
+                                PrefixSplit::Split { byte_pos, .. } => byte_pos,
+                            };
+                    }
 
-            if span_width <= available {
-                current_width += span_width;
-                push_span_merged(&mut current, remaining);
-                break;
+                    if byte_pos > 0 {
+                        push_span_merged(
+                            &mut current,
+                            slice_span(span, borrowed_base, offset..offset + byte_pos),
+                        );
+                    }
+                    lines.push(trim_line_trailing(current));
+                    current = Line::new();
+                    current_width = 0;
+                    offset += byte_pos;
+                }
             }
-
-            let (left, right) = if printable_ascii {
-                remaining.split_at_byte_boundary(available)
-            } else {
-                remaining.split_at_cell(available)
-            };
-
-            // Force progress if the first grapheme is too wide for `available`
-            // and we are at the start of a line (so we can't wrap further).
-            let (left, right) = if left.is_empty() && current.is_empty() && !remaining.is_empty() {
-                let first_w = remaining
-                    .as_str()
-                    .graphemes(true)
-                    .next()
-                    .map(grapheme_width)
-                    .unwrap_or(1);
-                remaining.split_at_cell(first_w.max(1))
-            } else {
-                (left, right)
-            };
-
-            if !left.is_empty() {
-                push_span_merged(&mut current, left);
-            }
-            lines.push(trim_line_trailing(current));
-            current = Line::new();
-            current_width = 0;
-            remaining = right;
         }
     }
 
@@ -985,8 +1029,14 @@ fn wrap_line_words<'a>(line: &Line<'a>, width: usize, char_fallback: bool) -> Ve
 
         if piece_width > width {
             if char_fallback {
-                let mut remaining = piece;
-                while !remaining.is_empty() {
+                let text = piece.as_str();
+                let borrowed_base = match &piece.content {
+                    Cow::Borrowed(s) => Some(*s),
+                    Cow::Owned(_) => None,
+                };
+                let printable_ascii = crate::ascii_width(text).is_some();
+                let mut offset = 0;
+                while offset < text.len() {
                     if current_width >= width && !current.is_empty() {
                         lines.push(trim_line_trailing(current));
                         current = Line::new();
@@ -995,9 +1045,13 @@ fn wrap_line_words<'a>(line: &Line<'a>, width: usize, char_fallback: bool) -> Ve
                     }
 
                     let available = width.saturating_sub(current_width).max(1);
-                    let (left, right) = remaining.split_at_cell(available);
+                    let rest = &text[offset..];
+                    let byte_pos = match split_prefix_by_cells(rest, available, printable_ascii) {
+                        PrefixSplit::Fits { .. } => rest.len(),
+                        PrefixSplit::Split { byte_pos, .. } => byte_pos,
+                    };
 
-                    if left.is_empty() && !current.is_empty() {
+                    if byte_pos == 0 && !current.is_empty() {
                         lines.push(trim_line_trailing(current));
                         current = Line::new();
                         current_width = 0;
@@ -1007,20 +1061,17 @@ fn wrap_line_words<'a>(line: &Line<'a>, width: usize, char_fallback: bool) -> Ve
 
                     // Force progress if the first grapheme is too wide for `available`
                     // and we are at the start of a line (so we can't wrap further).
-                    let (left, right) =
-                        if left.is_empty() && current.is_empty() && !remaining.is_empty() {
-                            let first_w = remaining
-                                .as_str()
-                                .graphemes(true)
-                                .next()
-                                .map(grapheme_width)
-                                .unwrap_or(1);
-                            remaining.split_at_cell(first_w.max(1))
-                        } else {
-                            (left, right)
-                        };
+                    let byte_pos = if byte_pos == 0 && current.is_empty() {
+                        let first_w = rest.graphemes(true).next().map(grapheme_width).unwrap_or(1);
+                        match split_prefix_by_cells(rest, first_w.max(1), printable_ascii) {
+                            PrefixSplit::Fits { .. } => rest.len(),
+                            PrefixSplit::Split { byte_pos, .. } => byte_pos,
+                        }
+                    } else {
+                        byte_pos
+                    };
 
-                    let mut left = left;
+                    let mut left = slice_span(&piece, borrowed_base, offset..offset + byte_pos);
 
                     if current_width == 0 && !first_line {
                         left = trim_span_start(left);
@@ -1038,7 +1089,7 @@ fn wrap_line_words<'a>(line: &Line<'a>, width: usize, char_fallback: bool) -> Ve
                         first_line = false;
                     }
 
-                    remaining = right;
+                    offset += byte_pos;
                 }
             } else if !is_ws {
                 let mut trimmed = piece;
@@ -1700,6 +1751,36 @@ mod tests {
             .map(Line::to_plain_text)
             .collect();
         assert_eq!(actual, ["a", "\0"]);
+    }
+
+    #[test]
+    fn char_and_wordchar_wrap_65536_owned_styled_and_late_unicode_linear() {
+        let style = Style::new().bold();
+        // 1. Late-Unicode prefix (printable_ascii = false): borrowed and owned must match across Char and WordChar.
+        let late_unicode = format!("{}界", "x".repeat(4096));
+        for mode in [WrapMode::Char, WrapMode::WordChar] {
+            let borrowed_line =
+                Line::from_spans([Span::styled(late_unicode.as_str(), style).link("https://ex")]);
+            let owned_line =
+                Line::from_spans([Span::styled(late_unicode.clone(), style).link("https://ex")]);
+            for width in [1, 7, 4096, 8192] {
+                let b_wrapped = borrowed_line.wrap(width, mode);
+                let o_wrapped = owned_line.wrap(width, mode);
+                assert_eq!(b_wrapped, o_wrapped, "mode={mode:?} width={width}");
+            }
+        }
+
+        // 2. 65,536-character owned styled width-1 wrapping must complete without quadratic suffix copies.
+        let owned_64k = "x".repeat(65_536);
+        for mode in [WrapMode::Char, WrapMode::WordChar] {
+            let line = Line::from_spans([Span::styled(owned_64k.clone(), style)]);
+            let wrapped = line.wrap(1, mode);
+            assert_eq!(wrapped.len(), 65_536, "mode={mode:?}");
+            assert_eq!(wrapped[0].to_plain_text(), "x");
+            assert_eq!(wrapped[65_535].to_plain_text(), "x");
+            assert_eq!(wrapped[0].spans()[0].style, Some(style));
+            assert_eq!(wrapped[65_535].spans()[0].style, Some(style));
+        }
     }
 
     #[test]

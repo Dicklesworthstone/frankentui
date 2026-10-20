@@ -105,6 +105,29 @@
         "reason": "string"
       }
     },
+    "voi_sample": {
+      "required": [
+        "source",
+        "widget_id",
+        "index",
+        "alpha",
+        "beta",
+        "voi",
+        "sample_cost",
+        "decision"
+      ],
+      "optional": [],
+      "types": {
+        "source": "string",
+        "widget_id": "integer",
+        "index": "integer",
+        "alpha": "number",
+        "beta": "number",
+        "voi": "number",
+        "sample_cost": "number",
+        "decision": "string"
+      }
+    },
     "budget_decision": {
       "required": [
         "frame_idx",
@@ -151,7 +174,7 @@
         "window_size",
         "reset_count"
       ],
-      "optional": [],
+      "optional": ["eprocess_lambda"],
       "types": {
         "frame_idx": "integer",
         "decision": "string",
@@ -166,6 +189,7 @@
         "pid_i": "number",
         "pid_d": "number",
         "e_value": "number",
+        "eprocess_lambda": "number",
         "frames_observed": "integer",
         "frames_since_change": "integer",
         "in_warmup": "boolean",
@@ -725,6 +749,31 @@
         "capacity": "integer",
         "enabled": "boolean",
         "thread": "string"
+      }
+    },
+    "shadow_frame": {
+      "required": [
+        "frame",
+        "checksum",
+        "lane",
+        "requested_lane",
+        "rollout_policy",
+        "task_backend",
+        "cols",
+        "rows",
+        "ts_ns"
+      ],
+      "optional": ["schema_version"],
+      "types": {
+        "frame": "integer",
+        "checksum": "string",
+        "lane": "string",
+        "requested_lane": "string",
+        "rollout_policy": "string",
+        "task_backend": "string",
+        "cols": "integer",
+        "rows": "integer",
+        "ts_ns": "integer"
       }
     }
   }

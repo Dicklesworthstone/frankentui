@@ -144,7 +144,8 @@ ENVIRONMENT VARIABLES:
     FTUI_DEMO_VFX_RUN_ID      Run id for VFX JSONL logs
     FTUI_DEMO_VFX_JSONL       Path for VFX JSONL logs (or '-' for stderr)
     FTUI_DEMO_VFX_PERF        Enable VFX timing JSONL (1/true)
-    FTUI_DEMO_EVIDENCE_JSONL  Path for evidence JSONL logs (diff/resize/budget)";
+    FTUI_DEMO_EVIDENCE_JSONL  Path for evidence JSONL logs (diff/resize/budget)
+    FTUI_DEMO_KEY_JSONL       Path for key-dispatch JSONL logs (or '-' for stderr)";
 
 /// Parsed command-line options.
 #[derive(Debug, Clone)]

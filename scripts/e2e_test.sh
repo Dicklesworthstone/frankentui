@@ -20,6 +20,7 @@ RUN_BUDGETED=true
 RUN_SPAN=true
 RUN_TILE=true
 RUN_SELECTOR=true
+RUN_AGENT_SHELL=true
 ARGS=()
 
 for arg in "$@"; do
@@ -46,27 +47,35 @@ for arg in "$@"; do
         --no-selector)
             RUN_SELECTOR=false
             ;;
-        --trace-only)
+        --no-agent-shell)
+            RUN_AGENT_SHELL=false
+            ;;
+        --trace-only|--no-baseline)
             RUN_BASELINE=false
             ;;
         --help|-h)
-            echo "Usage: $0 [--verbose] [--quick] [--trace-only] [--no-large] [--no-budget] [--no-span] [--no-tile] [--no-selector]"
+            echo "Usage: $0 [--verbose] [--quick] [--trace-only] [--no-large] [--no-budget] [--no-span] [--no-tile] [--no-selector] [--no-agent-shell]"
             echo ""
             echo "Options:"
-            echo "  --verbose, -v   Enable debug logging"
-            echo "  --quick, -q     Run only core tests (inline + cleanup)"
-            echo "  --trace-only    Skip run_all baseline suites and run trace replay scenarios only"
-            echo "  --no-large      Skip large-screen scenarios"
-            echo "  --no-budget     Skip budgeted refresh scenario"
-            echo "  --no-span       Skip span-diff scenario"
-            echo "  --no-tile       Skip tile-skip scenario"
-            echo "  --no-selector   Skip selector-storm scenario"
-            echo "  --help, -h      Show this help"
+            echo "  --verbose, -v      Enable debug logging"
+            echo "  --quick, -q        Run only core tests (inline + cleanup + agent_shell 2k)"
+            echo "  --trace-only       Skip run_all baseline suites and run trace replay scenarios only"
+            echo "  --no-large         Skip large-screen scenarios"
+            echo "  --no-budget        Skip budgeted refresh scenario"
+            echo "  --no-span          Skip span-diff scenario"
+            echo "  --no-tile          Skip tile-skip scenario"
+            echo "  --no-selector      Skip selector-storm scenario"
+            echo "  --no-agent-shell   Skip agent_shell log-spam and injection scenarios"
+            echo "  --help, -h         Show this help"
             exit 0
             ;;
     esac
     ARGS+=("$arg")
 done
+
+if ! $QUICK && ! $RUN_LARGE && ! $RUN_BUDGETED && ! $RUN_SPAN && ! $RUN_TILE && ! $RUN_SELECTOR; then
+    RUN_BASELINE=false
+fi
 
 if $QUICK; then
     RUN_LARGE=false
@@ -1554,6 +1563,368 @@ if $RUN_BUDGETED; then
         else
             RUN_ALL_STATUS=1
         fi
+    fi
+fi
+
+run_agent_shell_log_spam() {
+    local agent_bin="$1"
+    local out_dir="$2"
+    local jsonl="$3"
+    local run_id="$4"
+    local line_count="$5"
+    local cols=100
+    local rows=30
+
+    local case_name="agent_shell_log_spam"
+    LOG_FILE="$E2E_LOG_DIR/${case_name}.log"
+    local pty_file="$out_dir/log_spam.pty"
+    local txt_file="$out_dir/log_spam.txt"
+    local stty_file="$out_dir/log_spam.stty"
+
+    log_test_start "$case_name"
+    local start_ms
+    start_ms="$(e2e_now_ms)"
+
+    local producer="i=1; while [ \$i -le $line_count ]; do printf \"L%06d payload-%06d\\n\" \"\$i\" \"\$i\"; i=\$((i+1)); done"
+
+    local exit_code=0
+    (
+        unset NO_COLOR FTUI_TEST_PROFILE TMUX TMUX_PANE STY ZELLIJ \
+            WEZTERM_UNIX_SOCKET WEZTERM_PANE WEZTERM_EXECUTABLE \
+            WT_SESSION TERM_PROGRAM TERM_PROGRAM_VERSION LC_TERMINAL
+        export TERM="xterm-kitty"
+        export KITTY_WINDOW_ID="1"
+        export FTUI_AGENT_SHELL_EXIT_AFTER_MS=25000
+        export PTY_COLS="$cols"
+        export PTY_ROWS="$rows"
+        export PTY_TIMEOUT=30
+        export PTY_ANSWER_CPR=1
+        export PTY_STTY_FILE="$stty_file"
+        export PTY_CANONICALIZE=0
+        export PTY_TEST_NAME="$case_name"
+        pty_run "$pty_file" "$agent_bin" --ui-height=3 --exit-when-child-exits -- sh -c "$producer"
+    ) || exit_code=$?
+
+    local end_ms
+    end_ms="$(e2e_now_ms)"
+    local duration_ms=$((end_ms - start_ms))
+
+    if ! pty_canonicalize_file "$pty_file" "$txt_file" "$cols" "$rows" --scrollback --max-scrollback 25000; then
+        log_test_fail "$case_name" "pty_canonicalize_file failed"
+        record_result "$case_name" "failed" "$duration_ms" "$LOG_FILE" "pty_canonicalize_file failed"
+        return 1
+    fi
+
+    local eval_json
+    if ! eval_json="$("${E2E_PYTHON:-python3}" - "$pty_file" "$txt_file" "$stty_file" "$line_count" "$duration_ms" "$exit_code" "$run_id" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+pty_path = pathlib.Path(sys.argv[1])
+txt_path = pathlib.Path(sys.argv[2])
+stty_path = pathlib.Path(sys.argv[3])
+expected = int(sys.argv[4])
+duration_ms = max(1, int(sys.argv[5]))
+exit_code = int(sys.argv[6])
+run_id = sys.argv[7]
+
+raw = pty_path.read_bytes() if pty_path.exists() else b""
+txt = txt_path.read_text(encoding="utf-8", errors="replace") if txt_path.exists() else ""
+stty = stty_path.read_text(encoding="utf-8", errors="replace") if stty_path.exists() else ""
+
+tokens = []
+for token in re.findall(r"L([0-9]{6})\b", txt):
+    idx = int(token)
+    if not tokens or tokens[-1] != idx:
+        tokens.append(idx)
+
+seen = set(tokens)
+first_missing = "none"
+for i in range(1, expected + 1):
+    if i not in seen:
+        first_missing = f"L{i:06d}"
+        break
+
+first_out_of_order = "none"
+for prev, curr in zip(tokens, tokens[1:]):
+    if curr != prev + 1:
+        first_out_of_order = f"L{prev:06d}->L{curr:06d}"
+        break
+
+all_in_order = (len(tokens) == expected and first_missing == "none" and first_out_of_order == "none")
+
+clear_2j = raw.count(b"\x1b[2J")
+clear_3j = raw.count(b"\x1b[3J")
+alt_1049h = raw.count(b"\x1b[?1049h")
+no_full_clear = (clear_2j == 0 and clear_3j == 0 and alt_1049h == 0)
+
+decstbm_set = len(re.findall(rb"\x1b\[1;[0-9]+r", raw))
+decstbm_reset = raw.count(b"\x1b[r")
+scroll_region_used = (decstbm_set >= 1 and decstbm_reset >= 1)
+
+sync_h = raw.count(b"\x1b[?2026h")
+sync_l = raw.count(b"\x1b[?2026l")
+sync_balanced = (sync_h == sync_l and sync_h > 0)
+
+cursor_hide = raw.count(b"\x1b[?25l")
+cursor_show = raw.count(b"\x1b[?25h")
+last_hide = raw.rfind(b"\x1b[?25l")
+last_show = raw.rfind(b"\x1b[?25h")
+teardown_ok = (last_show > last_hide and "icanon" in stty)
+
+tail_lines = txt.splitlines()[-6:]
+tail_joined = "\n".join(tail_lines)
+chrome_stable = (
+    (f"L:{expected}" in tail_joined or f"lines={expected}" in tail_joined or f"lines {expected}" in tail_joined.lower())
+    and "exit 0" in tail_joined.lower()
+)
+
+osc_count = raw.count(b"\x1b]")
+dcs_count = raw.count(b"\x1bP")
+apc_count = raw.count(b"\x1b_")
+bytes_on_wire = len(raw)
+lines_per_s = round(expected * 1000.0 / duration_ms, 2)
+bytes_per_line = round(bytes_on_wire / max(1, expected), 2)
+
+status = "passed" if (exit_code == 0 and all_in_order and no_full_clear and chrome_stable and scroll_region_used and sync_balanced and teardown_ok) else "failed"
+failures = []
+if exit_code != 0:
+    failures.append(f"exit_code={exit_code}")
+if not all_in_order:
+    failures.append(f"order(found={len(tokens)},missing={first_missing},ooo={first_out_of_order})")
+if not no_full_clear:
+    failures.append(f"clear(2J={clear_2j},3J={clear_3j},1049h={alt_1049h})")
+if not chrome_stable:
+    failures.append("chrome_unstable")
+if not scroll_region_used:
+    failures.append(f"decstbm(set={decstbm_set},reset={decstbm_reset})")
+if not sync_balanced:
+    failures.append(f"sync(h={sync_h},l={sync_l})")
+if not teardown_ok:
+    failures.append(f"teardown(hide={last_hide},show={last_show},stty={stty.strip()})")
+
+record = {
+    "run_id": run_id,
+    "scenario": "agent_shell_log_spam",
+    "identity": "kitty",
+    "cols": 100,
+    "rows": 30,
+    "lines_expected": expected,
+    "lines_found": len(tokens),
+    "first_missing": first_missing,
+    "first_out_of_order": first_out_of_order,
+    "bytes_on_wire": bytes_on_wire,
+    "frames": sync_h,
+    "lines_per_s": lines_per_s,
+    "bytes_per_line": bytes_per_line,
+    "esc_tallies": {
+        "clear_2j": clear_2j,
+        "clear_3j": clear_3j,
+        "alt_1049h": alt_1049h,
+        "decstbm_set": decstbm_set,
+        "decstbm_reset": decstbm_reset,
+        "sync_h": sync_h,
+        "sync_l": sync_l,
+        "cursor_hide": cursor_hide,
+        "cursor_show": cursor_show,
+        "osc_count": osc_count,
+        "dcs_count": dcs_count,
+        "apc_count": apc_count,
+    },
+    "checks": {
+        "all_lines_present_in_order": all_in_order,
+        "no_full_clear": no_full_clear,
+        "chrome_stable": chrome_stable,
+        "scroll_region_used": scroll_region_used,
+        "sync_brackets_balanced": sync_balanced,
+        "teardown_sequence": teardown_ok,
+    },
+    "exit_code": exit_code,
+    "duration_ms": duration_ms,
+    "status": status,
+    "detail": "; ".join(failures) if failures else "ok",
+}
+print(json.dumps(record))
+sys.exit(0 if status == "passed" else 1)
+PY
+    )"; then
+        printf '%s\n' "$eval_json" >> "$jsonl"
+        jsonl_assert "all_lines_present_in_order" "fail" "$eval_json"
+        log_test_fail "$case_name" "$eval_json"
+        record_result "$case_name" "failed" "$duration_ms" "$LOG_FILE" "$eval_json"
+        return 1
+    fi
+
+    printf '%s\n' "$eval_json" >> "$jsonl"
+    jsonl_assert "all_lines_present_in_order" "pass" "lines=$line_count"
+    jsonl_assert "no_full_clear" "pass" "clear_2j=0 clear_3j=0 alt_1049h=0"
+    jsonl_assert "chrome_stable" "pass" "rows=30 ui_height=3"
+    jsonl_assert "scroll_region_used" "pass" "kitty_decstbm=true"
+    jsonl_assert "sync_brackets_balanced" "pass" "dec_2026_balanced=true"
+    jsonl_assert "teardown_sequence" "pass" "cursor_visible_and_icanon=true"
+    jsonl_assert "throughput_logged" "pass" "$eval_json"
+
+    log_test_pass "$case_name"
+    record_result "$case_name" "passed" "$duration_ms" "$LOG_FILE"
+    return 0
+}
+
+run_agent_shell_injection() {
+    local agent_bin="$1"
+    local out_dir="$2"
+    local jsonl="$3"
+    local run_id="$4"
+    local cols=100
+    local rows=30
+
+    local case_name="agent_shell_injection"
+    LOG_FILE="$E2E_LOG_DIR/${case_name}.log"
+    log_test_start "$case_name"
+    local start_ms
+    start_ms="$(e2e_now_ms)"
+
+    local payload_py='import sys; sys.stdout.buffer.write(b"\x1b[2J\x1b[3J\x1b[?1049h\x1b]0;evil\x07\x1b]52;c;aGVsbG8=\x07\x1bP+q\x1b\\\x1b_Gf=100\x1b\\\xc2\x9b2J\x1b[31mred-token\x1b[0m\n")'
+
+    for mode in sanitized sgr-only raw; do
+        local pty_file="$out_dir/injection_${mode}.pty"
+        local txt_file="$out_dir/injection_${mode}.txt"
+        local stty_file="$out_dir/injection_${mode}.stty"
+        (
+            unset NO_COLOR FTUI_TEST_PROFILE TMUX TMUX_PANE STY ZELLIJ \
+                WEZTERM_UNIX_SOCKET WEZTERM_PANE WEZTERM_EXECUTABLE \
+                WT_SESSION TERM_PROGRAM TERM_PROGRAM_VERSION LC_TERMINAL
+            export TERM="xterm-kitty"
+            export KITTY_WINDOW_ID="1"
+            export FTUI_AGENT_SHELL_EXIT_AFTER_MS=10000
+            export PTY_COLS="$cols"
+            export PTY_ROWS="$rows"
+            export PTY_TIMEOUT=15
+            export PTY_ANSWER_CPR=1
+            export PTY_STTY_FILE="$stty_file"
+            export PTY_CANONICALIZE=0
+            export PTY_TEST_NAME="${case_name}_${mode}"
+            pty_run "$pty_file" "$agent_bin" --ui-height=3 --log-mode="$mode" --exit-when-child-exits -- "${E2E_PYTHON:-python3}" -c "$payload_py"
+        ) || return 1
+        pty_canonicalize_file "$pty_file" "$txt_file" "$cols" "$rows" --scrollback --max-scrollback 1000 || return 1
+    done
+
+    local end_ms
+    end_ms="$(e2e_now_ms)"
+    local duration_ms=$((end_ms - start_ms))
+
+    local eval_json
+    if ! eval_json="$("${E2E_PYTHON:-python3}" - "$out_dir" "$duration_ms" "$run_id" <<'PY'
+import json
+import pathlib
+import sys
+
+out_dir = pathlib.Path(sys.argv[1])
+duration_ms = max(1, int(sys.argv[2]))
+run_id = sys.argv[3]
+
+san_raw = (out_dir / "injection_sanitized.pty").read_bytes()
+san_txt = (out_dir / "injection_sanitized.txt").read_text(encoding="utf-8", errors="replace")
+san_stty = (out_dir / "injection_sanitized.stty").read_text(encoding="utf-8", errors="replace")
+
+sgr_raw = (out_dir / "injection_sgr-only.pty").read_bytes()
+sgr_txt = (out_dir / "injection_sgr-only.txt").read_text(encoding="utf-8", errors="replace")
+sgr_stty = (out_dir / "injection_sgr-only.stty").read_text(encoding="utf-8", errors="replace")
+
+raw_raw = (out_dir / "injection_raw.pty").read_bytes()
+raw_stty = (out_dir / "injection_raw.stty").read_text(encoding="utf-8", errors="replace")
+
+forbidden = [
+    b"\x1b[2J",
+    b"\x1b[3J",
+    b"\x1b[?1049h",
+    b"\x1b]0;evil",
+    b"\x1b]52;c;",
+    b"\x1bP+q",
+    b"\x1b_Gf=100",
+    b"\xc2\x9b2J",
+]
+
+san_ok = (
+    "red-token" in san_txt
+    and all(seq not in san_raw for seq in forbidden)
+    and b"\x1b[31mred-token" not in san_raw
+    and "icanon" in san_stty
+)
+sgr_ok = (
+    "red-token" in sgr_txt
+    and all(seq not in sgr_raw for seq in forbidden)
+    and b"\x1b[31mred-token" in sgr_raw
+    and "icanon" in sgr_stty
+)
+raw_teardown_ok = (
+    b"\x1b]0;evil" in raw_raw
+    and raw_raw.rfind(b"\x1b[?25h") > raw_raw.rfind(b"\x1b[?25l")
+    and "icanon" in raw_stty
+)
+
+status = "passed" if (san_ok and sgr_ok and raw_teardown_ok) else "failed"
+record = {
+    "run_id": run_id,
+    "scenario": "agent_shell_injection",
+    "identity": "kitty",
+    "cols": 100,
+    "rows": 30,
+    "sanitized_ok": san_ok,
+    "sgr_only_ok": sgr_ok,
+    "raw_teardown_ok": raw_teardown_ok,
+    "duration_ms": duration_ms,
+    "status": status,
+}
+print(json.dumps(record))
+sys.exit(0 if status == "passed" else 1)
+PY
+    )"; then
+        printf '%s\n' "$eval_json" >> "$jsonl"
+        jsonl_assert "agent_shell_injection_modes" "fail" "$eval_json"
+        log_test_fail "$case_name" "$eval_json"
+        record_result "$case_name" "failed" "$duration_ms" "$LOG_FILE" "$eval_json"
+        return 1
+    fi
+
+    printf '%s\n' "$eval_json" >> "$jsonl"
+    jsonl_assert "agent_shell_injection_modes" "pass" "$eval_json"
+    log_test_pass "$case_name"
+    record_result "$case_name" "passed" "$duration_ms" "$LOG_FILE"
+    return 0
+}
+
+if $RUN_AGENT_SHELL; then
+    log_info "Running agent_shell log-spam and injection scenarios"
+
+    TARGET_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
+    AGENT_SHELL_BIN="${AGENT_SHELL_BIN:-$TARGET_DIR/debug/examples/agent_shell}"
+    if [[ ! -x "$AGENT_SHELL_BIN" ]]; then
+        (cd "$PROJECT_ROOT" && RCH_CARGO_WRAPPER_BYPASS=1 cargo build -q -p ftui --example agent_shell) || true
+    fi
+    if [[ ! -x "$TARGET_DIR/debug/pty_canonicalize" ]]; then
+        (cd "$PROJECT_ROOT" && RCH_CARGO_WRAPPER_BYPASS=1 cargo build -q -p ftui-pty --bin pty_canonicalize) || true
+    fi
+
+    if [[ ! -x "$AGENT_SHELL_BIN" ]]; then
+        log_test_fail "agent_shell_log_spam" "agent_shell example binary missing at $AGENT_SHELL_BIN"
+        record_result "agent_shell_log_spam" "failed" 0 "$LOG_FILE" "missing agent_shell binary"
+        RUN_ALL_STATUS=1
+    else
+        AGENT_OUT_DIR="$E2E_LOG_DIR/agent_shell"
+        mkdir -p "$AGENT_OUT_DIR"
+        AGENT_JSONL="$AGENT_OUT_DIR/agent_shell.jsonl"
+        RUN_ID="agent_shell_${TIMESTAMP}"
+        jsonl_set_context "inline" 100 30 0 2>/dev/null || true
+
+        SPAM_LINES="${FTUI_AGENT_SHELL_E2E_LINES:-10000}"
+        if $QUICK; then
+            SPAM_LINES=2000
+        fi
+
+        run_agent_shell_log_spam "$AGENT_SHELL_BIN" "$AGENT_OUT_DIR" "$AGENT_JSONL" "$RUN_ID" "$SPAM_LINES" || RUN_ALL_STATUS=1
+        run_agent_shell_injection "$AGENT_SHELL_BIN" "$AGENT_OUT_DIR" "$AGENT_JSONL" "$RUN_ID" || RUN_ALL_STATUS=1
     fi
 fi
 

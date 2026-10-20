@@ -243,23 +243,15 @@ impl<'a> Tabs<'a> {
         &self.tabs
     }
 
-    fn tab_label(&self, tab: &Tab<'_>, active: bool) -> String {
-        let mut out = String::new();
-        if active {
-            out.push('[');
+    fn tab_label_width(&self, tab: &Tab<'_>) -> usize {
+        let close_w = if tab.is_closable() {
+            display_width(self.close_marker)
         } else {
-            out.push(' ');
-        }
-        out.push_str(tab.title());
-        if tab.is_closable() {
-            out.push_str(self.close_marker);
-        }
-        if active {
-            out.push(']');
-        } else {
-            out.push(' ');
-        }
-        out
+            0
+        };
+        2usize
+            .saturating_add(display_width(tab.title()))
+            .saturating_add(close_w)
     }
 
     fn visible_end(&self, state: &TabsState, width: usize) -> usize {
@@ -271,10 +263,7 @@ impl<'a> Tabs<'a> {
         let mut end = state.offset;
 
         for idx in state.offset..self.tabs.len() {
-            let w = display_width(
-                self.tab_label(&self.tabs[idx], idx == state.active)
-                    .as_str(),
-            );
+            let w = self.tab_label_width(&self.tabs[idx]);
             let extra = if idx == state.offset { 0 } else { sep_width };
             if end == state.offset {
                 // Always allow at least one tab; draw helper clips if too long.
@@ -485,16 +474,23 @@ impl StatefulWidget for Tabs<'_> {
                 }
             }
             let tab = &self.tabs[idx];
-            let label = self.tab_label(tab, idx == state.active);
+            let active = idx == state.active;
             let mut tab_style = base_style;
             if deg.apply_styling() {
                 tab_style = self.style.merge(&tab.style);
-                if idx == state.active {
+                if active {
                     tab_style = self.active_style.merge(&tab_style);
                 }
             }
             let before = x;
-            x = draw_text_span(frame, x, area.y, &label, tab_style, right);
+            let prefix = if active { "[" } else { " " };
+            let suffix = if active { "]" } else { " " };
+            x = draw_text_span(frame, x, area.y, prefix, tab_style, right);
+            x = draw_text_span(frame, x, area.y, tab.title(), tab_style, right);
+            if tab.is_closable() {
+                x = draw_text_span(frame, x, area.y, self.close_marker, tab_style, right);
+            }
+            x = draw_text_span(frame, x, area.y, suffix, tab_style, right);
             if let Some(id) = self.hit_id {
                 let width = x.saturating_sub(before).max(1);
                 frame.register_hit(

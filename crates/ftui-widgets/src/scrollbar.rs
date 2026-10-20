@@ -802,6 +802,11 @@ mod tests {
     }
 
     #[test]
+    fn scrollbar_skips_render_under_essential_only() {
+        degradation_essential_only_skips_entirely();
+    }
+
+    #[test]
     fn degradation_skeleton_skips_entirely() {
         use ftui_render::budget::DegradationLevel;
 

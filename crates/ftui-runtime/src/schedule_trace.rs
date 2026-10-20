@@ -800,8 +800,13 @@ mod tests {
             trace.cancel(2, CancelReason::UserRequest);
         }
 
+        let hex1 = trace1.checksum_hex();
+        let hex2 = trace2.checksum_hex();
         assert_eq!(trace1.checksum(), trace2.checksum());
-        assert_eq!(trace1.checksum_hex(), trace2.checksum_hex());
+        assert_eq!(hex1, hex2);
+        assert_eq!(hex1.len(), 16);
+        assert!(hex1.chars().all(|c| c.is_ascii_hexdigit()));
+        println!("CHECKSUM={hex1}");
     }
 
     #[test]

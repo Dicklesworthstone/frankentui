@@ -1,0 +1,10 @@
+{
+  "schema_version": "br.wal_index.quarantine.v1",
+  "database_path": "/data/projects/frankentui/.beads/beads.db",
+  "reason": "initialized-zero-page-wal-index",
+  "main_sha256": "9ea6bd553d67ac118ecc0ab37fa0c2e8ad47c1207f5d80bf7aad2be495f44bf1",
+  "wal_sha256": "a629491315c97b49b884d06bb2084c491128b4d50bffa76353d0952bf8cef394",
+  "shm_sha256": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb",
+  "retained_index": "/data/projects/frankentui/.beads/.br-wal-index-SyJXvE/poisoned-shm",
+  "completion_marker": "quarantine-complete.json"
+}

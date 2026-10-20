@@ -19,8 +19,10 @@ resolve_canonicalize_bin() {
         return 0
     fi
 
-    local target_dir
-    target_dir="$(cd "$PROJECT_ROOT" && cargo metadata --format-version=1 --no-deps | jq -er '.target_directory')" || return 1
+    local target_dir="${CARGO_TARGET_DIR:-}"
+    if [[ -z "$target_dir" ]]; then
+        target_dir="$(cd "$PROJECT_ROOT" && RCH_CARGO_WRAPPER_BYPASS=1 cargo metadata --format-version=1 --no-deps 2>/dev/null | jq -er '.target_directory')" || target_dir="$PROJECT_ROOT/target"
+    fi
     local debug_bin="$target_dir/debug/pty_canonicalize"
     local release_bin="$target_dir/release/pty_canonicalize"
     if [[ -x "$debug_bin" ]]; then
@@ -44,7 +46,7 @@ resolve_canonicalize_bin() {
         return 1
     fi
 
-    (cd "$PROJECT_ROOT" && cargo build -q -p ftui-pty --bin pty_canonicalize) || return 1
+    (cd "$PROJECT_ROOT" && RCH_CARGO_WRAPPER_BYPASS=1 cargo build -q -p ftui-pty --bin pty_canonicalize) || return 1
     PTY_CANONICALIZE_BUILT=1
 
     if [[ -x "$debug_bin" ]]; then
@@ -506,6 +508,16 @@ try:
                         readiness_tail = b""
                     else:
                         readiness_tail = readiness[-(len(send_after_output) - 1):] if len(send_after_output) > 1 else b""
+                if os.environ.get("PTY_ANSWER_CPR") == "1" and b"\x1b[6n" in chunk:
+                    import re
+                    cpr_row = max(1, rows - 3)
+                    m = re.findall(rb"\x1b\[1;([0-9]+)r", bytes(captured[-256:]) + chunk)
+                    if m:
+                        cpr_row = int(m[-1])
+                    try:
+                        os.write(master_fd, f"\x1b[{cpr_row};1R".encode("ascii"))
+                    except Exception:
+                        pass
                 chunk_count += 1
                 should_drop = False
                 if drop_single_idx is not None and chunk_count == drop_single_idx:
@@ -546,6 +558,22 @@ try:
         if stop_at is not None and now >= stop_at and (now - last_data >= drain_timeout):
             break
 finally:
+    stty_file = os.environ.get("PTY_STTY_FILE", "").strip()
+    if stty_file and slave_fd_open is not None:
+        try:
+            import termios
+            attrs = termios.tcgetattr(slave_fd_open)
+            lflag = attrs[3]
+            icanon_str = "icanon" if (lflag & termios.ICANON) else "-icanon"
+            echo_str = "echo" if (lflag & termios.ECHO) else "-echo"
+            with open(stty_file, "w", encoding="utf-8") as sf:
+                sf.write(f"lflag={lflag} {icanon_str} {echo_str}\n")
+        except Exception as exc:
+            try:
+                with open(stty_file, "w", encoding="utf-8") as sf:
+                    sf.write(f"error: {exc}\n")
+            except Exception:
+                pass
     try:
         os.close(master_fd)
     except Exception:

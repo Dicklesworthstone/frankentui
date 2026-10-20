@@ -31,7 +31,8 @@ set -euo pipefail
 #   FUZZ_DURATION_SECS=3600 ./scripts/fuzz_campaign_e2e.sh  # 1 hour per job
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+PROJECT_ROOT="${FUZZ_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd -P)}"
+PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 FUZZ_DIR="$PROJECT_ROOT/fuzz"
 
 FUZZ_DURATION_SECS="${FUZZ_DURATION_SECS:-30}"
@@ -90,7 +91,7 @@ if len(fields) % 2:
     raise ValueError("event fields must be key/value pairs")
 numbers = set("""target_count configured_target_count excluded_target_count
 duration_per_target_secs max_len jobs exit_code build_exit_code runs edges
-peak_rss_mb crashes duration_secs fuzz_crashes_found_total total_runs
+peak_rss_mb crashes corpus_size duration_secs fuzz_crashes_found_total total_runs
 targets_passed targets_failed targets_incomplete targets_skipped
 existing_crash_artifacts campaign_duration_secs""".split())
 data = dict(event=event, run_id=run_id,
@@ -114,7 +115,7 @@ incomplete_campaign() {
     for ((index=${#FINISHED_TARGETS[@]}; index<${#FUZZ_TARGETS[@]}; index++)); do
         target="${FUZZ_TARGETS[$index]}"
         emit_event target_end target "$target" status incomplete reason "$reason" \
-            exit_code null build_exit_code null runs 0 crashes 0
+            exit_code null build_exit_code null runs 0 crashes 0 corpus_size 0
         INCOMPLETE_TARGETS=$((INCOMPLETE_TARGETS + 1))
     done
     emit_event run_end status incomplete reason "$reason" \
@@ -293,6 +294,35 @@ else:
 PY
 }
 
+count_corpus_files() {
+    "$PYTHON_BIN" - "$1" <<'PY'
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+def count(path):
+    total = 0
+    with os.scandir(path) as entries:
+        for entry in entries:
+            if entry.is_symlink():
+                raise ValueError(f"corpus traversal refuses symlink: {entry.path}")
+            if entry.is_dir(follow_symlinks=False):
+                total += count(entry.path)
+            elif entry.is_file(follow_symlinks=False):
+                total += 1
+    return total
+try:
+    root.lstat()
+except FileNotFoundError:
+    print(0)
+else:
+    if root.is_symlink():
+        raise ValueError(f"corpus traversal refuses symlink: {root}")
+    print(count(root))
+PY
+}
+
 # Parse each retained worker log, not the last statistics in merged output.
 # The manager must identify every requested job exactly once with exit code 0.
 # Coverage is the maximum reported job edge count, not a union across jobs.
@@ -371,7 +401,7 @@ PY
 # Run fuzz campaign
 # ---------------------------------------------------------------------------
 
-BUILD_ROOT="$LOG_DIR/build"
+BUILD_ROOT="${FUZZ_BUILD_ROOT:-$LOG_DIR/build}"
 
 for target in "${FUZZ_TARGETS[@]}"; do
     echo "--- Fuzzing: $target (${FUZZ_DURATION_SECS}s) ---"
@@ -467,6 +497,17 @@ for target in "${FUZZ_TARGETS[@]}"; do
             TARGET_REASON="artifact_inspection_failed"
         fi
     fi
+    TARGET_CORPUS_SIZE=0
+    if ! TARGET_CORPUS_SIZE="$(count_corpus_files "$CORPUS_DIR")"; then
+        TARGET_CORPUS_SIZE=0
+        if [[ "$TARGET_STATUS" != "fail" ]]; then
+            TARGET_STATUS="incomplete"
+            TARGET_REASON="corpus_inspection_failed"
+        fi
+    fi
+    CORPUS_DU="$(du -sh "$CORPUS_DIR" 2>/dev/null | awk '{print $1}')"
+    printf '%s\tfiles=%s\tsize=%s\tpath=%s\n' "$target" "$TARGET_CORPUS_SIZE" "${CORPUS_DU:-0}" "$CORPUS_DIR" >> "$LOG_DIR/corpus_stats.txt"
+
     case "$TARGET_STATUS" in
         pass) PASSED_TARGETS=$((PASSED_TARGETS + 1)) ;;
         fail) FAILED_TARGETS=$((FAILED_TARGETS + 1)) ;;
@@ -477,11 +518,12 @@ for target in "${FUZZ_TARGETS[@]}"; do
     TOTAL_CRASHES=$((TOTAL_CRASHES + TARGET_CRASHES))
     TOTAL_RUNS=$((TOTAL_RUNS + TARGET_RUNS))
 
-    echo "  Status: $TARGET_STATUS | Runs: $TARGET_RUNS | Edges: $TARGET_EDGES | Crashes: $TARGET_CRASHES | Time: ${TARGET_ELAPSED}s"
+    echo "  Status: $TARGET_STATUS | Runs: $TARGET_RUNS | Edges: $TARGET_EDGES | Corpus: $TARGET_CORPUS_SIZE | Crashes: $TARGET_CRASHES | Time: ${TARGET_ELAPSED}s"
 
     emit_event target_end target "$target" status "$TARGET_STATUS" reason "$TARGET_REASON" \
         exit_code "$FUZZ_EXIT" build_exit_code "$BUILD_EXIT" runs "$TARGET_RUNS" \
         edges "$TARGET_EDGES" peak_rss_mb "$TARGET_RSS" crashes "$TARGET_CRASHES" \
+        corpus_size "$TARGET_CORPUS_SIZE" corpus_dir "$CORPUS_DIR" \
         target_log "$TARGET_LOG" build_log "$BUILD_LOG" worker_dir "$WORKER_DIR" \
         artifact_dir "$TARGET_ARTIFACT_DIR" replay_command "$TARGET_REPLAY_CMD" \
         duration_secs "$TARGET_ELAPSED"

@@ -9,10 +9,16 @@ edition = "2024"
 cargo-fuzz = true
 
 # The fuzz crate is excluded from the root workspace (see the root Cargo.toml),
-# so it is its own workspace root and cannot inherit `[lints]` from the parent:
-# `[lints] workspace = true` here made every `cargo fuzz build` fail with
-# "error inheriting `lints` from workspace root manifest".
+# so it is its own workspace root and mirrors the root `[workspace.lints.clippy]`
+# table directly rather than inheriting from the parent workspace.
 [workspace]
+
+[workspace.lints.clippy]
+needless_range_loop = "allow"
+type_complexity = "allow"
+
+[lints]
+workspace = true
 
 [dependencies]
 libfuzzer-sys = "0.4"

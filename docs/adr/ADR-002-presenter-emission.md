@@ -1,8 +1,6 @@
 # ADR-002: Presenter Emission Strategy
 
-## Status
-
-ACCEPTED
+Status: ACCEPTED
 
 ## Context
 

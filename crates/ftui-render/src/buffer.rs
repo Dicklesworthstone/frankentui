@@ -164,14 +164,19 @@ impl DirtySpanRow {
         self.spans.clear();
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn spans(&self) -> &[DirtySpan] {
         &self.spans
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn is_full(&self) -> bool {
         self.overflow
+    }
+
+    #[inline(always)]
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.overflow || !self.spans.is_empty()
     }
 }
 
@@ -206,7 +211,7 @@ pub struct DirtySpanStats {
 /// buffer.set(0, 0, Cell::from_char('H'));
 /// buffer.set(1, 0, Cell::from_char('i'));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Buffer {
     width: u16,
     height: u16,
@@ -237,6 +242,30 @@ pub struct Buffer {
     dirty_cells: usize,
     /// Whether the whole buffer is marked dirty (bitmap may be stale).
     dirty_all: bool,
+    /// Deterministic mutation generation token for dirty-witness baseline checks.
+    mutation_gen: u64,
+    /// Mutation generation recorded at the last `clear_dirty()`, or `None` when full-dirty.
+    dirty_baseline_gen: Option<u64>,
+}
+
+impl std::fmt::Debug for Buffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Buffer")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("cells", &self.cells)
+            .field("scissor_stack", &self.scissor_stack)
+            .field("opacity_stack", &self.opacity_stack)
+            .field("degradation", &self.degradation)
+            .field("dirty_rows", &self.dirty_rows)
+            .field("dirty_spans", &self.dirty_spans)
+            .field("dirty_span_config", &self.dirty_span_config)
+            .field("dirty_span_overflows", &self.dirty_span_overflows)
+            .field("dirty_bits", &self.dirty_bits)
+            .field("dirty_cells", &self.dirty_cells)
+            .field("dirty_all", &self.dirty_all)
+            .finish()
+    }
 }
 
 impl Buffer {
@@ -278,6 +307,8 @@ impl Buffer {
             dirty_bits,
             dirty_cells,
             dirty_all,
+            mutation_gen: 0,
+            dirty_baseline_gen: None,
         }
     }
 
@@ -332,7 +363,25 @@ impl Buffer {
         0
     }
 
+    /// Compute the 64-bit FNV-1a checksum over each cell's 16 bytes in row-major order.
+    ///
+    /// This is the canonical shadow-run / golden frame checksum shared between
+    /// `ftui-runtime` (`RolloutPolicy::Shadow`) and `ftui-harness`.
+    #[inline]
+    #[must_use]
+    pub fn checksum(&self) -> u64 {
+        buffer_checksum(self)
+    }
+
     // ----- Dirty Tracking API -----
+
+    #[inline]
+    fn advance_mutation_gen(&mut self, token: u64) {
+        self.mutation_gen = self
+            .mutation_gen
+            .wrapping_add(token.wrapping_add(0x9E37_79B9_7F4A_7C15))
+            .wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    }
 
     /// Mark a row as dirty (modified since last clear).
     ///
@@ -380,6 +429,19 @@ impl Buffer {
     /// Mark a row as fully dirty (full scan).
     #[inline]
     fn mark_dirty_row_full(&mut self, y: u16) {
+        if y >= self.height {
+            return;
+        }
+        let sample = self
+            .cells
+            .get(y as usize * self.width as usize)
+            .map_or(0, |c| {
+                u64::from(c.content.raw()) ^ (u64::from(c.fg.0) << 32)
+            });
+        self.advance_mutation_gen((u64::from(y) << 48) | (u64::from(self.width) << 32) ^ sample);
+        if self.dirty_all {
+            return;
+        }
         self.mark_dirty_row(y);
         if self.dirty_span_config.enabled
             && let Some(row) = self.dirty_spans.get_mut(y as usize)
@@ -392,7 +454,9 @@ impl Buffer {
     /// Mark a span within a row as dirty (half-open).
     #[inline]
     pub(crate) fn mark_dirty_span(&mut self, y: u16, x0: u16, x1: u16) {
-        self.mark_dirty_row(y);
+        if y >= self.height {
+            return;
+        }
         let width = self.width;
         let (start, mut end) = if x0 <= x1 { (x0, x1) } else { (x1, x0) };
         if start >= width {
@@ -405,6 +469,19 @@ impl Buffer {
             return;
         }
 
+        let sample = self
+            .cells
+            .get(y as usize * width as usize + start as usize)
+            .map_or(0, |c| {
+                u64::from(c.content.raw()) ^ (u64::from(c.fg.0) << 32)
+            });
+        self.advance_mutation_gen(
+            ((u64::from(y) << 48) | (u64::from(start) << 32) | u64::from(end)) ^ sample,
+        );
+        if self.dirty_all {
+            return;
+        }
+        self.mark_dirty_row(y);
         self.mark_dirty_bits_range(y, start, end);
 
         if !self.dirty_span_config.enabled {
@@ -458,6 +535,7 @@ impl Buffer {
     /// Mark all rows as dirty (e.g., after a full clear or bulk write).
     #[inline]
     pub fn mark_all_dirty(&mut self) {
+        self.advance_mutation_gen((u64::from(self.height) << 32) | u64::from(self.width));
         self.dirty_rows.fill(true);
         if self.dirty_span_config.enabled {
             for row in &mut self.dirty_spans {
@@ -470,6 +548,7 @@ impl Buffer {
         }
         self.dirty_all = true;
         self.dirty_cells = self.cells.len();
+        self.dirty_baseline_gen = None;
     }
 
     /// Reset all dirty flags and spans to clean.
@@ -485,6 +564,7 @@ impl Buffer {
         self.dirty_bits.fill(0);
         self.dirty_cells = 0;
         self.dirty_all = false;
+        self.dirty_baseline_gen = Some(self.mutation_gen);
     }
 
     /// Check if a specific row is dirty.
@@ -519,6 +599,130 @@ impl Buffer {
             .collect()
     }
 
+    /// Generation token of mutations applied to this buffer's cells.
+    #[inline]
+    #[must_use]
+    pub const fn mutation_gen(&self) -> u64 {
+        self.mutation_gen
+    }
+
+    /// Generation token recorded at the last [`clear_dirty`](Self::clear_dirty) call,
+    /// or `None` when the buffer is in full-dirty state.
+    #[inline]
+    #[must_use]
+    pub const fn dirty_baseline_gen(&self) -> Option<u64> {
+        self.dirty_baseline_gen
+    }
+
+    /// Count of rows with non-empty or full dirty spans.
+    ///
+    /// When dirty-span tracking is disabled, falls back to [`dirty_row_count`](Self::dirty_row_count).
+    #[must_use]
+    pub fn dirty_span_row_count(&self) -> usize {
+        if !self.dirty_span_config.enabled {
+            return self.dirty_row_count();
+        }
+        self.dirty_spans.iter().filter(|row| row.is_dirty()).count()
+    }
+
+    /// Verify internal consistency across `dirty_rows`, `dirty_spans`, and `dirty_cells`.
+    #[must_use]
+    pub fn is_dirty_witness_consistent(&self) -> bool {
+        let height = self.height as usize;
+        if self.dirty_rows.len() != height || self.dirty_spans.len() != height {
+            return false;
+        }
+        let dirty_row_count = self.dirty_row_count();
+        if dirty_row_count == 0 {
+            if self.dirty_all || self.dirty_cells != 0 {
+                return false;
+            }
+            if self.dirty_span_config.enabled && self.dirty_spans.iter().any(DirtySpanRow::is_dirty)
+            {
+                return false;
+            }
+            return true;
+        }
+        if self.dirty_cells < dirty_row_count {
+            return false;
+        }
+        if self.dirty_all && (dirty_row_count != height || self.dirty_cells != self.cells.len()) {
+            return false;
+        }
+        if self.dirty_span_config.enabled {
+            for (y, &row_dirty) in self.dirty_rows.iter().enumerate() {
+                if row_dirty != self.dirty_spans[y].is_dirty() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Verify that this buffer's dirty tracking is a sound witness for diffing against `old`.
+    ///
+    /// Cross-checks `dirty_rows` against `dirty_spans` and `dirty_cells`, and verifies
+    /// that either `self` is marked fully dirty (`dirty_all`) or `self`'s dirty state
+    /// was cleared (`clear_dirty`) at the exact mutation generation of `old`.
+    #[must_use]
+    pub fn is_dirty_witness_valid_for(&self, old: &Buffer) -> bool {
+        if self.width != old.width || self.height != old.height {
+            return false;
+        }
+        if !self.is_dirty_witness_consistent() {
+            return false;
+        }
+        match self.dirty_baseline_gen {
+            Some(base_gen) => base_gen == old.mutation_gen || base_gen == 0,
+            None => self.dirty_all && self.dirty_row_count() == self.height as usize,
+        }
+    }
+
+    /// Collect dirty-row indices and validate the dirty witness against `old` in a single pass.
+    #[inline]
+    pub(crate) fn collect_dirty_witness_for(&self, old: &Buffer) -> (usize, usize, bool, Vec<u16>) {
+        let height = self.height as usize;
+        let span_enabled = self.dirty_span_config.enabled;
+        let mut dirty_rows = Vec::new();
+        let mut span_dirty_rows = 0usize;
+
+        for y in 0..height {
+            let row_dirty = self.dirty_rows.get(y).copied().unwrap_or(false);
+            if row_dirty {
+                dirty_rows.push(y as u16);
+            }
+            if span_enabled {
+                if self.dirty_spans.get(y).is_some_and(DirtySpanRow::is_dirty) {
+                    span_dirty_rows += 1;
+                }
+            } else if row_dirty {
+                span_dirty_rows += 1;
+            }
+        }
+
+        let dirty_row_count = dirty_rows.len();
+        let consistent = self.width == old.width
+            && self.height == old.height
+            && self.dirty_rows.len() == height
+            && self.dirty_spans.len() == height
+            && span_dirty_rows == dirty_row_count
+            && if dirty_row_count == 0 {
+                !self.dirty_all && self.dirty_cells == 0
+            } else {
+                self.dirty_cells >= dirty_row_count
+                    && (!self.dirty_all
+                        || (dirty_row_count == height && self.dirty_cells == self.cells.len()))
+            };
+
+        let baseline_valid = consistent
+            && match self.dirty_baseline_gen {
+                Some(base_gen) => base_gen == old.mutation_gen || base_gen == 0,
+                None => self.dirty_all && dirty_row_count == height,
+            };
+
+        (dirty_row_count, span_dirty_rows, baseline_valid, dirty_rows)
+    }
+
     /// Access the per-cell dirty bitmap (0 = clean, 1 = dirty).
     #[inline]
     #[allow(dead_code)]
@@ -541,7 +745,7 @@ impl Buffer {
     }
 
     /// Access a row's dirty span state.
-    #[inline]
+    #[inline(always)]
     #[allow(dead_code)]
     pub(crate) fn dirty_span_row(&self, y: u16) -> Option<&DirtySpanRow> {
         if !self.dirty_span_config.enabled {
@@ -1214,6 +1418,7 @@ impl Buffer {
     pub fn clear(&mut self) {
         self.cells.fill(Cell::default());
         self.mark_all_dirty();
+        self.mutation_gen = 0;
     }
 
     /// Reset per-frame state and clear all cells.
@@ -1898,6 +2103,35 @@ impl AdaptiveDoubleBuffer {
             logical as f64 / capacity as f64
         }
     }
+}
+
+/// 64-bit FNV-1a offset basis used by [`buffer_checksum`].
+pub const BUFFER_CHECKSUM_FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+/// 64-bit FNV-1a prime used by [`buffer_checksum`].
+pub const BUFFER_CHECKSUM_FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Compute the 64-bit FNV-1a checksum over a slice of [`Cell`]s (16 bytes per cell).
+#[inline]
+#[must_use]
+pub fn buffer_cells_checksum(cells: &[Cell]) -> u64 {
+    let mut hash = BUFFER_CHECKSUM_FNV_OFFSET_BASIS;
+    for cell in cells {
+        for byte in cell.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(BUFFER_CHECKSUM_FNV_PRIME);
+        }
+    }
+    hash
+}
+
+/// Compute the 64-bit FNV-1a checksum over each cell's 16 bytes in row-major order.
+///
+/// Shared shadow/golden frame checksum used by `ftui-runtime` (`RolloutPolicy::Shadow`
+/// `shadow_frame` evidence) and `ftui-harness` (`LabSession` and `ShadowRun`).
+#[inline]
+#[must_use]
+pub fn buffer_checksum(buf: &Buffer) -> u64 {
+    buffer_cells_checksum(&buf.cells)
 }
 
 #[cfg(test)]
@@ -4538,6 +4772,61 @@ mod tests {
     }
 
     #[test]
+    fn dirty_all_skips_redundant_bookkeeping_while_preserving_exact_state() {
+        let mut buf = Buffer::new(16, 4);
+        assert!(buf.dirty_all());
+        assert!(buf.is_dirty_witness_consistent());
+        let gen0 = buf.mutation_gen();
+
+        // Out-of-bounds and empty spans when dirty_all=true do not advance mutation_gen.
+        buf.mark_dirty_span(4, 0, 2);
+        buf.mark_dirty_span(0, 16, 18);
+        buf.mark_dirty_span(0, 5, 5);
+        assert_eq!(buf.mutation_gen(), gen0);
+
+        // In-bounds mutations when dirty_all=true advance mutation_gen and preserve full dirty state.
+        buf.set(3, 1, Cell::from_char('A'));
+        buf.fill(Rect::new(0, 2, 8, 1), Cell::from_char('B'));
+        let gen1 = buf.mutation_gen();
+        assert_ne!(gen1, gen0);
+        assert!(buf.dirty_all());
+        assert_eq!(buf.dirty_row_count(), 4);
+        assert_eq!(buf.dirty_cell_count(), 64);
+        assert_eq!(buf.dirty_span_stats().rows_full_dirty, 4);
+        assert_eq!(buf.dirty_span_stats().overflows, 0);
+        assert!(buf.is_dirty_witness_consistent());
+
+        // Clear dirty and perform sparse writes (false branch of dirty_all).
+        buf.clear_dirty();
+        assert!(!buf.dirty_all());
+        assert_eq!(buf.dirty_baseline_gen(), Some(gen1));
+        assert_eq!(buf.dirty_row_count(), 0);
+        assert_eq!(buf.dirty_cell_count(), 0);
+
+        buf.set(5, 2, Cell::from_char('C'));
+        assert!(!buf.dirty_all());
+        assert_eq!(buf.dirty_row_count(), 1);
+        assert_eq!(buf.dirty_cell_count(), 1);
+        assert_eq!(
+            buf.dirty_span_row(2).unwrap().spans(),
+            &[DirtySpan::new(5, 6)]
+        );
+        assert!(buf.is_dirty_witness_consistent());
+
+        // Transition back to dirty_all via clear() and verify config toggle + subsequent sparse writes.
+        buf.clear();
+        assert!(buf.dirty_all());
+        assert!(buf.is_dirty_witness_consistent());
+        buf.set_dirty_span_config(DirtySpanConfig::default().with_enabled(false));
+        buf.set(1, 0, Cell::from_char('D'));
+        assert!(buf.dirty_all());
+        assert!(buf.is_dirty_witness_consistent());
+        buf.set_dirty_span_config(DirtySpanConfig::default().with_enabled(true));
+        assert_eq!(buf.dirty_span_stats().rows_full_dirty, 4);
+        assert!(buf.is_dirty_witness_consistent());
+    }
+
+    #[test]
     fn buffer_fill_wide_char_clipping() {
         // Regression test for wide character clipping during fill.
         // Verifies that wide characters are not written if they would be clipped,
@@ -4568,5 +4857,48 @@ mod tests {
         assert!(buf.get(1, 0).unwrap().is_empty()); // Should be default/empty, not continuation
 
         buf.pop_scissor();
+    }
+
+    #[test]
+    fn buffer_checksum_known_vector() {
+        let mut empty = Buffer::new(1, 1);
+        empty.cells.clear();
+        assert_eq!(buffer_checksum(&empty), BUFFER_CHECKSUM_FNV_OFFSET_BASIS);
+        assert_eq!(buffer_cells_checksum(&[]), BUFFER_CHECKSUM_FNV_OFFSET_BASIS);
+
+        let mut buf = Buffer::new(2, 1);
+        buf.set_raw(0, 0, Cell::from_char('a'));
+        buf.set_raw(1, 0, Cell::from_char('b'));
+        let expected: u64 = 0x5cda_4da4_1d73_449e;
+        assert_eq!(buffer_checksum(&buf), expected);
+        assert_eq!(buf.checksum(), expected);
+
+        let mut changed = buf.clone();
+        changed.set_raw(1, 0, Cell::from_char('c'));
+        assert_ne!(buffer_checksum(&changed), expected);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn buffer_checksum_row_major_order_sensitive(
+            c1 in proptest::prelude::any::<char>(),
+            c2 in proptest::prelude::any::<char>(),
+            fg1 in proptest::prelude::any::<u32>(),
+            fg2 in proptest::prelude::any::<u32>(),
+        ) {
+            let cell1 = Cell::from_char(c1).with_fg(PackedRgba(fg1));
+            let cell2 = Cell::from_char(c2).with_fg(PackedRgba(fg2));
+            proptest::prop_assume!(cell1 != cell2);
+
+            let mut buf_ab = Buffer::new(2, 2);
+            buf_ab.set_raw(1, 0, cell1);
+            buf_ab.set_raw(0, 1, cell2);
+
+            let mut buf_ba = Buffer::new(2, 2);
+            buf_ba.set_raw(1, 0, cell2);
+            buf_ba.set_raw(0, 1, cell1);
+
+            proptest::prop_assert_ne!(buffer_checksum(&buf_ab), buffer_checksum(&buf_ba));
+        }
     }
 }

@@ -73,9 +73,16 @@ pub mod seq {
     /// Canonical SGR mouse enable sequence.
     pub const MOUSE_ENABLE: &[u8] = b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1006;1000;1002h\x1b[?1006h\x1b[?1000h\x1b[?1002h";
 
+    /// Canonical SGR-Pixels (`?1016h`) mouse enable sequence (appends `?1016h` after `?1006h`).
+    pub const MOUSE_ENABLE_PIXEL: &[u8] = b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1006;1000;1002h\x1b[?1006h\x1b[?1000h\x1b[?1002h\x1b[?1016h";
+
     /// Conservative mouse enable sequence for mux sessions.
     pub const MOUSE_ENABLE_MUX_SAFE: &[u8] =
         b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1006h\x1b[?1000h\x1b[?1002h";
+
+    /// Conservative SGR-Pixels (`?1016h`) mouse enable sequence for mux sessions.
+    pub const MOUSE_ENABLE_PIXEL_MUX_SAFE: &[u8] =
+        b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1006h\x1b[?1000h\x1b[?1002h\x1b[?1016h";
 
     /// Show cursor (DECTCEM).
     pub const CURSOR_SHOW: &[u8] = b"\x1b[?25h";
@@ -758,6 +765,11 @@ mod tests {
         assert!(!tmux_plan.disable_focus);
         assert!(tmux_plan.mouse_mux_safe);
         assert!(!tmux_plan.emit_sync_end);
+    }
+
+    #[test]
+    fn mux_suppresses_kitty_and_focus_in_plan() {
+        from_capabilities_applies_mux_policy();
     }
 
     #[test]

@@ -192,13 +192,12 @@ pub struct StreamingHarness {
     process_closed: bool,
     process_can_restart: bool,
     interrupt_status: ProcessInterruptStatus,
-    /// The terminal size last reported, which a restarted PTY child starts at.
-    pty_size: Option<(u16, u16)>,
     quit_armed_at: Option<Instant>,
     control_feedback: Option<String>,
     stdout_preview: Option<String>,
     stderr_preview: Option<String>,
     preview_stderr: bool,
+    terminal_size: Option<(u16, u16)>,
     input: TextInput,
     input_feedback: &'static str,
 }
@@ -540,18 +539,62 @@ impl StreamingHarness {
             process_closed: false,
             process_can_restart: true,
             interrupt_status: ProcessInterruptStatus::Idle,
-            pty_size: None,
             quit_armed_at: None,
             control_feedback: None,
             stdout_preview: None,
             stderr_preview: None,
             preview_stderr: false,
+            terminal_size: None,
             input: TextInput::new()
                 .with_placeholder("Type a line for the child...")
                 .with_focused(options.stdin),
             input_feedback: "Enter sends; Ctrl-D closes input; Ctrl-C interrupts, twice quits.",
             options,
         }
+    }
+
+    /// Delivered child line count for the current run.
+    #[must_use]
+    pub const fn line_count(&self) -> usize {
+        self.line_count
+    }
+
+    /// Normalized child UTF-8 byte count (payload bytes plus one LF per line) for the current run.
+    #[must_use]
+    pub const fn byte_count(&self) -> usize {
+        self.byte_count
+    }
+
+    /// Delivered child stderr line count for the current run.
+    #[must_use]
+    pub const fn stderr_count(&self) -> usize {
+        self.stderr_count
+    }
+
+    /// Whether the current child run has reached a terminal event.
+    #[must_use]
+    pub const fn child_finished(&self) -> bool {
+        self.child_finished
+    }
+
+    /// Current status label rendered in the status bar.
+    #[must_use]
+    pub fn child_status(&self) -> &str {
+        &self.child_status
+    }
+
+    /// Current [`ProcessControl`] generation for constructing [`Msg::Process`] in tests.
+    #[must_use]
+    pub fn current_generation(&self) -> Option<u64> {
+        self.process_control
+            .as_ref()
+            .map(ProcessControl::generation)
+    }
+
+    /// Current draft text in the input editor.
+    #[must_use]
+    pub fn input_value(&self) -> &str {
+        self.input.value()
     }
 
     fn advance_clock(&mut self, now: Instant) -> Option<Cmd<Msg>> {
@@ -779,12 +822,12 @@ impl StreamingHarness {
         }
         let previous = control.generation();
         let control = ProcessControl::new();
-        let generation = control.generation();
-        // Without this the new PTY would start at the size the host terminal
-        // reports to an ioctl, or 80x24 when neither stdout nor stdin is one.
-        if let Some((width, height)) = self.pty_size {
+        if self.options.pty
+            && let Some((width, height)) = self.terminal_size
+        {
             let _ = control.request_resize(width, height);
         }
+        let generation = control.generation();
         self.process_control = Some(control);
         self.process_input = self.options.stdin.then(ProcessInput::new);
         self.process_pid = None;
@@ -916,8 +959,8 @@ impl Model for StreamingHarness {
             }
             Msg::Resize { width, height } if self.options.pty => {
                 // A finished run refuses resizes; its successor starts at the
-                // size recorded here.
-                self.pty_size = Some((width, height));
+                // terminal's size.
+                self.terminal_size = Some((width, height));
                 if let Some(control) = &self.process_control {
                     let _ = control.request_resize(width, height);
                 }
@@ -992,7 +1035,7 @@ impl Model for StreamingHarness {
     }
 
     fn view(&self, frame: &mut Frame) {
-        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let area = Rect::from_size(frame.buffer.width().min(80), frame.buffer.height());
 
         let chunks = if self.process_input.is_some() {
             Flex::vertical()
@@ -1772,34 +1815,6 @@ mod tests {
             Cmd::Log { text, mode: SanitizeMode::Strip }
                 if text == "[process control] SIGINT sent to the child's process group."
         ));
-    }
-
-    #[test]
-    fn pty_restart_starts_the_new_run_at_the_last_reported_size() {
-        let mut model = StreamingHarness::new(
-            StreamingOptions::parse_agent_shell(
-                ["--pty", "--", "cat"].map(str::to_owned),
-                None,
-                None,
-            )
-            .unwrap(),
-        );
-        let _ = model.update(Msg::Resize {
-            width: 132,
-            height: 50,
-        });
-        let first = model.process_control.as_ref().unwrap().generation();
-        let _ = model.update(process_message(&model, ProcessEvent::Exited(0)));
-        let _ = model.restart_child_with_status(ProcessControlStatus {
-            pid: None,
-            closed: true,
-            can_restart: true,
-            interrupt: ProcessInterruptStatus::Idle,
-        });
-        let control = model.process_control.as_ref().unwrap();
-        assert_ne!(control.generation(), first, "F5 starts a new run");
-        let expected = cfg!(unix).then_some((132, 50));
-        assert_eq!(control.pending_resize(), expected);
     }
 
     #[test]
@@ -2971,5 +2986,92 @@ mod tests {
         ));
         assert!(model.child_finished);
         assert!(matches!(model.update(key(KeyCode::Escape)), Cmd::Quit));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_restart_preserves_terminal_dimensions_for_restarted_child() {
+        let options = StreamingOptions::parse_agent_shell(
+            ["--pty", "--", "sh", "-c", "stty size <&1"].map(str::to_owned),
+            None,
+            None,
+        )
+        .unwrap();
+        let mut model = StreamingHarness::new(options);
+
+        // Resize during initial run, then finish and resize again while idle.
+        assert!(matches!(
+            model.update(Msg::Resize {
+                width: 132,
+                height: 48
+            }),
+            Cmd::None
+        ));
+        let _ = model.update(process_message(&model, ProcessEvent::Exited(0)));
+        assert!(model.child_finished);
+        assert!(matches!(
+            model.update(Msg::Resize {
+                width: 144,
+                height: 52
+            }),
+            Cmd::None
+        ));
+        assert_eq!(model.terminal_size, Some((144, 52)));
+
+        // Restart via F5 and run the restarted PTY subscription to verify the
+        // new child's PTY starts at 144x52 instead of reverting to 80x24.
+        let restart = model.update(key(KeyCode::F(5)));
+        assert!(matches!(restart, Cmd::Log { .. }));
+        assert!(!model.child_finished);
+        assert_eq!(
+            model.process_control.as_ref().unwrap().pending_resize(),
+            Some((144, 52)),
+            "the restarted PTY is queued at the size recorded while the previous run was idle"
+        );
+        model.options.exit_when_child_exits = true;
+
+        let writer = crate::runtime::TerminalWriter::new(
+            Vec::<u8>::new(),
+            crate::runtime::ScreenMode::Inline { ui_height: 15 },
+            crate::runtime::UiAnchor::Bottom,
+            crate::core::terminal_capabilities::TerminalCapabilities::basic(),
+        );
+        let features = crate::runtime::BackendFeatures::default();
+        let mut config = crate::runtime::ProgramConfig::inline(15);
+        config.poll_timeout = Duration::from_millis(10);
+        config.intercept_signals = false;
+        let mut program = crate::runtime::Program::with_event_source(
+            model,
+            crate::runtime::HeadlessEventSource::new(144, 52, features),
+            features,
+            crate::runtime::TerminalPresenter::new(writer),
+            config,
+        )
+        .unwrap();
+        program.run().unwrap();
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(144, 15, &mut pool);
+        program.model().view(&mut frame);
+        let rendered: String = (0..15)
+            .map(|y| {
+                (0..144)
+                    .map(|x| {
+                        frame
+                            .buffer
+                            .get(x, y)
+                            .unwrap()
+                            .content
+                            .as_char()
+                            .unwrap_or(' ')
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("52 144"),
+            "restarted PTY child must observe 52 rows x 144 cols; rendered:\n{rendered}"
+        );
     }
 }

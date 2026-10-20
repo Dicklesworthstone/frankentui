@@ -15,6 +15,7 @@ categories = ["command-line-interface", "gui"]
 default = []
 # Compiles internal research modules not reachable from the public API. Not supported. See README.
 experimental = []
+alloc-count = []
 
 [lints]
 workspace = true

@@ -1,5 +1,7 @@
 # ADR-007: SDK Modularization (Embedded Core + Host Bindings)
 
+Status: ACCEPTED (2026-10-16 — embedded host-agnostic core + host-specific bindings via `ftui-web`; universal C-ABI hub deferred)
+
 ## Context
 We want FrankenTUI to be usable beyond a single terminal host while keeping the core deterministic, testable, and dependency-light. A single universal C ABI layer would simplify some bindings but creates tight coupling and forces all languages to inherit C’s constraints. The project also enforces “no file proliferation” and avoids empty crates without a real target.
 

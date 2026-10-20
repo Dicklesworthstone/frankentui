@@ -1,7 +1,10 @@
 //! Bayesian height prediction with conformal bounds for virtualized lists.
 //!
 //! Predicts unseen row heights to pre-allocate scroll space and avoid
-//! scroll jumps when actual heights are measured lazily.
+//! scroll jumps when actual heights are measured lazily. Consumed by
+//! [`crate::virtualized::VariableHeightsFenwick`], [`crate::virtualized::Virtualized::with_height_prediction`],
+//! and [`crate::virtualized::VirtualizedListState::with_predictor`] (grouped by
+//! [`crate::virtualized::RenderItem::category`]).
 //!
 //! # Mathematical Model
 //!
@@ -242,10 +245,17 @@ impl HeightPredictor {
         // Update Welford stats.
         cat.welford.update(h);
 
-        // Update posterior: μ_n = (κ₀·μ₀ + n·x̄) / κ_n
+        // Update posterior: μ_n = (κ₀·μ₀ + n·x̄) / κ_n.
+        // For non-default categories (category > 0), use empirical Bayes anchoring
+        // on the category's sample mean so multi-line categories are not pulled
+        // toward category 0's single-line prior mean.
         let n = cat.welford.n as f64;
         let kappa_0 = self.config.prior_strength;
-        let mu_0 = self.config.prior_mean;
+        let mu_0 = if category == 0 {
+            self.config.prior_mean
+        } else {
+            cat.welford.mean
+        };
         cat.posterior_kappa = kappa_0 + n;
         cat.posterior_mean = (kappa_0 * mu_0 + n * cat.welford.mean) / cat.posterior_kappa;
 
@@ -574,17 +584,19 @@ mod tests {
         let cat_a = 0;
         let cat_b = pred.register_category();
 
-        // Feed different data to each.
-        for _ in 0..20 {
-            pred.observe(cat_a, 1);
-            pred.observe(cat_b, 5);
+        // Feed different data to each (cat 0 at 3, cat 1 at 9).
+        for _ in 0..50 {
+            pred.observe(cat_a, 3);
+            pred.observe(cat_b, 9);
         }
 
         let pa = pred.predict(cat_a);
         let pb = pred.predict(cat_b);
 
-        assert_eq!(pa.predicted, 1);
-        assert!(pb.predicted >= 4 && pb.predicted <= 5);
+        assert_eq!(pa.predicted, 3);
+        assert_eq!(pb.predicted, 9);
+        assert!((pred.posterior_mean(cat_a) - 3.0).abs() < 0.2);
+        assert!((pred.posterior_mean(cat_b) - 9.0).abs() < 0.5);
     }
 
     // ─── Cold start ───────────────────────────────────────────────
@@ -1088,6 +1100,52 @@ mod tests {
         // Intermediate categories have no observations
         assert_eq!(pred.category_observations(5), 0);
         assert_eq!(pred.category_observations(10), 1);
+    }
+
+    #[test]
+    fn violation_rate_near_alpha_on_stationary_data() {
+        let alpha = 0.10;
+        let mut pred = HeightPredictor::new(PredictorConfig {
+            default_height: 20,
+            prior_mean: 20.0,
+            prior_strength: 2.0,
+            prior_variance: 16.0,
+            coverage: 1.0 - alpha,
+            calibration_window: 500,
+        });
+
+        // Deterministic Box-Muller Normal(20.0, 4.0) samples (2,000 samples after warmup).
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next_u01 = || -> f64 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (((seed >> 11) as f64) + 0.5) / ((1u64 << 53) as f64)
+        };
+        let mut sample_height = || -> u16 {
+            let u1 = next_u01();
+            let u2 = next_u01();
+            let z = (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos();
+            (20.0 + 4.0 * z).round().clamp(1.0, 60.0) as u16
+        };
+
+        // Warm up calibration window
+        for _ in 0..300 {
+            let _ = pred.observe(0, sample_height());
+        }
+
+        let mut violations = 0usize;
+        let n = 2_000usize;
+        for _ in 0..n {
+            if !pred.observe(0, sample_height()) {
+                violations += 1;
+            }
+        }
+        let rate = violations as f64 / n as f64;
+        assert!(
+            (0.05..=0.15).contains(&rate),
+            "violation rate {rate:.4} outside [0.05, 0.15] for alpha={alpha}"
+        );
     }
 
     #[test]

@@ -529,10 +529,18 @@ jsonl_validate_file() {
     local jsonl_file="$1"
     local mode="${2:-}"
     if [[ ! -f "$jsonl_file" ]]; then
+        if [[ "$mode" == "strict" ]]; then
+            echo "ERROR: JSONL file missing for strict validation: $jsonl_file" >&2
+            return 1
+        fi
         return 0
     fi
     if ! command -v jq >/dev/null 2>&1; then
-        if [[ "$mode" == "strict" ]] || jsonl_should_validate; then
+        if [[ "$mode" == "strict" ]]; then
+            echo "ERROR: jq is required for strict JSONL validation of $jsonl_file" >&2
+            return 2
+        fi
+        if jsonl_should_validate; then
             echo "WARN: jq not available; skipping JSONL validation for $jsonl_file" >&2
         fi
         return 0
@@ -1043,7 +1051,7 @@ jsonl_assert() {
             --arg schema_version "$E2E_JSONL_SCHEMA_VERSION" \
             --arg type "assert" \
             --arg timestamp "$ts" \
-            --arg run_id "$E2E_RUN_ID" \
+            --arg run_id "${E2E_RUN_ID:-}" \
             --arg assertion "$name" \
             --arg status "$assert_status" \
             --arg details "$details" \
@@ -1052,7 +1060,7 @@ jsonl_assert() {
     else
         local seed_json="null"
         if [[ -n "${E2E_SEED:-}" ]]; then seed_json="${E2E_SEED}"; fi
-        jsonl_emit "{\"schema_version\":\"${E2E_JSONL_SCHEMA_VERSION}\",\"type\":\"assert\",\"timestamp\":\"$(json_escape "$ts")\",\"run_id\":\"$(json_escape "$E2E_RUN_ID")\",\"seed\":${seed_json},\"assertion\":\"$(json_escape "$name")\",\"status\":\"$(json_escape "$assert_status")\",\"details\":\"$(json_escape "$details")\"}"
+        jsonl_emit "{\"schema_version\":\"${E2E_JSONL_SCHEMA_VERSION}\",\"type\":\"assert\",\"timestamp\":\"$(json_escape "$ts")\",\"run_id\":\"$(json_escape "${E2E_RUN_ID:-}")\",\"seed\":${seed_json},\"assertion\":\"$(json_escape "$name")\",\"status\":\"$(json_escape "$assert_status")\",\"details\":\"$(json_escape "$details")\"}"
     fi
 }
 

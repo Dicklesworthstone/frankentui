@@ -242,6 +242,19 @@ impl Default for KeybindingConfig {
         }
     }
 }
+
+pub struct KeyMapConfig {
+    /// Maximum gap between keys in a multi-key chord (default: 1000 ms, clamped to 200..=5000 ms).
+    pub chord_timeout_ms: u32,
+}
+
+impl Default for KeyMapConfig {
+    fn default() -> Self {
+        Self {
+            chord_timeout_ms: 1000,
+        }
+    }
+}
 ```
 
 ### 9.3 Keymap File (serde feature)
@@ -327,6 +340,12 @@ Else:
 | `test_priority_modal_over_input` | Modal dismiss beats input clear |
 | `test_ctrl_c_idle_config_noop` | Config noop prevents quit |
 | `test_ctrl_c_idle_config_bell` | Config bell emits BEL |
+| `chord_completes_within_timeout` | Multi-key chord (`g g`, `Ctrl+x Ctrl+s`) dispatches when completed within `chord_timeout_ms` |
+| `widget_beats_mode_beats_global` | `Priority::Widget` overrides `Mode` and `Global` for the same chord |
+| `active_context_beats_contextless_even_at_lower_priority` | Context-scoped binding wins when its `ContextId` is active |
+| `conflicts_reports_shadowed_prefix_and_duplicate` | `KeyMap::conflicts()` reports duplicate, shadowed, and prefix-overlap bindings |
+| `keymap_round_trips_through_toml_and_json` | `KeyMap` round-trips losslessly through TOML and JSON under `serde` |
+| `spec_defaults_match_code` | Verifies this spec's `chord_timeout_ms = 1000` and `250` ms Esc timeout match `ftui_core::keybinding` |
 
 ### 11.2 Property Tests
 
@@ -339,7 +358,7 @@ Else:
 
 ### 11.3 E2E Test Scenarios
 
-Each scenario logs JSONL with: `ts`, `key`, `state_flags`, `action`, `latency_us`.
+Each scenario logs JSONL with: `ts`, `key`, `state_flags`, `action`, `latency_us` (or `key_dispatch` events via `FTUI_DEMO_KEY_JSONL` in `tests/e2e/scripts/test_keybinding_chords.sh`).
 
 | Scenario | Description |
 |----------|-------------|
@@ -349,6 +368,11 @@ Each scenario logs JSONL with: `ts`, `key`, `state_flags`, `action`, `latency_us
 | `e2e_task_cancel_ctrl_c` | Start task, Ctrl+C cancels, status updates |
 | `e2e_multiplexer_esc` | Run in tmux with escape-time 0, verify Esc works |
 | `e2e_timeout_boundary` | Esc at exactly 249ms, 251ms gap boundaries |
+| `chord_gg_scrolls_to_top` | `g g` within timeout scrolls `LogSearch` to line 0 (`test_keybinding_chords.sh`) |
+| `chord_gg_times_out` | `g` separated by 1300 ms expires twice before a rapid `g g` dispatches `scroll_to_top` |
+| `single_key_not_blocked_by_pending_chord` | `g` followed by `j` within 100 ms flushes `g` and dispatches `j` (`scroll_down`) |
+| `chord_ctrl_x_ctrl_s_saves` | `Ctrl+x Ctrl+s` in `AdvancedTextEditor` sets `Saved` in the status bar |
+| `keybind_regressions` | Runs all 8 `test_keybinding.sh` PTY scenarios (`Ctrl+C`, `Esc`, `Esc Esc`, `Ctrl+D`, `Ctrl+Q`) |
 
 ### 11.4 JSONL Log Schema
 
@@ -373,31 +397,74 @@ Each scenario logs JSONL with: `ts`, `key`, `state_flags`, `action`, `latency_us
 }
 ```
 
+When `FTUI_DEMO_KEY_JSONL=<path>` is set on `ftui-demo-showcase`, each `KeyDispatcher` transition also appends a compact JSONL line:
+
+```json
+{"event":"key_dispatch","outcome":"dispatched","chord":"g g","action":"scroll_to_top","binding":"scroll_to_top"}
+```
+
+where `outcome` is one of `"dispatched"`, `"pending"`, `"expired"`, or `"unbound"`.
+
 ---
 
-## 12) Implementation Targets
+## 12) Keymaps and Chords
+
+`ftui_core::keybinding` provides a declarative keymap and stateful chord dispatcher above the `SequenceDetector`:
+
+- **Types**: `KeyCombo` (normalized `KeyCode` + `Modifiers`), `Chord` (`SmallVec<[KeyCombo; 4]>` parsed via `Chord::parse("Ctrl+x Ctrl+s")`), `Priority` (`Global < Mode < Widget`), `ContextId` (named activation scope), `Binding<A>`, `KeyMap<A>`, and `KeyDispatcher<'a, A>`.
+- **Resolution order**: when multiple bindings match a completed chord, `KeyMap` selects the winner by:
+  1. **Active context**: a binding whose `ContextId` is in the active context set beats a context-free binding (bindings for inactive contexts are ignored).
+  2. **Priority**: `Priority::Widget` beats `Priority::Mode`, which beats `Priority::Global`.
+  3. **Recency**: among equal context specificity and priority, the most recently registered binding wins.
+- **Timeout semantics (`chord_timeout_ms = 1000`)**: `DEFAULT_CHORD_TIMEOUT` is 1,000 ms (clamped to `200..=5000` ms). When a key matches both a 1-key binding and a longer chord's prefix, `KeyDispatcher::feed` returns `Dispatch::Pending` and waits up to `chord_timeout`. If `KeyDispatcher::tick(now)` runs after the deadline, it returns `Dispatch::Expired(Some(&action))` for the 1-key fallback (or `Dispatch::Expired(None)` if only the longer chord was bound).
+- **Flush rule**: if a pending prefix is followed before timeout by a key that does not extend any active chord, the pending prefix resolves first (emitting its 1-key fallback if bound) and the new key is immediately dispatched from the clean state. Single-key shortcuts are never swallowed by unrelated chord prefixes. `Esc` and `Esc Esc` share the 250 ms `SequenceDetector` window (`esc_seq_timeout_ms: 250`).
+
+---
+
+## 13) Conflict Report
+
+`KeyMap::conflicts()` inspects all registered bindings and returns a `Vec<Conflict<A>>` with three `ConflictKind` variants:
+
+1. **`Duplicate`**: two bindings have the exact same `(chord, priority, context)`. The earlier binding can never fire because the later one wins by recency.
+2. **`Shadowed`**: two bindings share `(chord, context)` at different priorities (e.g., `Priority::Widget` vs `Priority::Global`). The higher-priority binding shadows the lower-priority one whenever that context is active.
+3. **`PrefixOverlap`**: one binding's chord (`g`) is a strict prefix of another binding's chord (`g g`) in overlapping contexts. Both remain reachable (the 1-key binding fires on timeout or non-matching next key), and the conflict report surfaces the latency trade-off.
+
+Each `Conflict` implements `Display` as a single human-readable diagnostic line.
+
+---
+
+## 14) Serialization
+
+Under the `serde` feature (`ftui-core/serde`, re-exported by `ftui/serde`), `KeyMap<A>` implements `Serialize` and `Deserialize` via a human-editable representation (`chord_timeout_ms` plus `[[bindings]]` entries) and exposes convenience helpers `KeyMap::to_toml`, `KeyMap::from_toml`, `KeyMap::to_json`, and `KeyMap::from_json`. The canonical TOML fixture in Section 9.3 (`crates/ftui-core/tests/fixtures/keymap_example.toml`) is verified on every test run by `keybinding::keymap_tests::toml_example_in_docs_parses`.
+
+---
+
+## 15) Implementation Targets
 
 | Module | Responsibility |
 |--------|----------------|
-| `ftui-core/src/keybinding.rs` | Sequence detector state machine |
-| `ftui-runtime/src/action_mapper.rs` | Priority table, state flag queries |
-| `ftui-runtime/src/program.rs` | Integrate action mapper in event loop |
-| `ftui-harness/src/main.rs` | Reference implementation |
+| `ftui-core/src/keybinding.rs` | Sequence detector, `KeyMap`, `Chord`, `KeyDispatcher`, conflict analysis, TOML/JSON serde |
+| `ftui-runtime/src/pane_keymap.rs` | Pane keyboard bindings and hint generation via `KeyMap<PaneCommand>` |
+| `ftui-widgets/src/help.rs` | `Help::from_keymap` and `KeybindingHints::from_keymap` |
+| `ftui-demo-showcase/src/app.rs` | Showcase global and screen-level keymap integration |
+| `ftui-harness/src/main.rs` | Reference implementation for `ActionMapper` |
 
 ---
 
-## 13) References
+## 16) References
 
 - ADR-001: Inline Mode
 - ADR-005: One-Writer Rule
 - `docs/reference/terminal-compatibility.md`
+- `docs/spec/pane-keyboard-interaction.md`
 - `crates/ftui-core/src/event.rs` (KeyCode, Modifiers)
 
 ---
 
-## 14) Changelog
+## 17) Changelog
 
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-02-02 | GreenCastle | Initial specification (bd-2vne.1) |
 | 2026-02-03 | WhiteMarsh | Verified spec completeness against acceptance criteria |
+| 2026-10-15 | Antigravity | Added Sections 12–14 (`KeyMap`, `Chord`, `KeyDispatcher`, conflict report, serde) and E2E chord test matrix (G14) |

@@ -41,10 +41,12 @@ const BUDGET_SAMPLE_SWITCH_MS: f64 = 150.0;
 // =============================================================================
 
 /// Maximum edge crossings for any built-in sample (lenient for complex graphs).
+#[cfg(unix)]
 const MAX_CROSSINGS_BUILTIN: u32 = 20;
 
 /// Minimum compactness for flowchart/sequence/class samples (0.0-1.0).
 /// Gantt, pie, and mindmap charts may have near-zero compactness by design.
+#[cfg(unix)]
 const MIN_COMPACTNESS_FLOWLIKE: f32 = 0.01;
 
 // =============================================================================
@@ -611,6 +613,7 @@ fn mermaid_jsonl_metric_values_sane() {
 // Helpers: JSONL field extraction
 // =============================================================================
 
+#[cfg(unix)]
 fn extract_u64_field(line: &str, key: &str) -> Option<u64> {
     let needle = format!("\"{key}\":");
     let start = line.find(&needle)? + needle.len();
@@ -624,6 +627,7 @@ fn extract_u64_field(line: &str, key: &str) -> Option<u64> {
     rest[..end].parse::<u64>().ok()
 }
 
+#[cfg(unix)]
 fn extract_f64_field(line: &str, key: &str) -> Option<f64> {
     let needle = format!("\"{key}\":");
     let start = line.find(&needle)? + needle.len();
@@ -637,6 +641,7 @@ fn extract_f64_field(line: &str, key: &str) -> Option<f64> {
     rest[..end].parse::<f64>().ok()
 }
 
+#[cfg(unix)]
 fn extract_string_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let needle = format!("\"{key}\":\"");
     let start = line.find(&needle)? + needle.len();

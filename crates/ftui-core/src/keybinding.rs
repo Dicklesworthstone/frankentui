@@ -1880,6 +1880,12 @@ impl<A: Clone> KeyDispatcher<A> {
             KeyEventKind::Press => {}
         }
 
+        if let Some(since) = self.pending_since
+            && now.saturating_duration_since(since) >= self.map.config.chord_timeout
+        {
+            self.flush_pending(&mut out, true);
+        }
+
         let combo = KeyCombo::from_event(key);
         if self.try_extend(combo, now, &mut out) {
             return out;
@@ -2808,6 +2814,22 @@ mod keymap_tests {
         assert_eq!(map.bindings()[2].action, Action::Top);
         let report = map.conflicts();
         assert!(report.is_empty(), "{report}");
+    }
+
+    #[test]
+    fn spec_defaults_match_code() {
+        const SPEC: &str = include_str!("../../../docs/spec/keybinding-policy.md");
+        assert_eq!(DEFAULT_CHORD_TIMEOUT_MS, 1000);
+        assert_eq!(DEFAULT_ESC_SEQ_TIMEOUT_MS, 250);
+        assert!(
+            SPEC.contains("chord_timeout_ms = 1000") || SPEC.contains("chord_timeout_ms: 1000"),
+            "keybinding-policy.md must document the 1000 ms default chord timeout"
+        );
+        assert!(
+            SPEC.lines()
+                .any(|line| line.contains("250") && (line.contains("Esc") || line.contains("esc"))),
+            "keybinding-policy.md must document the 250 ms Esc sequence timeout"
+        );
     }
 
     fn arb_code() -> impl Strategy<Value = KeyCode> {

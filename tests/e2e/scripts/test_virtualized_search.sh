@@ -108,10 +108,11 @@ select_output_for_assertions() {
 }
 
 jsonl_log_case() {
-    local case="$1" status="$2" duration_ms="$3" send="$4" output_file="${5:-}"
-    local output_bytes=0 checksum=""
+    local case="$1" status="$2" duration_ms="$3" send="$4" output_file="${5:-}" exit_code="${6:-0}"
+    local output_bytes=0 frames=0 checksum=""
     if [[ -n "$output_file" && -f "$output_file" ]]; then
         output_bytes=$(wc -c < "$output_file" | tr -d ' ')
+        frames=$( (grep -a -o $'\x1b\[?2026h' "$output_file" 2>/dev/null || true) | wc -l | tr -d ' ')
         checksum="$(compute_checksum "$output_file")"
     fi
     mkdir -p "$E2E_RESULTS_DIR"
@@ -126,15 +127,18 @@ jsonl_log_case() {
             --argjson cols 120 \
             --argjson rows 40 \
             --arg send "$send" \
+            --argjson frames "$frames" \
+            --argjson bytes "$output_bytes" \
             --argjson output_bytes "$output_bytes" \
+            --argjson exit_code "$exit_code" \
             --arg checksum "$checksum" \
             --argjson env "$ENV_JSON" \
             --argjson capabilities "$CAPS_JSON" \
-            '{run_id:$run_id,case:$case,status:$status,duration_ms:$duration_ms,ts:$ts,seed:$seed,cols:$cols,rows:$rows,send:$send,output_bytes:$output_bytes,checksum:$checksum,env:$env,capabilities:$capabilities}' \
+            '{run_id:$run_id,case:$case,status:$status,duration_ms:$duration_ms,ts:$ts,seed:$seed,cols:$cols,rows:$rows,send:$send,frames:$frames,bytes:$bytes,output_bytes:$output_bytes,exit_code:$exit_code,checksum:$checksum,env:$env,capabilities:$capabilities}' \
             >> "$JSONL_FILE"
     else
-        printf '{"run_id":"%s","case":"%s","status":"%s","duration_ms":%d,"seed":"%s","output_bytes":%d,"checksum":"%s"}\n' \
-            "$RUN_ID" "$case" "$status" "$duration_ms" "$FTUI_VSEARCH_SEED" "$output_bytes" "$checksum" \
+        printf '{"run_id":"%s","case":"%s","status":"%s","duration_ms":%d,"seed":"%s","frames":%d,"bytes":%d,"output_bytes":%d,"exit_code":%d,"checksum":"%s"}\n' \
+            "$RUN_ID" "$case" "$status" "$duration_ms" "$FTUI_VSEARCH_SEED" "$frames" "$output_bytes" "$output_bytes" "$exit_code" "$checksum" \
             >> "$JSONL_FILE"
     fi
 }
@@ -172,32 +176,34 @@ run_case() {
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
-        jsonl_log_case "$name" "passed" "$duration_ms" "$send_label" "$output_file"
+        jsonl_log_case "$name" "passed" "$duration_ms" "$send_label" "$output_file" 0
         return 0
     fi
 
+    local rc=$?
     local end_ms
     end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "assertion failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "assertion failed"
-    jsonl_log_case "$name" "failed" "$duration_ms" "$send_label" "$output_file"
+    jsonl_log_case "$name" "failed" "$duration_ms" "$send_label" "$output_file" "$rc"
     return 1
 }
 
 DEMO_BIN="$(ensure_demo_bin || true)"
 if [[ -z "$DEMO_BIN" ]]; then
     LOG_FILE="$E2E_LOG_DIR/virtualized_search_missing.log"
-    for t in vsearch_screen_load vsearch_focus_search vsearch_query vsearch_navigation vsearch_jump_bottom; do
+    for t in vsearch_screen_load vsearch_focus_search vsearch_query vsearch_navigation vsearch_jump_bottom vsearch_variable_heights vsearch_scroll_position_after_jump; do
         log_test_skip "$t" "ftui-demo-showcase binary missing"
         record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
-        jsonl_log_case "$t" "skipped" 0 "" ""
+        jsonl_log_case "$t" "skipped" 0 "" "" 0
     done
     exit 0
 fi
 VSEARCH_SCREEN="$(e2e_demo_screen "$DEMO_BIN" virtualized_search)"
 
 SLASH='/'
+PGDN=$'\x1b[6~'
 
 vsearch_screen_load() {
     LOG_FILE="$E2E_LOG_DIR/vsearch_screen_load.log"
@@ -331,12 +337,103 @@ vsearch_jump_bottom() {
     grep -a -q "Selected: 10000" "$assert_file" || return 1
 }
 
+vsearch_variable_heights() {
+    LOG_FILE="$E2E_LOG_DIR/vsearch_variable_heights.log"
+    local output_file="$E2E_LOG_DIR/vsearch_variable_heights.pty"
+
+    PTY_COLS=120 \
+    PTY_ROWS=40 \
+    PTY_SEND_DELAY_MS=200 \
+    PTY_SEND="${SLASH}payload_0" \
+    PTY_CANONICALIZE=1 \
+    PTY_CANONICALIZE_BIN="$CANON_BIN" \
+    FTUI_VSEARCH_DETERMINISTIC=true \
+    FTUI_DEMO_SCREEN_MODE=inline \
+    FTUI_DEMO_UI_HEIGHT=20 \
+    FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
+    FTUI_DEMO_EXIT_AFTER_MS=1400 \
+    PTY_TIMEOUT=4 \
+        pty_run "$output_file" "$DEMO_BIN" || return 1
+
+    local assert_file
+    assert_file="$(select_output_for_assertions "$output_file")"
+    local size
+    size=$(wc -c < "$output_file" | tr -d ' ')
+    [[ "$size" -gt 300 ]] || return 1
+    grep -a -q 'Query:    "payload_0"' "$assert_file" || return 1
+    # Multi-line preview lines rendered underneath matching items:
+    grep -a -q "trace_id=" "$assert_file" || return 1
+    grep -a -q "latency=" "$assert_file" || return 1
+}
+
+vsearch_scroll_position_after_jump() {
+    LOG_FILE="$E2E_LOG_DIR/vsearch_scroll_position_after_jump.log"
+    local output_file="$E2E_LOG_DIR/vsearch_scroll_position_after_jump.pty"
+
+    PTY_COLS=120 \
+    PTY_ROWS=40 \
+    PTY_SEND_DELAY_MS=200 \
+    PTY_SEND="Gg${PGDN}${PGDN}${PGDN}" \
+    PTY_CANONICALIZE=1 \
+    PTY_CANONICALIZE_BIN="$CANON_BIN" \
+    FTUI_VSEARCH_DETERMINISTIC=true \
+    FTUI_VSEARCH_DIAGNOSTICS=true \
+    FTUI_DEMO_SCREEN_MODE=inline \
+    FTUI_DEMO_UI_HEIGHT=20 \
+    FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
+    FTUI_DEMO_EXIT_AFTER_MS=1600 \
+    PTY_TIMEOUT=4 \
+        pty_run "$output_file" "$DEMO_BIN" || return 1
+
+    local assert_file
+    assert_file="$(select_output_for_assertions "$output_file")"
+    local size
+    size=$(wc -c < "$output_file" | tr -d ' ')
+    [[ "$size" -gt 300 ]] || return 1
+
+    # Verify the rendered Fenwick offset from FTUI_VSEARCH_DIAGNOSTICS matches the
+    # Fenwick prefix sum of corpus heights [0..selected] and matches the screen output.
+    python3 - "$assert_file" <<'PY'
+import re
+import sys
+
+assert_path = sys.argv[1]
+assert_text = open(assert_path, "rb").read().decode("utf-8", errors="replace")
+
+def item_height(i: int) -> int:
+    return 2 if i % 4 == 3 else 1
+
+m_sel = re.search(r"Selected:\s+(\d+)", assert_text)
+if not m_sel:
+    raise SystemExit("Missing 'Selected: <n>' in screen output")
+selected_1based = int(m_sel.group(1))
+selected = selected_1based - 1
+
+m_fenwick = re.search(r"Fenwick:\s+(\d+)", assert_text)
+if not m_fenwick:
+    raise SystemExit("Missing 'Fenwick: <offset>' in screen output")
+reported_offset = int(m_fenwick.group(1))
+expected_offset = sum(item_height(i) for i in range(selected))
+
+if selected <= 0:
+    raise SystemExit(f"Expected positive selected index after G -> g -> PgDn x3, got {selected}")
+if reported_offset != expected_offset:
+    raise SystemExit(
+        f"Fenwick offset mismatch at selected={selected}: reported={reported_offset} expected={expected_offset}"
+    )
+if f"[{selected:05d}]" not in assert_text:
+    raise SystemExit(f"Expected item '[{selected:05d}]' visible in screen output")
+PY
+}
+
 FAILURES=0
 run_case "vsearch_screen_load" "" vsearch_screen_load || FAILURES=$((FAILURES + 1))
 run_case "vsearch_focus_search" "/" vsearch_focus_search || FAILURES=$((FAILURES + 1))
 run_case "vsearch_query" "/auth" vsearch_query || FAILURES=$((FAILURES + 1))
 run_case "vsearch_navigation" "jjjj" vsearch_navigation || FAILURES=$((FAILURES + 1))
 run_case "vsearch_jump_bottom" "G" vsearch_jump_bottom || FAILURES=$((FAILURES + 1))
+run_case "vsearch_variable_heights" "/payload_0" vsearch_variable_heights || FAILURES=$((FAILURES + 1))
+run_case "vsearch_scroll_position_after_jump" "Gg<PgDn>x3" vsearch_scroll_position_after_jump || FAILURES=$((FAILURES + 1))
 
 if [[ "$FAILURES" -gt 0 ]]; then
     exit 1

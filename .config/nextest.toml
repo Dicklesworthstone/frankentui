@@ -156,6 +156,16 @@ filter = '''
     | test(=seed_demo_deadline_expires_mid_run_after_readiness)
     | test(=bloodstream_roundtrip::bloodstream_database_to_terminal_roundtrip_is_delta_only)
     | test(=benchmark_1m_evaluations_under_30ms)
+    | test(=voi_sampling::tests::perf_voi_sampling_budget)
+    | test(=presenter::tests::perf_legacy_vs_dp_worst_case_sparse)
+    | test(=stress_spawn_many_tasks)
+    | test(=stress_tick_with_many_running_tasks)
+    | test(=cancellation_is_immediate)
+    | test(=mass_cancellation_stress)
+    | test(=regression_gate_tick_latency)
+    | binary_id(ftui-demo-showcase::perf_hud_regression)
+    | binary_id(ftui-demo-showcase::mermaid_perf_budget)
+    | binary_id(ftui-demo-showcase::visual_effects_pty)
 '''
 threads-required = "num-test-threads"
 

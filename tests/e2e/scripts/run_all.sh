@@ -154,6 +154,9 @@ else
     run_suite "altscreen"  "$SCRIPT_DIR/test_altscreen.sh"
     run_suite "input"      "$SCRIPT_DIR/test_input.sh"
     run_suite "keybinding" "$SCRIPT_DIR/test_keybinding.sh"
+    if [[ -x "$SCRIPT_DIR/test_keybinding_chords.sh" ]]; then
+        run_suite "keybinding_chords" "$SCRIPT_DIR/test_keybinding_chords.sh"
+    fi
     run_suite "ansi"       "$SCRIPT_DIR/test_ansi.sh"
     run_suite "unicode"    "$SCRIPT_DIR/test_unicode.sh"
     run_suite "focus"      "$SCRIPT_DIR/test_focus_events.sh"
@@ -267,6 +270,13 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$SUMMARY_JSON" ]]; then
             fi
         done
     fi
+
+    MISSING_CMD_CASES=$(jq '[.tests[] | select(.error != null and (.error | test("command not found")))] | length' "$SUMMARY_JSON")
+    if [[ "$MISSING_CMD_CASES" -gt 0 ]]; then
+        log_error "Detected $MISSING_CMD_CASES test case(s) with 'command not found' error:"
+        jq '.tests[] | select(.error != null and (.error | test("command not found")))' "$SUMMARY_JSON"
+        exit 2
+    fi
 else
     log_info "Results directory: $E2E_RESULTS_DIR"
     log_info "(install jq for detailed summary)"
@@ -278,6 +288,16 @@ log_info "E2E logs: $E2E_LOG_DIR"
 if [[ "$SUITE_FAILURES" -gt 0 ]]; then
     log_error "$SUITE_FAILURES suite(s) had failures"
     exit 1
+fi
+
+if [[ "${FAILED:-0}" -gt 0 ]]; then
+    log_error "$FAILED test case(s) failed in summary"
+    exit 1
+fi
+
+if [[ "${SKIPPED:-0}" -gt 0 && "${E2E_ALLOW_SKIPS:-0}" != "1" ]]; then
+    log_error "$SKIPPED test case(s) skipped unexpectedly (set E2E_ALLOW_SKIPS=1 to allow)"
+    exit 2
 fi
 
 log_info "All suites passed"

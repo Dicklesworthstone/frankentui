@@ -94,7 +94,7 @@ run_case() {
 DEMO_BIN="$(ensure_demo_bin || true)"
 if [[ -z "$DEMO_BIN" ]]; then
     LOG_FILE="$E2E_LOG_DIR/log_search_missing.log"
-    for t in log_search_open log_search_literal log_search_regex log_search_case log_search_exit; do
+    for t in log_search_open log_search_literal log_search_regex log_search_case log_search_exit logsearch_wrapped_lines_variable_height; do
         log_test_skip "$t" "ftui-demo-showcase binary missing"
         record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
         jsonl_log "{\"run_id\":\"$RUN_ID\",\"case\":\"$t\",\"status\":\"skipped\",\"reason\":\"binary missing\",\"term\":\"$TERM_NAME\",\"colorterm\":\"$COLORTERM_NAME\",\"capabilities\":\"pty\",\"seed\":\"none\",\"git_rev\":\"$GIT_REV\"}"
@@ -229,11 +229,54 @@ log_search_exit() {
     grep -a -q "Log Viewer" "$output_file" || return 1
 }
 
+# Test 6: Enable wrap mode ('w') in a narrow viewport and verify wrapped multi-row rendering
+logsearch_wrapped_lines_variable_height() {
+    LOG_FILE="$E2E_LOG_DIR/logsearch_wrapped_lines_variable_height.log"
+    local output_file="$E2E_LOG_DIR/logsearch_wrapped_lines_variable_height.pty"
+    local canon_bin="${PTY_CANONICALIZE_BIN:-${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}/debug/pty_canonicalize}"
+    [[ -x "$canon_bin" ]] || canon_bin=""
+
+    PTY_COLS=54 \
+    PTY_ROWS=24 \
+    PTY_SEND_DELAY_MS=200 \
+    PTY_SEND=" wgg" \
+    PTY_CANONICALIZE=1 \
+    PTY_CANONICALIZE_BIN="$canon_bin" \
+    FTUI_DEMO_SCREEN_MODE=inline \
+    FTUI_DEMO_UI_HEIGHT=22 \
+    FTUI_DEMO_SCREEN="$LOG_SEARCH_SCREEN" \
+    FTUI_DEMO_EXIT_AFTER_MS=1500 \
+    PTY_TIMEOUT=4 \
+        pty_run "$output_file" "$DEMO_BIN"
+
+    local assert_file="$output_file"
+    if [[ -n "${PTY_CANONICAL_FILE:-}" && -f "$PTY_CANONICAL_FILE" ]]; then
+        assert_file="$PTY_CANONICAL_FILE"
+    fi
+    local size
+    size=$(wc -c < "$output_file" | tr -d ' ')
+    [[ "$size" -gt 300 ]] || return 1
+    grep -a -q "WRAP" "$assert_file" || return 1
+    # Verify line 0 wrapped across 2 rows and line 1 starts on the row below the continuation:
+    python3 - "$assert_file" <<'PY'
+import sys
+text = open(sys.argv[1], "rb").read().decode("utf-8", errors="replace")
+lines = text.splitlines()
+row0 = next((idx for idx, line in enumerate(lines) if "[     0]" in line), None)
+row1 = next((idx for idx, line in enumerate(lines) if "[     1]" in line), None)
+if row0 is None or row1 is None:
+    raise SystemExit(f"Expected both [     0] and [     1] visible, got row0={row0} row1={row1}")
+if row1 - row0 < 2:
+    raise SystemExit(f"Expected wrapped line [     0] to span >= 2 rows before [     1], got row0={row0} row1={row1}")
+PY
+}
+
 FAILURES=0
 run_case "log_search_open" "/" log_search_open || FAILURES=$((FAILURES + 1))
 run_case "log_search_literal" "/ERROR" log_search_literal || FAILURES=$((FAILURES + 1))
 run_case "log_search_regex" "/ERR<C-r>" log_search_regex || FAILURES=$((FAILURES + 1))
 run_case "log_search_case" "/error<C-c>" log_search_case || FAILURES=$((FAILURES + 1))
 run_case "log_search_exit" "/test<Esc>" log_search_exit || FAILURES=$((FAILURES + 1))
+run_case "logsearch_wrapped_lines_variable_height" " wgg" logsearch_wrapped_lines_variable_height || FAILURES=$((FAILURES + 1))
 
 exit "$FAILURES"

@@ -41,18 +41,35 @@
 //! - Smith's rule: `weight / remaining_time`
 //! - Aging: linear increase with wait time
 //!
-//! ## Fairness Guarantee (Aging-Based)
+//! ## Fairness & Waiting-Time Semantics (Simulator Preemption vs. Live `FnOnce` Effects)
 //!
-//! With aging factor `a` and maximum job size `S_max`:
-//! ```text
-//! max_wait <= S_max * (1 + 1/a) / min_weight
-//! ```
+//! 1. **Priority-overtake horizon (against newly arriving jobs)**:
+//!    A waiting job with weight $w \ge w_{\min}$ and remaining time $r \le p_{\max}$ has
+//!    effective priority $\frac{w}{r} + a \cdot \text{wait}$. Once
+//!    $$\text{wait} \ge \tau_{\text{overtake}} = \frac{w_{\max} / p_{\min} - w_{\min} / p_{\max}}{a}$$
+//!    its priority exceeds the initial priority $\le w_{\max} / p_{\min}$ of any newly
+//!    arriving job.
+//! 2. **Dependence on backlog $N$**:
+//!    A finite maximum job size $S_{\max}$ and aging rate $a > 0$ do **not** bound total
+//!    wait time independently of the queue backlog $N$. For example, if $N$ identical jobs
+//!    of size $S$ arrive at $t = 0$, all $N$ jobs age at the same rate $a \cdot t$ and the
+//!    $N$-th job waits $(N - 1) S$ before starting service. Total wait is bounded only in
+//!    combination with admission control (`max_queue_size` / `max_queue_depth`) or
+//!    subcritical arrival load $\rho = \lambda E\[S\] < 1$.
+//! 3. **Simulator preemption vs. live non-preemptive `FnOnce` closures**:
+//!    In this discrete simulator, `preemptive: true` allows a newly arrived job with higher
+//!    priority to preempt `running` at `tick(dt)` boundaries. In the live runtime
+//!    (`EffectQueue` in `effect_system.rs`), each queued effect is a synchronous `FnOnce`
+//!    closure executed on the worker thread: once popped from the scheduler, a running
+//!    closure **cannot be preempted** until it returns, so an arriving short high-weight
+//!    task additionally waits for the residual duration $R_{\text{running}}$ of the
+//!    in-flight closure ($\text{wait}(j) \le R_{\text{running}} + \sum_{k \in \text{ahead}(j)} S_k$).
 //!
 //! # Key Invariants
 //!
 //! 1. **Work-conserving**: Server never idles when queue is non-empty
-//! 2. **Priority ordering**: Queue is always sorted by effective priority
-//! 3. **Bounded starvation**: All jobs complete within bounded time
+//! 2. **Priority ordering**: Ready queue is ordered by effective priority (or FIFO when `force_fifo` is set)
+//! 3. **Bounded priority overtake**: Waiting jobs overtake new arrivals after $\tau_{\text{overtake}}$, with total backlog capped by `max_queue_size`
 //! 4. **Monotonic aging**: Wait time only increases while in queue
 //!
 //! # Failure Modes
@@ -2910,5 +2927,94 @@ mod tests {
             SelectionReason::AgingBoost,
             "long-waiting job should show aging boost reason"
         );
+    }
+
+    #[test]
+    fn counterexample_many_equal_jobs_wait_scales_with_backlog() {
+        // Counterexample showing that finite S_max and aging_factor > 0 do NOT
+        // bound waiting time independently of queue backlog N:
+        // Submit N = 20 identical jobs (weight = 1.0, size S = 10.0) at t = 0
+        // with aging_factor = 1.0, w_min = 1.0.
+        // The backlog-independent expression `S_max * (1 + 1/a) / w_min` is
+        // 10.0 * (1 + 1) / 1.0 = 20.0, whereas all N jobs age at the exact same
+        // rate and the N-th job waits (N - 1) * S = 190.0 before starting service.
+        let mut config = test_config();
+        config.aging_factor = 1.0;
+        config.w_min = 1.0;
+        config.p_max_ms = 10.0;
+        config.preemptive = false;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        let n_jobs = 20usize;
+        let job_size = 10.0;
+        for _ in 0..n_jobs {
+            scheduler.submit(1.0, job_size).unwrap();
+        }
+
+        for step in 0..n_jobs {
+            let completed = scheduler.tick(job_size);
+            assert_eq!(completed.len(), 1);
+            assert_eq!(completed[0], (step + 1) as u64);
+        }
+
+        // The 20th job finished at t = 200.0 after waiting 190.0 in the queue.
+        let last_wait = (n_jobs - 1) as f64 * job_size;
+        let last_response = n_jobs as f64 * job_size;
+        let naive_bound = 10.0 * (1.0 + 1.0 / 1.0) / 1.0;
+        assert!((scheduler.current_time - 200.0).abs() < 1e-9);
+        assert!(
+            last_wait > naive_bound,
+            "Expected backlog wait {last_wait} to exceed backlog-independent expression {naive_bound}"
+        );
+        assert!(
+            scheduler.stats().max_response_time >= last_response - 1e-9,
+            "Expected max_response_time >= {last_response}, got {}",
+            scheduler.stats().max_response_time
+        );
+    }
+
+    #[test]
+    fn non_preemptive_long_job_blocks_short_high_weight_arrivals() {
+        // Contrast the simulator's `preemptive: true` mode with `preemptive: false`
+        // (which models live `FnOnce` effect closures that cannot be preempted once
+        // popped by the worker thread).
+        let run_scenario = |preemptive: bool| -> (f64, f64) {
+            let mut config = test_config();
+            config.preemptive = preemptive;
+            let mut scheduler = QueueingScheduler::new(config);
+
+            // Long low-weight job arrives at t = 0 and begins running during tick(1.0).
+            let long_id = scheduler.submit(1.0, 100.0).unwrap();
+            assert!(scheduler.tick(1.0).is_empty());
+
+            // Short high-weight job arrives at t = 1.0 (base priority = 100.0 / 1.0 = 100.0).
+            let short_id = scheduler.submit(100.0, 1.0).unwrap();
+
+            let mut short_done_at = None;
+            let mut long_done_at = None;
+            for _ in 0..100 {
+                for job_id in scheduler.tick(1.0) {
+                    if job_id == short_id {
+                        short_done_at = Some(scheduler.current_time);
+                    }
+                    if job_id == long_id {
+                        long_done_at = Some(scheduler.current_time);
+                    }
+                }
+            }
+            (short_done_at.unwrap(), long_done_at.unwrap())
+        };
+
+        let (short_preemptive, long_preemptive) = run_scenario(true);
+        let (short_nonpreemptive, long_nonpreemptive) = run_scenario(false);
+
+        // In preemptive simulation, the short job preempts at t=1.0 and finishes at t=2.0.
+        assert!((short_preemptive - 2.0).abs() < 1e-9);
+        assert!((long_preemptive - 101.0).abs() < 1e-9);
+
+        // In non-preemptive execution (like a running FnOnce closure), the short job
+        // must wait for the remaining 99.0ms of the in-flight long job, finishing at t=101.0.
+        assert!((long_nonpreemptive - 100.0).abs() < 1e-9);
+        assert!((short_nonpreemptive - 101.0).abs() < 1e-9);
     }
 }

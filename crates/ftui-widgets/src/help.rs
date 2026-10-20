@@ -1262,6 +1262,20 @@ impl KeybindingHints {
         }
     }
 
+    /// Build global keybinding hints from a [`KeyMap`]: one global entry per
+    /// labelled binding that wins under `active` contexts (shadowed bindings
+    /// are omitted).
+    #[must_use]
+    pub fn from_keymap<A>(map: &KeyMap<A>, active: &[ContextId]) -> Self {
+        let mut hints = Self::new();
+        for entry in Help::from_keymap(map, active).entries {
+            hints
+                .global_entries
+                .push(entry.with_category(HelpCategory::Global));
+        }
+        hints
+    }
+
     /// Add a global entry (always visible).
     #[must_use]
     pub fn global_entry(mut self, key: impl Into<String>, desc: impl Into<String>) -> Self {

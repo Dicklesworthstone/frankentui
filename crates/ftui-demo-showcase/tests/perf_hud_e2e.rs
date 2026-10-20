@@ -300,13 +300,19 @@ fn e2e_perf_hud_graceful_degradation_tiny() {
     // Enable HUD
     let _ = app.update(AppMsg::ScreenEvent(ctrl_press('p')));
 
-    // Should not panic at small size
-    let mut pool = GraphemePool::new();
-    let mut frame = Frame::new(40, 10, &mut pool);
-    let _area = Rect::new(0, 0, 40, 10);
+    // At 40x10 (overlay 36x6), minimal HUD still renders its title border
+    assert!(
+        frame_contains_text(&app, 40, 10, "Perf HUD"),
+        "HUD should render minimal overlay at 40x10"
+    );
 
-    // This should not panic (graceful degradation)
-    app.view(&mut frame);
+    // At 20x6 (overlay_width < 20 and overlay_height < 6), HUD must gracefully hide
+    app.terminal_width = 20;
+    app.terminal_height = 6;
+    assert!(
+        !frame_contains_text(&app, 20, 6, "Perf HUD"),
+        "HUD must gracefully hide when terminal area is too small (20x6)"
+    );
 
     log_jsonl("degradation", &[("rendered", "true"), ("no_panic", "true")]);
     log_jsonl("result", &[("status", "passed")]);
@@ -376,10 +382,11 @@ fn e2e_perf_hud_deterministic_initial_render() {
         ],
     );
 
-    // Note: Due to timing-based metrics, hashes may differ slightly.
-    // This test verifies the render doesn't crash; exact match is not required.
-    assert!(hash1 != 0, "Hash should be non-zero (content rendered)");
-    assert!(hash2 != 0, "Hash should be non-zero (content rendered)");
+    assert_ne!(hash1, 0, "Hash should be non-zero (content rendered)");
+    assert_eq!(
+        hash1, hash2,
+        "Initial render with HUD enabled must be deterministic across two instances"
+    );
 
     log_jsonl("result", &[("status", "passed")]);
 }
@@ -412,11 +419,11 @@ fn e2e_perf_hud_ring_buffer_capacity() {
         }
     }
 
-    // Should still render without issues
-    let mut pool = GraphemePool::new();
-    let mut frame = Frame::new(120, 40, &mut pool);
-    let _area = Rect::new(0, 0, 120, 40);
-    app.view(&mut frame);
+    // Ring buffer must cap sample count at 120/120
+    assert!(
+        frame_contains_text(&app, 120, 40, "Samples:    120/120"),
+        "HUD should display 'Samples:    120/120' after 150 ticks (ring buffer capped at 120)"
+    );
 
     log_jsonl(
         "ring_buffer",

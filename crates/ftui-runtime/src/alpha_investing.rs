@@ -1,38 +1,52 @@
-//! Alpha-Investing: sequential FDR control for multiple simultaneous alerts.
+//! Alpha-Investing: sequential alpha-spending with partial refund for multiple alerts.
 //!
-//! When many monitors fire simultaneously (budget alerts, degradation triggers,
+//! When many monitors fire sequentially (budget alerts, degradation triggers,
 //! capability detection decisions), testing each at a fixed alpha level inflates
-//! the family-wise false discovery rate. Alpha-Investing controls FDR by
-//! treating significance level as a spendable resource.
+//! expected false discoveries. This module implements a **multiplicative
+//! alpha-spending rule with partial refund** inspired by Foster & Stine (2008).
 //!
-//! # Mathematical Model
+//! # Mathematical Model (Implemented Partial-Refund Rule)
 //!
-//! The investor maintains a **wealth** W that starts at an initial budget W₀:
-//!
-//! ```text
-//! W₀ = initial_wealth   (e.g. 0.5)
-//! ```
-//!
-//! For each new hypothesis H_i:
-//! 1. **Invest**: spend α_i ≤ W from the wealth (the test level for H_i)
-//! 2. **Test**: evaluate H_i at level α_i
-//! 3. **Update wealth**:
-//!    - If H_i **rejected** (discovery): W += reward  (typically ψ * α_i)
-//!    - If H_i **not rejected**: W unchanged (already spent α_i)
-//!
-//! The investment can never exceed the current wealth, so the procedure
-//! self-limits when too many tests fail to reject.
-//!
-//! # FDR Guarantee
-//!
-//! Under independence or positive dependence of the test statistics,
-//! Alpha-Investing controls the modified FDR (mFDR) at level ≤ W₀:
+//! The investor maintains a **wealth** $W_t \ge 0$ starting at $W_0 = \text{initial\_wealth}$:
 //!
 //! ```text
-//! mFDR = E[V] / E[R] ≤ W₀
+//! W₀ = initial_wealth   (default 0.5)
 //! ```
 //!
-//! where V = false discoveries, R = total discoveries.
+//! For each sequential hypothesis $H_i$ ($i = 1, 2, \dots$) while $W_{i-1} \ge \text{min\_wealth}$:
+//! 1. **Invest**: allocate $\alpha_i = \text{clamp}(\text{investment\_fraction} \cdot W_{i-1},\; 0,\; W_{i-1})$.
+//! 2. **Deduct upfront**: $W_i \leftarrow W_{i-1} - \alpha_i$.
+//! 3. **Test & partial refund**:
+//!    - If $p_i \le \alpha_i$ (**Rejected** / discovery, $R_i = 1$):
+//!      $W_i \leftarrow W_i + \psi \alpha_i$, where $\psi = \text{reward\_fraction} \in (0, 1]$ (default $0.5$).
+//!    - If $p_i > \alpha_i$ (**NotRejected**, $R_i = 0$):
+//!      $W_i$ remains $W_{i-1} - \alpha_i$.
+//!
+//! # Comparison with Foster & Stine (2008) and Exact Guarantees
+//!
+//! Foster & Stine (2008) charge $\alpha_i / (1 - \alpha_i)$, grant an additive payout $\omega$
+//! on rejection, and control the **stabilized modified false discovery rate**:
+//!
+//! ```text
+//! mFDR_η = E[V] / (E[R] + η) ≤ α    (for stabilizer η > 0, e.g. η = 1 or 1 - W₀)
+//! ```
+//!
+//! (Note: unstabilized $E[V]/E[R]$ is undefined when $E[R] = 0$, and $R / m$ is the raw
+//! rejection rate, not the false discovery proportion $\text{FDP} = V / \max(R, 1)$.)
+//!
+//! Because this implementation deducts $\alpha_i$ upfront and refunds only $\psi \alpha_i \le \alpha_i$
+//! on rejection, net wealth change is $\Delta W_i = -\alpha_i(1 - \psi R_i) \le 0$. Under the
+//! conditional null assumption $P(p_i \le \alpha_i \mid \mathcal{F}_{i-1}) \le \alpha_i$ for true
+//! nulls $i \in \mathcal{H}_0$:
+//!
+//! 1. **Bounded total alpha expenditure ($\psi < 1$)**:
+//!    $$\sum_{i=1}^m \alpha_i \le \frac{W_0 - W_m}{1 - \psi} \le \frac{W_0}{1 - \psi}$$
+//! 2. **Expected false discoveries & stabilized $\text{mFDR}_\eta$**:
+//!    With $\alpha_{\max} = \sup_i \alpha_i \le \text{investment\_fraction} \cdot W_0$, the process
+//!    $A_t = (1 - \psi \alpha_{\max}) V_t + W_t$ is a nonnegative supermartingale, yielding:
+//!    $$E[V] \le E\left[\sum_{i=1}^m \alpha_i\right] \le \frac{W_0}{1 - \psi \alpha_{\max}} \le \frac{W_0}{1 - \psi}$$
+//!    and for any stabilizer $\eta \ge 1$:
+//!    $$\text{mFDR}_\eta = \frac{E[V]}{E[R] + \eta} \le \frac{E[V]}{\eta} \le \frac{W_0}{\eta (1 - \psi \alpha_{\max})}$$
 //!
 //! # Integration
 //!
@@ -42,17 +56,15 @@
 //! conformal_alert → p-value → alpha_investing → gated decision
 //! ```
 //!
-//! Each alert produces a p-value; the investor decides whether to "spend"
-//! enough alpha to declare the alert significant.
-//!
 //! # Failure Modes
 //!
 //! | Condition | Behavior | Rationale |
 //! |-----------|----------|-----------|
-//! | Wealth exhausted (W ≈ 0) | All tests skipped | FDR budget spent |
+//! | Wealth exhausted ($W < \text{min\_wealth}$) | All tests skipped | Alpha budget spent |
 //! | Negative p-value | Clamped to 0.0 | Invalid input guard |
 //! | p-value > 1.0 | Clamped to 1.0 | Invalid input guard |
 //! | Zero investment | Test skipped | No alpha allocated |
+//! | Positively dependent / anti-conservative p-values | Bound degrades | Requires super-uniform null $P(p_i \le \alpha_i \mid \mathcal{F}_{i-1}) \le \alpha_i$ |
 //!
 //! # Reference
 //!
@@ -166,8 +178,12 @@ impl AlphaInvestor {
         self.discoveries
     }
 
-    /// Empirical false discovery proportion: discoveries / tests_run.
-    /// Returns 0.0 if no tests have been run.
+    /// Empirical rejection (discovery) rate: `discoveries / tests_run` ($R / m$).
+    ///
+    /// Note: this is the raw fraction of tested hypotheses rejected, **not** the
+    /// false discovery proportion $\text{FDP} = V / \max(R, 1)$ (which requires
+    /// ground-truth null/alternative labels $H_0$ vs. $H_1$). Returns `0.0` if no
+    /// tests have been run.
     pub fn discovery_rate(&self) -> f64 {
         if self.tests_run == 0 {
             0.0
@@ -595,6 +611,158 @@ mod tests {
             rejections <= 20,
             "Should not reject too many (got {})",
             rejections
+        );
+    }
+
+    #[test]
+    fn null_mfdr_and_expected_false_discoveries_with_confidence_interval() {
+        // Deterministic SplitMix64 PRNG for reproducible Monte Carlo under H_0.
+        fn splitmix64(state: &mut u64) -> f64 {
+            *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = *state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            ((z >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+        }
+
+        let cfg = AlphaInvestingConfig {
+            initial_wealth: 0.5,
+            reward_fraction: 0.5,
+            investment_fraction: 0.1,
+            min_wealth: 1e-10,
+        };
+        let trials = 2_000usize;
+        let m = 100usize;
+        let mut rng = 0xA1FA_2026_0906_0043u64;
+
+        let mut v_samples = Vec::with_capacity(trials);
+        let mut fdp_samples = Vec::with_capacity(trials);
+        let mut max_alpha_sum = 0.0f64;
+
+        for _ in 0..trials {
+            let mut inv = AlphaInvestor::new(cfg.clone());
+            for _ in 0..m {
+                let p_null = splitmix64(&mut rng);
+                inv.test(p_null);
+            }
+            // Under the global null, every rejection is a false discovery (V = R).
+            let v = inv.discoveries() as f64;
+            let r = v;
+            let fdp = if r > 0.0 { v / r } else { 0.0 };
+            let alpha_sum: f64 = inv.history().iter().map(|rec| rec.alpha_invested).sum();
+            max_alpha_sum = max_alpha_sum.max(alpha_sum);
+            v_samples.push(v);
+            fdp_samples.push(fdp);
+        }
+
+        let n = trials as f64;
+        let mean_v = v_samples.iter().sum::<f64>() / n;
+        let var_v = v_samples.iter().map(|&v| (v - mean_v).powi(2)).sum::<f64>() / (n - 1.0);
+        let se_v = (var_v / n).sqrt();
+        let ci99_upper_v = mean_v + 2.576 * se_v;
+
+        let mean_fdp = fdp_samples.iter().sum::<f64>() / n;
+        let var_fdp = fdp_samples
+            .iter()
+            .map(|&x| (x - mean_fdp).powi(2))
+            .sum::<f64>()
+            / (n - 1.0);
+        let se_fdp = (var_fdp / n).sqrt();
+        let ci99_upper_fdp = mean_fdp + 2.576 * se_fdp;
+
+        // Stabilized mFDR_1 = E[V] / (E[R] + 1.0) under global null (V = R).
+        let mfdr_1 = mean_v / (mean_v + 1.0);
+
+        // Deterministic expenditure bound: sum(alpha_i) <= W_0 / (1 - psi) = 0.5 / 0.5 = 1.0.
+        let expenditure_bound = cfg.initial_wealth / (1.0 - cfg.reward_fraction);
+        assert!(
+            max_alpha_sum <= expenditure_bound + 1e-12,
+            "Total alpha spent {} exceeded W_0/(1-psi)={}",
+            max_alpha_sum,
+            expenditure_bound
+        );
+
+        // Supermartingale bound: E[V] <= W_0 / (1 - psi * alpha_max) = 0.5 / 0.975 ≈ 0.51282.
+        let alpha_max = cfg.investment_fraction * cfg.initial_wealth;
+        let ev_bound = cfg.initial_wealth / (1.0 - cfg.reward_fraction * alpha_max);
+        assert!(
+            mean_v <= ev_bound + 2.576 * se_v,
+            "Empirical E[V]={:.4} (99% CI upper {:.4}) exceeded theoretical bound {:.4}",
+            mean_v,
+            ci99_upper_v,
+            ev_bound
+        );
+        assert!(
+            mfdr_1 <= cfg.initial_wealth,
+            "Stabilized mFDR_1={:.4} exceeded W_0={}",
+            mfdr_1,
+            cfg.initial_wealth
+        );
+        assert!(
+            ci99_upper_fdp <= cfg.initial_wealth + 0.05,
+            "Empirical FDR={:.4} (99% CI upper {:.4}) exceeded bound",
+            mean_fdp,
+            ci99_upper_fdp
+        );
+    }
+
+    #[test]
+    fn mixed_null_and_alternative_tracks_true_fdp_vs_raw_discovery_rate() {
+        // Demonstrate that `discovery_rate()` is R / m (raw rejection rate),
+        // while true FDP = V / max(R, 1) and mFDR_1 = E[V] / (E[R] + 1) require
+        // ground-truth labels (is_null).
+        fn splitmix64(state: &mut u64) -> f64 {
+            *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = *state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            ((z >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+        }
+
+        let cfg = AlphaInvestingConfig::default();
+        let trials = 1_000usize;
+        let m = 50usize;
+        let mut rng = 0x5EED_2026_1016_0045u64;
+
+        let mut total_v = 0.0f64;
+        let mut total_r = 0.0f64;
+        let mut total_raw_rate = 0.0f64;
+
+        for _ in 0..trials {
+            let mut inv = AlphaInvestor::new(cfg.clone());
+            let mut v_trial = 0usize;
+            for idx in 0..m {
+                // Every 5th hypothesis is a strong non-null alternative (p in [0, 0.002]).
+                let is_null = idx % 5 != 0;
+                let u = splitmix64(&mut rng);
+                let p = if is_null { u } else { u * 0.002 };
+                if inv.test(p) == TestOutcome::Rejected && is_null {
+                    v_trial += 1;
+                }
+            }
+            total_v += v_trial as f64;
+            total_r += inv.discoveries() as f64;
+            total_raw_rate += inv.discovery_rate();
+        }
+
+        let mean_v = total_v / trials as f64;
+        let mean_r = total_r / trials as f64;
+        let mean_raw_rate = total_raw_rate / trials as f64;
+        let mfdr_1 = mean_v / (mean_r + 1.0);
+
+        // True signals are detected (mean_r > 4), so raw discovery_rate = mean_r / m
+        // is well above mean_v / m, while stabilized mFDR_1 remains well below W_0.
+        assert!(
+            mean_r > 4.0,
+            "Expected strong alternatives to be discovered, got mean_r={mean_r}"
+        );
+        assert!((mean_raw_rate - mean_r / m as f64).abs() < 1e-12);
+        assert!(
+            mfdr_1 < cfg.initial_wealth,
+            "Expected mFDR_1={mfdr_1:.4} < W_0={}",
+            cfg.initial_wealth
         );
     }
 

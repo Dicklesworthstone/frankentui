@@ -926,19 +926,16 @@ fn escape_json(s: &str) -> String {
         .replace('\t', "\\t")
 }
 
-/// Get seed from environment or generate from time.
+/// Default deterministic seed used when neither `STORM_SEED` nor `FTUI_SEED` is set.
+pub const DEFAULT_STORM_SEED: u64 = 0x5EED_CAFE_D00D;
+
+/// Get seed from environment (`STORM_SEED` or `FTUI_SEED`) or return the deterministic default.
 pub fn get_storm_seed() -> u64 {
     std::env::var("STORM_SEED")
+        .or_else(|_| std::env::var("FTUI_SEED"))
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| {
-            let pid = std::process::id() as u64;
-            let time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64;
-            pid.wrapping_mul(time)
-        })
+        .unwrap_or(DEFAULT_STORM_SEED)
 }
 
 /// Compute checksum of captured output.

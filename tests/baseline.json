@@ -152,6 +152,8 @@
 
   "runtime_shutdown_latency": {
     "description": "Time from quit signal to terminal cleanup complete",
+    "criterion_name": "runtime/shutdown_latency/headless",
+    "bench_file": "runtime_latency_bench",
     "category": "user-visible",
     "crate": "ftui-runtime",
     "slo_metric": "runtime_shutdown_p99_us",
@@ -164,6 +166,8 @@
 
   "runtime_first_frame": {
     "description": "Time from Program::run() to first frame rendered",
+    "criterion_name": "runtime/first_frame/headless_80x24",
+    "bench_file": "runtime_latency_bench",
     "category": "user-visible",
     "crate": "ftui-runtime",
     "slo_metric": "runtime_first_frame_p99_us",
@@ -176,6 +180,8 @@
 
   "runtime_command_roundtrip": {
     "description": "Time from Cmd::msg() dispatch to model update completion",
+    "criterion_name": "runtime/command_roundtrip/cmd_msg",
+    "bench_file": "runtime_latency_bench",
     "category": "user-visible",
     "crate": "ftui-runtime",
     "slo_metric": "runtime_command_roundtrip_p99_us",
@@ -188,6 +194,8 @@
 
   "runtime_effect_queue_drain": {
     "description": "Time to drain effect queue after shutdown signal",
+    "criterion_name": "runtime/effect_queue_drain/spawned",
+    "bench_file": "effect_backend_bench",
     "category": "user-visible",
     "crate": "ftui-runtime",
     "slo_metric": "runtime_effect_queue_drain_p99_us",
@@ -222,5 +230,129 @@
     "p99_ns": 130,
     "p999_ns": 200,
     "threshold_pct": 10
+  },
+
+  "runtime_render_frame_headless_80x24": {
+    "description": "Headless Program::step_headless_frame on 80x24 with default conformal frame-time risk gating",
+    "criterion_name": "runtime/render_frame_headless_80x24/conformal_on",
+    "bench_file": "render_frame_bench",
+    "crate": "ftui-runtime",
+    "slo_metric": "render_frame_p99_us",
+    "p50_ns": 38000,
+    "p95_ns": 55000,
+    "p99_ns": 65000,
+    "p999_ns": 100000,
+    "threshold_pct": 10
+  },
+
+  "virtualized_scroll_to_100k": {
+    "description": "Virtualized::scroll_to + offset_of_item on 100k variable-height items with Fenwick prefix tree",
+    "criterion_name": "virtualized/scroll_to/variable_fenwick/100000",
+    "bench_file": "virtualized_bench",
+    "crate": "ftui-widgets",
+    "slo_metric": "virtualized_scroll_to_100k_p99_ns",
+    "p50_ns": 25,
+    "p95_ns": 100,
+    "p99_ns": 1000,
+    "p999_ns": 5000,
+    "threshold_pct": 15
+  },
+
+  "present_80x24_sparse": {
+    "description": "ANSI emission on 80x24 buffer @ 5% change (plan budget p50 1ms / p99 3ms)",
+    "criterion_name": "present/truecolor/sparse_5pct/present/80x24",
+    "bench_file": "presenter_bench",
+    "crate": "ftui-render",
+    "slo_metric": "present_p99_us",
+    "p50_ns": 1000000,
+    "p95_ns": 2000000,
+    "p99_ns": 3000000,
+    "p999_ns": 6000000,
+    "threshold_pct": 15
+  },
+
+  "present_120x40_sparse": {
+    "description": "ANSI emission on 120x40 buffer @ 5% change (plan budget p50 2ms / p99 6ms)",
+    "criterion_name": "present/truecolor/sparse_5pct/present/120x40",
+    "bench_file": "presenter_bench",
+    "crate": "ftui-render",
+    "slo_metric": "present_p99_us",
+    "p50_ns": 2000000,
+    "p95_ns": 4000000,
+    "p99_ns": 6000000,
+    "p999_ns": 12000000,
+    "threshold_pct": 15
+  },
+
+  "present_200x60_sparse": {
+    "description": "ANSI emission on 200x60 buffer @ 5% change (plan budget p50 6ms / p99 18ms)",
+    "criterion_name": "present/truecolor/sparse_5pct/present/200x60",
+    "bench_file": "presenter_bench",
+    "crate": "ftui-render",
+    "slo_metric": "present_p99_us",
+    "p50_ns": 6000000,
+    "p95_ns": 12000000,
+    "p99_ns": 18000000,
+    "p999_ns": 36000000,
+    "threshold_pct": 15
+  },
+
+  "input_parse_dispatch_event": {
+    "description": "InputParser::parse per-event latency over mixed 1000-event stream (< 100us budget)",
+    "criterion_name": "input/parse_dispatch/mixed_event_stream/per_event",
+    "bench_file": "input_parser_bench",
+    "crate": "ftui-core",
+    "slo_metric": "input_dispatch_p99_us",
+    "p50_ns": 20000,
+    "p95_ns": 50000,
+    "p99_ns": 100000,
+    "p999_ns": 250000,
+    "threshold_pct": 15
+  },
+
+  "wrap_200_lines": {
+    "description": "wrap_text word-wrap on 200 lines at 80 columns (< 2ms budget)",
+    "criterion_name": "wrap/word/200_lines_80_cols",
+    "bench_file": "wrap_bench",
+    "crate": "ftui-text",
+    "slo_metric": "wrap_p99_us",
+    "p50_ns": 500000,
+    "p95_ns": 1000000,
+    "p99_ns": 2000000,
+    "p999_ns": 4000000,
+    "threshold_pct": 15
+  },
+
+  "bytes_emitted_sparse_5pct": {
+    "description": "ANSI bytes emitted on 80x24 @ 5% change (<= 8 * cells_changed + 64)",
+    "kind": "bytes",
+    "scene": "present/bytes/sparse_5pct/80x24",
+    "budget_expr": "8*cells_changed+64",
+    "bench_file": "presenter_bench",
+    "crate": "ftui-render",
+    "slo_metric": "bytes_emitted"
+  },
+
+  "frame_allocations_ascii_scene": {
+    "description": "Steady-state heap allocations per frame on 80x24 ASCII dashboard with FrameArena",
+    "kind": "allocs",
+    "scene": "ascii_dashboard_80x24",
+    "budget": 0,
+    "bench_file": "alloc_count_bench",
+    "features": "alloc-count",
+    "crate": "ftui-render",
+    "slo_metric": "frame_allocs"
+  },
+
+  "frame_allocations_unicode_scene": {
+    "description": "Steady-state heap allocations per frame on 80x24 Unicode dashboard with FrameArena (<= 4 allocs, 99.4% below pre-arena 661)",
+    "kind": "allocs",
+    "scene": "unicode_dashboard_80x24",
+    "budget": 4,
+    "bench_file": "alloc_count_bench",
+    "features": "alloc-count",
+    "crate": "ftui-render",
+    "slo_metric": "frame_allocs"
   }
 }
+

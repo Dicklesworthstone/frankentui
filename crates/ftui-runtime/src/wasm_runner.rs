@@ -20,12 +20,15 @@
 //! the same event stream produces identical frames.
 
 use crate::program::{Cmd, Model};
+use crate::state_persistence::StateRegistry;
+use crate::tick_strategy::{TickDecision, TickStrategy};
 use ftui_core::event::Event;
 use ftui_render::buffer::Buffer;
 use ftui_render::diff::BufferDiff;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -84,6 +87,10 @@ pub struct WasmRunner<M: Model> {
     tick_rate: Option<Duration>,
     /// Monotonic timestamp of the last tick delivery.
     last_tick_at: Duration,
+    tick_count: u64,
+    tick_strategy: Option<Box<dyn TickStrategy>>,
+    last_active_screen_for_strategy: Option<String>,
+    state_registry: Option<Arc<StateRegistry>>,
 
     /// Buffered events from the host.
     event_queue: VecDeque<Event>,
@@ -112,10 +119,34 @@ impl<M: Model> WasmRunner<M> {
             frame_idx: 0,
             tick_rate: None,
             last_tick_at: Duration::ZERO,
+            tick_count: 0,
+            tick_strategy: None,
+            last_active_screen_for_strategy: None,
+            state_registry: None,
             event_queue: VecDeque::new(),
             logs: Vec::new(),
             clipboard_requests: Vec::new(),
         }
+    }
+
+    /// Attach a [`StateRegistry`] for `Cmd::SaveState` and `Cmd::RestoreState`.
+    #[must_use]
+    pub fn with_registry(mut self, registry: Arc<StateRegistry>) -> Self {
+        self.state_registry = Some(registry);
+        self
+    }
+
+    /// Attach a [`TickStrategy`] for selective background screen ticking.
+    #[must_use]
+    pub fn with_tick_strategy(mut self, strategy: impl TickStrategy + 'static) -> Self {
+        self.tick_strategy = Some(Box::new(strategy));
+        self
+    }
+
+    /// Name of the active [`TickStrategy`], if any.
+    #[must_use]
+    pub fn tick_strategy_name(&self) -> Option<&str> {
+        self.tick_strategy.as_ref().map(|s| s.name())
     }
 
     /// Initialize the model by calling `Model::init()`.
@@ -131,6 +162,9 @@ impl<M: Model> WasmRunner<M> {
             ..Default::default()
         };
         self.execute_cmd(cmd, &mut result);
+        if self.running {
+            self.check_screen_transition(&mut result);
+        }
         result
     }
 
@@ -174,15 +208,61 @@ impl<M: Model> WasmRunner<M> {
         }
 
         // Tick check.
-        if let Some(rate) = self.tick_rate
+        if self.running
+            && let Some(rate) = self.tick_rate
             && now.saturating_sub(self.last_tick_at) >= rate
         {
             self.last_tick_at = now;
-            let msg = M::Message::from(Event::Tick);
-            let cmd = self.model.update(msg);
-            self.dirty = true;
-            result.tick_fired = true;
-            self.execute_cmd(cmd, &mut result);
+            self.tick_count = self.tick_count.wrapping_add(1);
+            let tick_count = self.tick_count;
+            let mut used_screen_dispatch = false;
+
+            if let Some(strategy) = self.tick_strategy.as_mut() {
+                let dispatch_snapshot = self.model.as_screen_tick_dispatch().map(|dispatch| {
+                    let active = dispatch.active_screen_id();
+                    let all_screens = dispatch.screen_ids();
+                    (active, all_screens)
+                });
+
+                if let Some((active, all_screens)) = dispatch_snapshot {
+                    used_screen_dispatch = true;
+                    if let Some(previous_active) = self.last_active_screen_for_strategy.as_deref()
+                        && previous_active != active
+                    {
+                        strategy.on_screen_transition(previous_active, &active);
+                    }
+                    self.last_active_screen_for_strategy = Some(active.clone());
+
+                    let mut tick_targets = Vec::with_capacity(all_screens.len().max(1));
+                    tick_targets.push(active.clone());
+                    for screen_id in all_screens {
+                        if screen_id != active
+                            && strategy.should_tick(&screen_id, tick_count, &active)
+                                == TickDecision::Tick
+                        {
+                            tick_targets.push(screen_id);
+                        }
+                    }
+
+                    if let Some(dispatch) = self.model.as_screen_tick_dispatch() {
+                        for screen_id in &tick_targets {
+                            dispatch.tick_screen(screen_id, tick_count);
+                        }
+                    }
+                    strategy.maintenance_tick(tick_count);
+                    self.dirty = true;
+                    result.tick_fired = true;
+                }
+            }
+
+            if !used_screen_dispatch {
+                self.last_active_screen_for_strategy = None;
+                let msg = M::Message::from(Event::Tick);
+                let cmd = self.model.update(msg);
+                self.dirty = true;
+                result.tick_fired = true;
+                self.execute_cmd(cmd, &mut result);
+            }
         }
 
         result.dirty = self.dirty;
@@ -264,6 +344,9 @@ impl<M: Model> WasmRunner<M> {
             let cmd = self.model.update(msg);
             let mut result = StepResult::default();
             self.execute_cmd(cmd, &mut result);
+            if self.running {
+                self.check_screen_transition(&mut result);
+            }
         }
     }
 
@@ -352,6 +435,36 @@ impl<M: Model> WasmRunner<M> {
 
     // -- Internal -----------------------------------------------------------
 
+    fn check_screen_transition(&mut self, result: &mut StepResult) {
+        if self.tick_strategy.is_none() || !self.running {
+            return;
+        }
+        let current_active = match self.model.as_screen_tick_dispatch() {
+            Some(dispatch) => dispatch.active_screen_id(),
+            None => return,
+        };
+        let previous = match self.last_active_screen_for_strategy.take() {
+            Some(prev) => prev,
+            None => {
+                self.last_active_screen_for_strategy = Some(current_active);
+                return;
+            }
+        };
+        if previous == current_active {
+            self.last_active_screen_for_strategy = Some(current_active);
+            return;
+        }
+        if let Some(strategy) = self.tick_strategy.as_mut() {
+            strategy.on_screen_transition(&previous, &current_active);
+        }
+        if let Some(dispatch) = self.model.as_screen_tick_dispatch() {
+            dispatch.tick_screen(&current_active, self.tick_count);
+            self.dirty = true;
+            result.dirty = true;
+        }
+        self.last_active_screen_for_strategy = Some(current_active);
+    }
+
     fn handle_event(&mut self, event: Event, result: &mut StepResult) {
         // Handle resize events specially: update our dimensions.
         if let Event::Resize { width, height } = event
@@ -367,6 +480,9 @@ impl<M: Model> WasmRunner<M> {
         let cmd = self.model.update(msg);
         self.dirty = true;
         self.execute_cmd(cmd, result);
+        if self.running {
+            self.check_screen_transition(result);
+        }
     }
 
     /// Commands run depth-first from an explicit stack of batch iterators, in
@@ -414,6 +530,9 @@ impl<M: Model> WasmRunner<M> {
             Cmd::Quit => {
                 self.running = false;
                 result.quit = true;
+                if let Some(ref mut strategy) = self.tick_strategy {
+                    strategy.shutdown();
+                }
             }
             Cmd::Msg(m) => {
                 return Some(self.model.update(m));
@@ -442,12 +561,36 @@ impl<M: Model> WasmRunner<M> {
             Cmd::GetClipboard => self
                 .clipboard_requests
                 .push(crate::program::ClipboardRequest::Get),
-            Cmd::SaveState | Cmd::RestoreState => {
-                // No-op: state persistence is managed by the JS host
-                // (localStorage / IndexedDB).
+            Cmd::SaveState => {
+                if let Some(ref registry) = self.state_registry
+                    && let Err(error) = registry.flush()
+                {
+                    let msg = format!("state save failed: {error}");
+                    self.logs.push(msg.clone());
+                    return Some(self.model.on_error(&msg));
+                }
             }
-            Cmd::SetTickStrategy(_) => {
-                // No-op: tick strategy is managed by the host runtime.
+            Cmd::RestoreState => {
+                if let Some(ref registry) = self.state_registry {
+                    match registry.load() {
+                        Ok(_) => {
+                            self.dirty = true;
+                            result.dirty = true;
+                        }
+                        Err(error) => {
+                            let msg = format!("state restore failed: {error}");
+                            self.logs.push(msg.clone());
+                            return Some(self.model.on_error(&msg));
+                        }
+                    }
+                }
+            }
+            Cmd::SetTickStrategy(strategy) => {
+                if let Some(ref mut prev) = self.tick_strategy {
+                    prev.shutdown();
+                }
+                self.tick_strategy = Some(strategy);
+                self.last_active_screen_for_strategy = None;
             }
         }
         None

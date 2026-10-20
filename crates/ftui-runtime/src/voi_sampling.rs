@@ -38,25 +38,44 @@
 //!
 //! where `p̂ = α / (α+β)` is the posterior mean.
 //!
-//! The **value of information** (VOI) is the expected reduction:
+//! The **value of information** (VOI) is the expected reduction, which simplifies
+//! algebraically to:
 //!
 //! ```text
-//! VOI = Var[p] − E[Var[p] | one sample]  ≥ 0
+//! VOI(α, β) = Var[p] − E[Var[p] | one sample]
+//!           = αβ / ((α+β)^2 (α+β+1)^2)  ≥ 0
+//!           ≤ 1 / (4 (α+β+1)^2)
 //! ```
 //!
-//! ## Anytime-Valid Safety (E-Process Layer)
+//! For example, under a uniform `Beta(1, 1)` prior:
+//! - `Var[Beta(1, 1)] = 1/12`
+//! - `Var[Beta(2, 1)] = Var[Beta(1, 2)] = 1/18`
+//! - `E[Var[p] | one sample] = (1/2)(1/18) + (1/2)(1/18) = 1/18`
+//! - `VOI(1, 1) = 1/12 − 1/18 = 1/36`
 //!
-//! We optionally track an e-process over the same Bernoulli stream to keep
-//! decisions anytime-valid. Sampling decisions depend only on **past** data,
-//! so the e-process remains valid under adaptive sampling:
+//! ## E-Process Boundary-Proximity Layer (Conditional Supermartingale vs. Clamped Heuristic)
+//!
+//! We track a multiplicative wealth accumulator over the sampled Bernoulli stream:
 //!
 //! ```text
 //! W_0 = 1
-//! W_t = W_{t-1} × (1 + λ (X_t − μ₀))
+//! W_t = clamp(W_{t-1} × max(1 + λ (X_t − μ₀), EPS), E_MIN, E_MAX)
 //! ```
 //!
-//! where `μ₀` is the baseline violation rate under H₀ and λ is a betting
-//! fraction (clamped for stability).
+//! where `μ₀` is the baseline violation rate under $H_0$ and $\lambda$ is a betting
+//! fraction clamped to `(LAMBDA_EPS, 1/(1 − μ₀) − LAMBDA_EPS)`.
+//!
+//! - **Exact conditional supermartingale domain**: Because `decide` depends only on
+//!   $\mathcal{F}_{t-1}$ (past observations), when $\lambda \in (0, 1/\mu_0)$ (so
+//!   $1 - \lambda \mu_0 > 0$ on $X_t = 0$) and the trajectory stays strictly inside
+//!   $(E_{\min}, E_{\max})$, $E[W_t \mid \mathcal{F}_{t-1}] \le W_{t-1}$ under the
+//!   conditional null $P(X_t = 1 \mid \mathcal{F}_{t-1}) \le \mu_0$, preserving Ville's
+//!   inequality $P(\exists t: W_t \ge 1/\alpha \mid H_0) \le \alpha$ under adaptive sampling.
+//! - **Heuristic floor/clamp boundary**: When $\lambda \ge 1/\mu_0$ (possible if $\mu_0 > 0.5$)
+//!   or when sustained non-violations drive $W_t$ down to `E_MIN = 1e-12`, the lower floors
+//!   (`max(..., EPS)` and `clamp(E_MIN, E_MAX)`) prevent permanent zero-lock at the cost of
+//!   injecting upward bias on the boundary; in that regime `W_t` acts as a bounded heuristic
+//!   proximity weight for `boundary_score` rather than a formal α-test.
 //!
 //! ## Decision Rule (Explainable)
 //!
@@ -88,8 +107,10 @@
 //! # Key Invariants
 //!
 //! 1. **Deterministic**: same inputs → same decisions.
-//! 2. **VOI non-negative**: expected variance reduction ≥ 0.
-//! 3. **Anytime-valid**: e-process remains valid under adaptive sampling.
+//! 2. **VOI non-negative**: expected variance reduction $\alpha\beta / (n^2(n+1)^2) \ge 0$.
+//! 3. **Predictable adaptive sampling**: sampling decisions are $\mathcal{F}_{t-1}$-measurable;
+//!    $W_t$ is a supermartingale under $P(X_t=1\mid\mathcal{F}_{t-1})\le\mu_0$ when $\lambda < 1/\mu_0$
+//!    and unclamped in $(E_{\min}, E_{\max})$.
 //! 4. **Bounded silence**: max-interval forces periodic sampling.
 //!
 //! # Failure Modes
@@ -469,6 +490,12 @@ impl VoiSampler {
         expected_variance_after(self.alpha, self.beta)
     }
 
+    /// Expected variance reduction (Value of Information) from one sample.
+    #[must_use]
+    pub fn value_of_information(&self) -> f64 {
+        ftui_core::voi::beta_voi(self.alpha, self.beta)
+    }
+
     /// Most recent decision, if any.
     #[must_use]
     pub fn last_decision(&self) -> Option<&VoiDecision> {
@@ -511,8 +538,7 @@ impl VoiSampler {
         let blocked = blocked_by_events || blocked_by_time;
 
         let variance = beta_variance(self.alpha, self.beta);
-        let expected_after = expected_variance_after(self.alpha, self.beta);
-        let voi_gain = (variance - expected_after).max(0.0);
+        let voi_gain = ftui_core::voi::beta_voi(self.alpha, self.beta);
 
         let boundary_score = boundary_score(self.e_value, self.e_threshold);
         let score = voi_gain
@@ -762,23 +788,15 @@ impl VoiSampler {
 }
 
 fn beta_mean(alpha: f64, beta: f64) -> f64 {
-    alpha / (alpha + beta)
+    ftui_core::voi::beta_mean(alpha, beta)
 }
 
 fn beta_variance(alpha: f64, beta: f64) -> f64 {
-    let sum = alpha + beta;
-    if sum <= 0.0 {
-        return 0.0;
-    }
-    let var = (alpha * beta) / (sum * sum * (sum + 1.0));
-    var.min(VAR_MAX)
+    ftui_core::voi::beta_variance(alpha, beta).min(VAR_MAX)
 }
 
 fn expected_variance_after(alpha: f64, beta: f64) -> f64 {
-    let p = beta_mean(alpha, beta);
-    let var_success = beta_variance(alpha + 1.0, beta);
-    let var_failure = beta_variance(alpha, beta + 1.0);
-    p * var_success + (1.0 - p) * var_failure
+    ftui_core::voi::expected_variance_after(alpha, beta)
 }
 
 fn boundary_score(e_value: f64, threshold: f64) -> f64 {
@@ -2349,5 +2367,168 @@ mod tests {
             low_region_selected > 0,
             "fairness boosting should eventually schedule the lower-VOI region"
         );
+    }
+
+    #[test]
+    fn exact_fraction_oracle_and_inline_auto_default_bound() {
+        // 1. Uniform Beta(1, 1) exact oracle:
+        //    Var[Beta(1, 1)] = 1/12
+        //    Var[Beta(2, 1)] = Var[Beta(1, 2)] = 1/18
+        //    expected_variance_after(1, 1) = 1/18
+        //    VOI(1, 1) = 1/12 - 1/18 = 1/36
+        let var_1_1 = beta_variance(1.0, 1.0);
+        let exp_1_1 = expected_variance_after(1.0, 1.0);
+        let voi_1_1 = var_1_1 - exp_1_1;
+        assert!((var_1_1 - 1.0 / 12.0).abs() < 1e-15);
+        assert!((exp_1_1 - 1.0 / 18.0).abs() < 1e-15);
+        assert!((voi_1_1 - 1.0 / 36.0).abs() < 1e-15);
+
+        // 2. Check six parameter pairs against exact algebraic identity:
+        //    VOI(α, β) = αβ / (n^2 * (n+1)^2) <= 1 / (4 * (n+1)^2).
+        let pairs = [
+            (1.0, 1.0),
+            (1.0, 9.0),
+            (2.0, 3.0),
+            (5.0, 5.0),
+            (3.0, 17.0),
+            (10.0, 90.0),
+        ];
+        for (a, b) in pairs {
+            let n = a + b;
+            let voi = beta_variance(a, b) - expected_variance_after(a, b);
+            let exact = (a * b) / (n * n * (n + 1.0) * (n + 1.0));
+            let upper = 1.0 / (4.0 * (n + 1.0) * (n + 1.0));
+            assert!(
+                (voi - exact).abs() < 1e-15,
+                "VOI({a}, {b})={voi} != exact={exact}"
+            );
+            assert!(voi <= upper + 1e-15, "VOI({a}, {b})={voi} > upper={upper}");
+        }
+
+        // 3. InlineAutoRemeasureConfig default prior (α=1, β=9, n=10):
+        //    VOI(1, 9) = 9 / (100 * 121) = 9 / 12100.
+        //    With value_scale=1, boundary_weight=1, boundary_score <= 1:
+        //    score <= 2 * (9 / 12100) <= 2 / (4 * 121) = 1 / 242 ≈ 0.004132 < sample_cost (0.08).
+        let inline_voi = beta_variance(1.0, 9.0) - expected_variance_after(1.0, 9.0);
+        assert!((inline_voi - 9.0 / 12_100.0).abs() < 1e-15);
+        assert!(2.0 * inline_voi <= 1.0 / 242.0 + 1e-15);
+        assert!(2.0 * inline_voi < 0.08);
+    }
+
+    #[test]
+    fn adaptive_voi_sampling_eprocess_null_and_alternative_power_with_ci() {
+        fn splitmix64_u01(state: &mut u64) -> f64 {
+            *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = *state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            ((z >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+        }
+
+        let base_cfg = VoiConfig {
+            alpha: 0.05,
+            prior_alpha: 1.0,
+            prior_beta: 1.0,
+            mu_0: 0.05,
+            lambda: 1.8,
+            value_scale: 1.0,
+            boundary_weight: 1.0,
+            sample_cost: 0.001,
+            min_interval_ms: 0,
+            max_interval_ms: 0,
+            min_interval_events: 0,
+            max_interval_events: 4,
+            enable_logging: false,
+            max_log_entries: 16,
+        };
+        let threshold = 1.0 / base_cfg.alpha; // 20.0
+        let trials = 1_500usize;
+        let steps = 80usize;
+        let t0 = Instant::now();
+
+        // 1. Under conditional null P(X_t = 1) = mu_0 = 0.05 with adaptive VOI sampling:
+        let mut rng_null = 0x7015_2026_1016_0001u64;
+        let mut null_terminal_w = Vec::with_capacity(trials);
+        let mut null_crossings = 0usize;
+
+        for _ in 0..trials {
+            let mut sampler = VoiSampler::new_at(base_cfg.clone(), t0);
+            let mut crossed = false;
+            for step in 0..steps {
+                let now = t0 + Duration::from_millis(step as u64 * 10);
+                let dec = sampler.decide(now);
+                let x = splitmix64_u01(&mut rng_null) < base_cfg.mu_0;
+                if dec.should_sample {
+                    let obs = sampler.observe_at(x, now);
+                    if obs.e_value >= threshold {
+                        crossed = true;
+                    }
+                }
+            }
+            if crossed {
+                null_crossings += 1;
+            }
+            null_terminal_w.push(sampler.summary().e_value);
+        }
+
+        let n = trials as f64;
+        let mean_w_null = null_terminal_w.iter().sum::<f64>() / n;
+        let var_w_null = null_terminal_w
+            .iter()
+            .map(|&w| (w - mean_w_null).powi(2))
+            .sum::<f64>()
+            / (n - 1.0);
+        let se_w_null = (var_w_null / n).sqrt();
+        let fpr = null_crossings as f64 / n;
+        let se_fpr = (base_cfg.alpha * (1.0 - base_cfg.alpha) / n).sqrt();
+
+        // Supermartingale property under adaptive sampling: E[W_T] <= 1.0 within sampling uncertainty.
+        assert!(
+            mean_w_null <= 1.0 + 3.0 * se_w_null,
+            "Expected E[W_T] <= 1.0 under H_0, got {mean_w_null:.4} (se={se_w_null:.4})"
+        );
+        // Ville's inequality: P(sup_t W_t >= 1/alpha | H_0) <= alpha.
+        assert!(
+            fpr <= base_cfg.alpha + 3.0 * se_fpr,
+            "Null false-positive rate {fpr:.4} exceeded alpha={} + 3*se",
+            base_cfg.alpha
+        );
+
+        // 2. Under alternative P(X_t = 1) = 0.35 > mu_0 = 0.05: high detection power.
+        let mut rng_alt = 0x7015_2026_1016_0002u64;
+        let mut alt_crossings = 0usize;
+        for _ in 0..trials {
+            let mut sampler = VoiSampler::new_at(base_cfg.clone(), t0);
+            let mut crossed = false;
+            for step in 0..steps {
+                let now = t0 + Duration::from_millis(step as u64 * 10);
+                let dec = sampler.decide(now);
+                let x = splitmix64_u01(&mut rng_alt) < 0.35;
+                if dec.should_sample {
+                    let obs = sampler.observe_at(x, now);
+                    if obs.e_value >= threshold {
+                        crossed = true;
+                    }
+                }
+            }
+            if crossed {
+                alt_crossings += 1;
+            }
+        }
+        let power = alt_crossings as f64 / n;
+        assert!(
+            power > 0.75,
+            "Expected detection power > 0.75 under p=0.35 alternative, got {power:.4}"
+        );
+
+        // 3. Heuristic floor boundary check: when mu_0 = 0.8 and lambda = 2.0 > 1/mu_0 = 1.25,
+        //    1 + lambda*(0 - mu_0) = -0.6 < 0 is floored at EPS and E_MIN, preventing negative wealth.
+        let mut high_mu_cfg = base_cfg;
+        high_mu_cfg.mu_0 = 0.8;
+        high_mu_cfg.lambda = 2.0;
+        let mut floored = VoiSampler::new_at(high_mu_cfg, t0);
+        let obs = floored.observe_at(false, t0);
+        assert_eq!(obs.e_value, E_MIN);
     }
 }

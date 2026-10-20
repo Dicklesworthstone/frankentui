@@ -28,6 +28,7 @@
 //! production-side evaluator, kept in `ftui-render` because the harness is
 //! downstream of the runtime).
 
+use crate::buffer::Buffer;
 use crate::diff::DiffSkipHint;
 
 /// Facts the writer can prove about the frame before diffing.
@@ -39,10 +40,39 @@ pub struct RenderCertificateInputs {
     pub dims_changed: bool,
     /// A periodic full-redraw probe is due.
     pub full_redraw_due: bool,
-    /// Rows marked dirty by the buffer's tracking invariant.
+    /// Rows marked dirty by the buffer's row-level tracking invariant.
     pub dirty_row_count: usize,
+    /// Independent dirty-row count derived from per-row dirty spans.
+    pub span_dirty_rows: usize,
+    /// Whether the buffer's dirty baseline and internal dirty bitmap/spans are valid for `prev`.
+    pub baseline_valid: bool,
     /// Total rows in the frame.
     pub total_rows: u16,
+}
+
+impl RenderCertificateInputs {
+    /// Build certificate inputs by cross-checking `current`'s dirty state against `prev`.
+    #[must_use]
+    pub fn from_buffers(prev: Option<&Buffer>, current: &Buffer, full_redraw_due: bool) -> Self {
+        let prev_available = prev.is_some();
+        let dims_changed =
+            prev.is_some_and(|p| p.width() != current.width() || p.height() != current.height());
+        let dirty_row_count = current.dirty_row_count();
+        let span_dirty_rows = current.dirty_span_row_count();
+        let baseline_valid = match prev {
+            Some(p) if !dims_changed => current.is_dirty_witness_valid_for(p),
+            _ => false,
+        };
+        Self {
+            prev_available,
+            dims_changed,
+            full_redraw_due,
+            dirty_row_count,
+            span_dirty_rows,
+            baseline_valid,
+            total_rows: current.height(),
+        }
+    }
 }
 
 /// The certified level of work elimination.
@@ -94,6 +124,16 @@ impl RenderCertificate {
         }
     }
 
+    /// Consume the certificate into the diff-stage hint without cloning `dirty_rows`.
+    #[must_use]
+    pub fn into_hint(self) -> DiffSkipHint {
+        match self.level {
+            RenderCertificateLevel::FullRequired => DiffSkipHint::FullDiff,
+            RenderCertificateLevel::SkipAll => DiffSkipHint::SkipDiff,
+            RenderCertificateLevel::NarrowToDirty => DiffSkipHint::NarrowToRows(self.dirty_rows),
+        }
+    }
+
     /// Compact JSON fragment for evidence lines (stable field order).
     #[must_use]
     pub fn to_evidence_json(&self) -> String {
@@ -113,8 +153,9 @@ impl RenderCertificate {
 
 /// Evaluate the conservative production decision tree.
 ///
-/// `dirty_rows` must be the buffer's dirty row indices in ascending order;
-/// it is only consulted when the decision narrows.
+/// `dirty_rows` must be the buffer's dirty row indices in strictly ascending order;
+/// it is cross-checked against `inputs.dirty_row_count`, `inputs.span_dirty_rows`,
+/// and `inputs.baseline_valid`. Any disagreement falls back to `FullRequired`.
 #[must_use]
 pub fn evaluate_render_certificate(
     inputs: &RenderCertificateInputs,
@@ -144,6 +185,23 @@ pub fn evaluate_render_certificate(
             fell_back: true,
         };
     }
+    // Cross-check the row witness against independent span/bitmap/baseline
+    // facts BEFORE certifying a skip or narrow scan.
+    let rows_sorted_unique = dirty_rows.windows(2).all(|pair| pair[0] < pair[1]);
+    let rows_in_bounds = dirty_rows.iter().all(|&row| row < inputs.total_rows);
+    if !inputs.baseline_valid
+        || inputs.span_dirty_rows != inputs.dirty_row_count
+        || dirty_rows.len() != inputs.dirty_row_count
+        || !rows_sorted_unique
+        || !rows_in_bounds
+    {
+        return RenderCertificate {
+            level: RenderCertificateLevel::FullRequired,
+            causes: vec!["dirty-row-witness-inconsistent"],
+            dirty_rows: Vec::new(),
+            fell_back: true,
+        };
+    }
     if inputs.dirty_row_count == 0 {
         return RenderCertificate {
             level: RenderCertificateLevel::SkipAll,
@@ -152,16 +210,61 @@ pub fn evaluate_render_certificate(
             fell_back: false,
         };
     }
-    // The narrow certificate is only honest when the provided row list is
-    // consistent with the count; any mismatch falls back to full work.
-    if dirty_rows.len() != inputs.dirty_row_count
-        || dirty_rows.iter().any(|&row| row >= inputs.total_rows)
-    {
+    RenderCertificate {
+        level: RenderCertificateLevel::NarrowToDirty,
+        causes: vec!["dirty-rows-witnessed"],
+        dirty_rows,
+        fell_back: false,
+    }
+}
+
+/// Evaluate a render certificate directly for a `(prev, current)` buffer pair.
+#[must_use]
+pub fn evaluate_render_certificate_for_buffers(
+    prev: Option<&Buffer>,
+    current: &Buffer,
+    full_redraw_due: bool,
+) -> RenderCertificate {
+    let Some(prev_buf) = prev else {
+        return RenderCertificate {
+            level: RenderCertificateLevel::FullRequired,
+            causes: vec!["no-previous-frame"],
+            dirty_rows: Vec::new(),
+            fell_back: true,
+        };
+    };
+    if prev_buf.width() != current.width() || prev_buf.height() != current.height() {
+        return RenderCertificate {
+            level: RenderCertificateLevel::FullRequired,
+            causes: vec!["viewport-changed"],
+            dirty_rows: Vec::new(),
+            fell_back: true,
+        };
+    };
+    if full_redraw_due {
+        return RenderCertificate {
+            level: RenderCertificateLevel::FullRequired,
+            causes: vec!["full-redraw-probe-due"],
+            dirty_rows: Vec::new(),
+            fell_back: true,
+        };
+    }
+    let (dirty_row_count, span_dirty_rows, baseline_valid, dirty_rows) =
+        current.collect_dirty_witness_for(prev_buf);
+    if !baseline_valid || span_dirty_rows != dirty_row_count {
         return RenderCertificate {
             level: RenderCertificateLevel::FullRequired,
             causes: vec!["dirty-row-witness-inconsistent"],
             dirty_rows: Vec::new(),
             fell_back: true,
+        };
+    }
+    if dirty_row_count == 0 {
+        return RenderCertificate {
+            level: RenderCertificateLevel::SkipAll,
+            causes: vec!["zero-dirty-rows"],
+            dirty_rows: Vec::new(),
+            fell_back: false,
         };
     }
     RenderCertificate {
@@ -185,6 +288,8 @@ mod tests {
             dims_changed: false,
             full_redraw_due: false,
             dirty_row_count: dirty,
+            span_dirty_rows: dirty,
+            baseline_valid: true,
             total_rows: rows,
         }
     }
@@ -237,6 +342,52 @@ mod tests {
         let cert = evaluate_render_certificate(&inputs(1, 10), vec![10]);
         assert_eq!(cert.level, RenderCertificateLevel::FullRequired);
         assert_eq!(cert.causes, vec!["dirty-row-witness-inconsistent"]);
+        // Unsorted / duplicate rows.
+        let cert = evaluate_render_certificate(&inputs(2, 10), vec![5, 2]);
+        assert_eq!(cert.level, RenderCertificateLevel::FullRequired);
+        assert_eq!(cert.causes, vec!["dirty-row-witness-inconsistent"]);
+        let cert = evaluate_render_certificate(&inputs(2, 10), vec![3, 3]);
+        assert_eq!(cert.level, RenderCertificateLevel::FullRequired);
+        // Span-vs-row count disagreement.
+        let mut desync = inputs(2, 10);
+        desync.span_dirty_rows = 1;
+        let cert = evaluate_render_certificate(&desync, vec![3, 7]);
+        assert_eq!(cert.level, RenderCertificateLevel::FullRequired);
+        assert_eq!(cert.causes, vec!["dirty-row-witness-inconsistent"]);
+        // Invalid baseline even when dirty_row_count == 0.
+        let mut stale_zero = inputs(0, 10);
+        stale_zero.baseline_valid = false;
+        let cert = evaluate_render_certificate(&stale_zero, Vec::new());
+        assert_eq!(cert.level, RenderCertificateLevel::FullRequired);
+        assert!(cert.fell_back);
+        assert_eq!(cert.causes, vec!["dirty-row-witness-inconsistent"]);
+    }
+
+    #[test]
+    fn stale_dirty_bits_on_buffer_pair_fall_back_and_find_all_changes() {
+        let mut old = Buffer::new(16, 6);
+        old.set(2, 1, Cell::from_char('A'));
+        old.clear_dirty();
+
+        let mut new = old.clone();
+        new.clear_dirty();
+        // Mutate row 3, then wipe dirty state so row 3 is stale-clean!
+        new.set(7, 3, Cell::from_char('X'));
+        new.clear_dirty();
+        // Mutate row 5 so only row 5 appears dirty in `new.dirty_row_indices()`.
+        new.set(1, 5, Cell::from_char('Y'));
+
+        let cert = evaluate_render_certificate_for_buffers(Some(&old), &new, false);
+        assert_eq!(cert.level, RenderCertificateLevel::FullRequired);
+        assert!(cert.fell_back);
+        assert_eq!(cert.causes, vec!["dirty-row-witness-inconsistent"]);
+
+        let mut certified = BufferDiff::new();
+        certified.compute_certified_into(&old, &new, cert.to_hint());
+        let mut full = BufferDiff::new();
+        full.compute_into(&old, &new);
+        assert_eq!(certified.changes(), full.changes());
+        assert_eq!(certified.changes(), &[(7, 3), (1, 5)]);
     }
 
     #[test]
@@ -276,9 +427,7 @@ mod tests {
                 new.set(x, y, Cell::from_char(ch));
             }
 
-            let dirty_count = new.dirty_row_count();
-            let dirty_rows = new.dirty_row_indices();
-            let cert = evaluate_render_certificate(&inputs(dirty_count, h), dirty_rows);
+            let cert = evaluate_render_certificate_for_buffers(Some(&old), &new, false);
             assert!(!cert.fell_back, "round {round}: unexpected fallback");
 
             let mut certified = BufferDiff::new();

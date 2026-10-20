@@ -282,16 +282,27 @@ proptest! {
     #[test]
     fn cluster_map_byte_cell_roundtrip(text in arb_nonempty_text(50)) {
         let map = ClusterMap::from_text(&text);
+        let total = map.total_cells();
         // Check every byte offset
         for byte_off in 0..text.len() {
             let cell = map.byte_to_cell(byte_off);
             let back = map.cell_to_byte(cell);
-            // Round-trip should snap to the cluster start
-            prop_assert!(
-                back <= byte_off,
-                "Round-trip byte {} -> cell {} -> byte {}: back should be <= original",
-                byte_off, cell, back
-            );
+            if cell < total {
+                // Round-trip at an in-bounds visual column snaps to the first
+                // cluster owning that column (<= original byte offset).
+                prop_assert!(
+                    back <= byte_off,
+                    "Round-trip byte {} -> cell {} -> byte {}: back should be <= original",
+                    byte_off, cell, back
+                );
+            } else {
+                // Trailing/all-zero-width cluster at visual EOF maps to total_bytes.
+                prop_assert_eq!(
+                    back, text.len(),
+                    "Visual EOF cell {} should map to total_bytes {}",
+                    cell, text.len()
+                );
+            }
             // And the back value must be a valid char boundary
             prop_assert!(
                 text.is_char_boundary(back),

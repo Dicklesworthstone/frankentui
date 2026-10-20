@@ -694,6 +694,7 @@ impl TextInput {
             Event::Focus(_) => "focus",
             Event::Mouse(_) => "mouse",
             Event::Clipboard(_) => "clipboard",
+            Event::TerminalResponse(_) => "terminal_response",
             Event::Tick => "tick",
         }
     }

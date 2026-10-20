@@ -731,3 +731,346 @@ fn pane_cross_host_parity_is_deterministic() {
         assert_eq!(a.web, b.web, "[{}] web not deterministic", a.scenario);
     }
 }
+
+/// Cross-host parity when both `PaneTerminalAdapter` and
+/// `PanePointerCaptureAdapter` execute through `PaneExecutionEngine` across
+/// strategy switches (`Persistent <-> Checkpointed <-> Conservative <-> Adaptive`),
+/// mid-history undo/redo, branch replacement after undo, equal-budget retention
+/// pruning (`bounded(0, 2)`), and measured latency-violation fallback.
+#[test]
+fn pane_cross_host_execution_engine_strategy_migration_undo_redo_and_fallback_parity() {
+    use ftui_layout::{
+        PaneExecutionEngine, PaneExecutionPolicy, PaneExecutionSample, PaneMemoryStrategy,
+        PaneRetentionPolicy,
+    };
+
+    let split = pane_id(1);
+    let target = resize_target(split, SplitAxis::Horizontal);
+    let viewport = Rect::new(0, 0, VIEW_W, VIEW_H);
+
+    let mut term_tree = root_split_tree(SplitAxis::Horizontal);
+    let mut term_engine = PaneExecutionEngine::new(&term_tree);
+    let mut term_adapter = PaneTerminalAdapter::new(PaneTerminalAdapterConfig {
+        drag_update_coalesce_distance: 1,
+        ..PaneTerminalAdapterConfig::default()
+    })
+    .expect("valid terminal adapter");
+
+    let mut web_tree = root_split_tree(SplitAxis::Horizontal);
+    let mut web_engine = PaneExecutionEngine::new(&web_tree);
+    let mut web_adapter = PanePointerCaptureAdapter::new(PanePointerCaptureConfig::default())
+        .expect("valid web adapter");
+
+    let mut term_seed = 1u64;
+    let mut web_seed = 1u64;
+
+    let assert_host_engine_parity =
+        |step: &str,
+         term_tree: &PaneTree,
+         term_engine: &PaneExecutionEngine,
+         web_tree: &PaneTree,
+         web_engine: &PaneExecutionEngine| {
+            assert_eq!(
+                term_tree.state_hash(),
+                web_tree.state_hash(),
+                "state_hash diverged at {step}"
+            );
+            assert_eq!(
+                first_share_bps(term_tree, split),
+                first_share_bps(web_tree, split),
+                "first_share_bps diverged at {step}"
+            );
+            assert_eq!(
+                term_engine.timeline(),
+                web_engine.timeline(),
+                "timeline diverged at {step}"
+            );
+            assert_eq!(
+                term_engine.strategy(),
+                web_engine.strategy(),
+                "active strategy diverged at {step}"
+            );
+            assert_eq!(
+                term_engine.status().applies,
+                web_engine.status().applies,
+                "applies diverged at {step}"
+            );
+            assert_eq!(
+                term_engine.status().persistent_applies,
+                web_engine.status().persistent_applies,
+                "persistent_applies diverged at {step}"
+            );
+            assert_eq!(
+                term_engine.status().checkpointed_applies,
+                web_engine.status().checkpointed_applies,
+                "checkpointed_applies diverged at {step}"
+            );
+            assert_eq!(
+                term_engine.status().conservative_applies,
+                web_engine.status().conservative_applies,
+                "conservative_applies diverged at {step}"
+            );
+            assert_eq!(
+                term_engine.status().switches,
+                web_engine.status().switches,
+                "switches diverged at {step}"
+            );
+            assert_eq!(
+                term_engine.status().fallbacks,
+                web_engine.status().fallbacks,
+                "fallbacks diverged at {step}"
+            );
+            assert_eq!(
+                term_engine.status().undos,
+                web_engine.status().undos,
+                "undos diverged at {step}"
+            );
+            assert_eq!(
+                term_engine.status().redos,
+                web_engine.status().redos,
+                "redos diverged at {step}"
+            );
+        };
+
+    let run_paired_drag = |gesture: &Gesture,
+                           term_adapter: &mut PaneTerminalAdapter,
+                           term_tree: &mut PaneTree,
+                           term_engine: &mut PaneExecutionEngine,
+                           term_seed: &mut u64,
+                           web_adapter: &mut PanePointerCaptureAdapter,
+                           web_tree: &mut PaneTree,
+                           web_engine: &mut PaneExecutionEngine,
+                           web_seed: &mut u64| {
+        let term_layout = term_tree.solve_layout(viewport).expect("term layout");
+        let web_layout = web_tree.solve_layout(viewport).expect("web layout");
+
+        let down_ev = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            gesture.down.x as u16,
+            gesture.down.y as u16,
+        ));
+        let _ = term_adapter.translate(&down_ev, Some(target));
+        let _ = web_adapter.pointer_down(
+            target,
+            1,
+            PanePointerButton::Primary,
+            gesture.down,
+            modifiers(),
+        );
+        let _ = web_adapter.capture_acquired(1);
+
+        for d in &gesture.drags {
+            let drag_ev = Event::Mouse(MouseEvent::new(
+                MouseEventKind::Drag(MouseButton::Left),
+                d.x as u16,
+                d.y as u16,
+            ));
+            let td = term_adapter.translate(&drag_ev, None);
+            if let Some(tr) = td.primary_transition.as_ref() {
+                for op in term_tree.operations_for_transition(tr, &term_layout, NEUTRAL) {
+                    term_engine
+                        .apply_and_record(term_tree, *term_seed, *term_seed, op)
+                        .expect("term apply");
+                    *term_seed += 1;
+                }
+            }
+            let wd = web_adapter.pointer_move(1, *d, modifiers());
+            if let Some(tr) = wd.transition.as_ref() {
+                for op in web_tree.operations_for_transition(tr, &web_layout, NEUTRAL) {
+                    web_engine
+                        .apply_and_record(web_tree, *web_seed, *web_seed, op)
+                        .expect("web apply");
+                    *web_seed += 1;
+                }
+            }
+        }
+
+        let up_ev = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            gesture.up.x as u16,
+            gesture.up.y as u16,
+        ));
+        let td = term_adapter.translate(&up_ev, None);
+        if let Some(tr) = td.primary_transition.as_ref() {
+            for op in term_tree.operations_for_transition(tr, &term_layout, NEUTRAL) {
+                term_engine
+                    .apply_and_record(term_tree, *term_seed, *term_seed, op)
+                    .expect("term apply up");
+                *term_seed += 1;
+            }
+        }
+        let wd = web_adapter.pointer_up(1, PanePointerButton::Primary, gesture.up, modifiers());
+        if let Some(tr) = wd.transition.as_ref() {
+            for op in web_tree.operations_for_transition(tr, &web_layout, NEUTRAL) {
+                web_engine
+                    .apply_and_record(web_tree, *web_seed, *web_seed, op)
+                    .expect("web apply up");
+                *web_seed += 1;
+            }
+        }
+    };
+
+    // 1. Switch both engines to Persistent and run a rightward drag.
+    let persistent_policy = PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(0, 64))
+        .forcing(PaneMemoryStrategy::Persistent);
+    term_engine
+        .set_policy(&term_tree, persistent_policy)
+        .expect("term persistent");
+    web_engine
+        .set_policy(&web_tree, persistent_policy)
+        .expect("web persistent");
+    assert_host_engine_parity(
+        "after-persistent-switch",
+        &term_tree,
+        &term_engine,
+        &web_tree,
+        &web_engine,
+    );
+
+    let grow = &corpus()[0];
+    run_paired_drag(
+        grow,
+        &mut term_adapter,
+        &mut term_tree,
+        &mut term_engine,
+        &mut term_seed,
+        &mut web_adapter,
+        &mut web_tree,
+        &mut web_engine,
+        &mut web_seed,
+    );
+    assert!(term_engine.status().persistent_applies >= 2);
+    assert_host_engine_parity(
+        "after-persistent-grow-drag",
+        &term_tree,
+        &term_engine,
+        &web_tree,
+        &web_engine,
+    );
+
+    // 2. Undo one step on Persistent, then migrate mid-history to Checkpointed,
+    // Conservative, and Adaptive while preserving the redo branch.
+    assert!(term_engine.undo(&mut term_tree).expect("term undo"));
+    assert!(web_engine.undo(&mut web_tree).expect("web undo"));
+    for policy in [
+        PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(0, 64))
+            .forcing(PaneMemoryStrategy::Checkpointed),
+        PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(0, 64)).conservative(),
+        PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(0, 64)),
+    ] {
+        term_engine
+            .set_policy(&term_tree, policy)
+            .expect("term policy switch");
+        web_engine
+            .set_policy(&web_tree, policy)
+            .expect("web policy switch");
+        assert_host_engine_parity(
+            "mid-history-policy-switch",
+            &term_tree,
+            &term_engine,
+            &web_tree,
+            &web_engine,
+        );
+    }
+
+    // 3. Redo the preserved branch, then undo again and replace the branch with a
+    // leftward drag under Adaptive mode.
+    assert!(term_engine.redo(&mut term_tree).expect("term redo"));
+    assert!(web_engine.redo(&mut web_tree).expect("web redo"));
+    assert_host_engine_parity(
+        "after-mid-history-redo",
+        &term_tree,
+        &term_engine,
+        &web_tree,
+        &web_engine,
+    );
+    while term_engine
+        .undo(&mut term_tree)
+        .expect("term undo to baseline")
+    {
+        assert!(
+            web_engine
+                .undo(&mut web_tree)
+                .expect("web undo to baseline")
+        );
+    }
+    assert_host_engine_parity(
+        "after-undo-to-baseline",
+        &term_tree,
+        &term_engine,
+        &web_tree,
+        &web_engine,
+    );
+
+    let shrink = &corpus()[1];
+    run_paired_drag(
+        shrink,
+        &mut term_adapter,
+        &mut term_tree,
+        &mut term_engine,
+        &mut term_seed,
+        &mut web_adapter,
+        &mut web_tree,
+        &mut web_engine,
+        &mut web_seed,
+    );
+    assert_host_engine_parity(
+        "after-branch-replacement-drag",
+        &term_tree,
+        &term_engine,
+        &web_tree,
+        &web_engine,
+    );
+
+    // 4. Prune history to a 1-entry budget and trigger a latency-envelope fallback.
+    let tight_persistent = PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(0, 1))
+        .forcing(PaneMemoryStrategy::Persistent);
+    term_engine
+        .set_policy(&term_tree, tight_persistent)
+        .expect("term tight persistent");
+    web_engine
+        .set_policy(&web_tree, tight_persistent)
+        .expect("web tight persistent");
+    assert_eq!(term_engine.timeline().entries.len(), 1);
+    assert_host_engine_parity(
+        "after-equal-budget-pruning",
+        &term_tree,
+        &term_engine,
+        &web_tree,
+        &web_engine,
+    );
+
+    let fallbacks_before = term_engine.status().fallbacks;
+    term_engine.set_latency_envelope_ns(1);
+    web_engine.set_latency_envelope_ns(1);
+    term_engine
+        .observe(
+            &term_tree,
+            PaneExecutionSample {
+                timestamp_ns: 1_000,
+                elapsed_ns: 10_000,
+                local: true,
+            },
+        )
+        .expect("term observe violation");
+    web_engine
+        .observe(
+            &web_tree,
+            PaneExecutionSample {
+                timestamp_ns: 1_000,
+                elapsed_ns: 10_000,
+                local: true,
+            },
+        )
+        .expect("web observe violation");
+    assert_eq!(term_engine.strategy(), PaneMemoryStrategy::Checkpointed);
+    assert!(term_engine.status().conservative);
+    assert_eq!(term_engine.status().fallbacks, fallbacks_before + 1);
+    assert_host_engine_parity(
+        "after-latency-fallback",
+        &term_tree,
+        &term_engine,
+        &web_tree,
+        &web_engine,
+    );
+}

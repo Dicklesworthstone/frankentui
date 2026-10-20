@@ -69,6 +69,9 @@ pub const TARGET_WIDTH_CACHE: &str = "ftui.text.width_cache";
 /// Runtime locale and text direction changes.
 pub const TARGET_LOCALE: &str = "ftui.runtime.locale";
 
+/// Input parser protocol events (DCS, APC, XTWINOPS, SGR-Pixels).
+pub const TARGET_INPUT_PARSER: &str = "ftui.input.parser";
+
 // ============================================================================
 // Span names
 // ============================================================================
@@ -208,6 +211,8 @@ pub mod evidence {
     pub const INLINE_STRATEGY_FALLBACK: &str = "inline_strategy_fallback";
     /// Regime transition in coalescer.
     pub const REGIME_TRANSITION: &str = "regime_transition";
+    /// Shadow-run per-frame checksum evidence.
+    pub const SHADOW_FRAME: &str = "shadow_frame";
     /// Session lifecycle summary.
     pub const SUMMARY: &str = "summary";
     /// Task executor backend configuration.
@@ -222,11 +227,16 @@ pub mod evidence {
     pub const VOI_DECISION: &str = "voi_decision";
     /// Value of information observation.
     pub const VOI_OBSERVE: &str = "voi_observe";
+    /// Value of information sample event (inline_auto or virtualized_list).
+    pub const VOI_SAMPLE: &str = "voi_sample";
     /// Widget tree refresh notification.
     pub const WIDGET_REFRESH: &str = "widget_refresh";
     /// Grapheme width cache statistics.
     pub const WIDTH_CACHE_STATS: &str = "width_cache_stats";
 }
+
+/// Canonical evidence event name for shadow-run frame records (`RolloutPolicy::Shadow`).
+pub const EVENT_SHADOW_FRAME: &str = evidence::SHADOW_FRAME;
 
 // ============================================================================
 // Metric names
@@ -322,6 +332,7 @@ pub const ALL_TARGETS: &[&str] = &[
     TARGET_A11Y,
     TARGET_WIDTH_CACHE,
     TARGET_LOCALE,
+    TARGET_INPUT_PARSER,
 ];
 
 /// Complete list of registered span names.
@@ -398,6 +409,7 @@ pub const ALL_EVIDENCE_EVENTS: &[&str] = &[
     evidence::INLINE_STRATEGY,
     evidence::INLINE_STRATEGY_FALLBACK,
     evidence::REGIME_TRANSITION,
+    evidence::SHADOW_FRAME,
     evidence::SUMMARY,
     evidence::TASK_EXECUTOR_BACKEND,
     evidence::TASK_EXECUTOR_BACKPRESSURE,
@@ -405,6 +417,7 @@ pub const ALL_EVIDENCE_EVENTS: &[&str] = &[
     evidence::TASK_EXECUTOR_PANIC,
     evidence::VOI_DECISION,
     evidence::VOI_OBSERVE,
+    evidence::VOI_SAMPLE,
     evidence::WIDGET_REFRESH,
     evidence::WIDTH_CACHE_STATS,
 ];
@@ -693,6 +706,115 @@ mod tests {
         assert_eq!(
             schema_keys, const_keys,
             "evidence schema events must match ALL_EVIDENCE_EVENTS"
+        );
+    }
+
+    #[test]
+    fn spec_lists_every_evidence_event() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root");
+        let spec_path = root.join("docs/spec/telemetry-events.md");
+        let spec = std::fs::read_to_string(&spec_path).expect("docs/spec/telemetry-events.md");
+        for event in ALL_EVIDENCE_EVENTS {
+            let heading = format!("#### Event: `{event}`");
+            assert!(
+                spec.contains(&heading),
+                "docs/spec/telemetry-events.md is missing heading `{heading}`"
+            );
+        }
+    }
+
+    #[test]
+    fn no_untargeted_tracing_macros_in_runtime() {
+        use std::path::{Path, PathBuf};
+
+        let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        collect(&src_dir, &mut files);
+        files.sort();
+
+        let mut offenders = Vec::new();
+        for file in files {
+            if file.file_name().is_some_and(|n| n == "debug_trace.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).expect("read source");
+            let prod = match text.find("#[cfg(test)]") {
+                Some(idx) => &text[..idx],
+                None => &text[..],
+            };
+            let bytes = prod.as_bytes();
+            let mut idx = 0;
+            while idx < bytes.len() {
+                // Skip line and block comments so doc examples do not trigger
+                if bytes[idx..].starts_with(b"//") {
+                    while idx < bytes.len() && bytes[idx] != b'\n' {
+                        idx += 1;
+                    }
+                    continue;
+                }
+                if bytes[idx..].starts_with(b"/*") {
+                    idx += 2;
+                    while idx + 1 < bytes.len() && !bytes[idx..].starts_with(b"*/") {
+                        idx += 1;
+                    }
+                    idx += 2;
+                    continue;
+                }
+                for macro_name in ["trace!", "debug!", "info!", "warn!", "error!"] {
+                    if bytes[idx..].starts_with(macro_name.as_bytes()) {
+                        let prev = if idx > 0 { bytes[idx - 1] } else { b' ' };
+                        if prev.is_ascii_alphanumeric() || prev == b'_' {
+                            continue;
+                        }
+                        let after = &prod[idx + macro_name.len()..];
+                        let trimmed = after.trim_start();
+                        if trimmed.starts_with('(') {
+                            let end = trimmed.find(");").unwrap_or_else(|| {
+                                let mut e = trimmed.len().min(300);
+                                while !trimmed.is_char_boundary(e) {
+                                    e -= 1;
+                                }
+                                e
+                            });
+                            let body = &trimmed[..end];
+                            if !body.contains("target:") {
+                                let line_no =
+                                    bytes[..idx].iter().filter(|&&b| b == b'\n').count() + 1;
+                                offenders.push(format!(
+                                    "{}:{}: untargeted {}",
+                                    file.strip_prefix(&src_dir).unwrap_or(&file).display(),
+                                    line_no,
+                                    macro_name
+                                ));
+                            }
+                        }
+                    }
+                }
+                idx += 1;
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "all production tracing macros in ftui-runtime must specify `target:`:\n{}",
+            offenders.join("\n")
         );
     }
 }

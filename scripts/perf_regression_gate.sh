@@ -26,7 +26,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 # pass/fail/incomplete logic — the thing standing between a regression and a
 # green run — impossible to check without editing production data. Defaults are
 # unchanged, so an ordinary invocation behaves exactly as before.
-BASELINE_FILE="${PERF_GATE_BASELINE_FILE:-${PROJECT_ROOT}/tests/baseline.json}"
+BASELINE_FILE="${PERF_GATE_BASELINE_FILE:-${FTUI_PERF_BASELINE:-${PROJECT_ROOT}/tests/baseline.json}}"
 SLO_FILE="${PERF_GATE_SLO_FILE:-${PROJECT_ROOT}/slo.yaml}"
 RESULTS_DIR="${PERF_GATE_RESULTS_DIR:-${PROJECT_ROOT}/target/regression-gate}"
 REPORT_FILE="${RESULTS_DIR}/regression_report.jsonl"
@@ -201,15 +201,16 @@ PY
 # Benchmark Execution
 # =============================================================================
 
-# Collect unique crate:bench pairs from baseline.json.
+# Collect unique crate:bench:features triples from baseline.json.
 collect_bench_targets() {
     jq -r '
         to_entries[]
         | select(.key | startswith("_") | not)
+        | select((.value._pending // "") == "")
         | select((.value.crate // "") != "")
         | select((.value.bench_file // "") != "")
-        | select((.value.criterion_name // "") != "")
-        | "\(.value.crate):\(.value.bench_file)"
+        | select(((.value.criterion_name // "") != "") or ((.value.kind // "criterion") != "criterion"))
+        | "\(.value.crate):\(.value.bench_file):\(.value.features // "")"
     ' "$BASELINE_FILE" | sort -u
 }
 
@@ -225,13 +226,45 @@ run_benchmarks() {
         criterion_args=(-- --noplot --warm-up-time 0.5 --measurement-time 1 --sample-size 20)
     fi
 
-    while IFS=: read -r pkg bench; do
-        log "  ${BOLD}${pkg}/${bench}${NC} ..."
+    while IFS=: read -r pkg bench features; do
+        [[ -n "$pkg" && -n "$bench" ]] || continue
+        log "  ${BOLD}${pkg}/${bench}${features:+ (features: ${features})}${NC} ..."
 
         local output_file="${RESULTS_DIR}/${bench}.txt"
         local stderr_file="${RESULTS_DIR}/${bench}.stderr.txt"
+        local feature_args=()
+        if [[ -n "$features" ]]; then
+            feature_args=(--features "$features")
+        fi
 
-        if ! "${CARGO[@]}" bench -p "$pkg" --bench "$bench" "${criterion_args[@]}" \
+        local filter_regex
+        filter_regex=$(python3 - "$BASELINE_FILE" "$bench" <<'PY'
+import json
+import re
+import sys
+
+baseline_path, bench_file = sys.argv[1], sys.argv[2]
+with open(baseline_path, encoding="utf-8") as f:
+    data = json.load(f)
+names = sorted({
+    v["criterion_name"]
+    for k, v in data.items()
+    if not k.startswith("_")
+    and isinstance(v, dict)
+    and v.get("bench_file") == bench_file
+    and v.get("criterion_name")
+})
+if names:
+    print("^(" + "|".join(re.escape(n) for n in names) + ")$")
+PY
+        )
+
+        local bench_criterion_args=("${criterion_args[@]}")
+        if [[ -n "$filter_regex" ]]; then
+            bench_criterion_args+=("$filter_regex")
+        fi
+
+        if ! FTUI_PERF_REPORT_DIR="$RESULTS_DIR" "${CARGO[@]}" bench -p "$pkg" --bench "$bench" "${feature_args[@]}" "${bench_criterion_args[@]}" \
                 2>"$stderr_file" | tee "$output_file"; then
             log "${RED}  FAILED:${NC} ${pkg}/${bench}"
             log "  See: ${stderr_file}"
@@ -242,7 +275,7 @@ run_benchmarks() {
         # Optional flamegraph generation.
         if [[ "$FLAMEGRAPH" == "true" ]] && command -v cargo-flamegraph >/dev/null 2>&1; then
             log "  Generating flamegraph for ${bench}..."
-            if ! "${CARGO[@]}" flamegraph --bench "$bench" -p "$pkg" \
+            if ! "${CARGO[@]}" flamegraph --bench "$bench" -p "$pkg" "${feature_args[@]}" \
                 -o "${RESULTS_DIR}/${bench}.svg" -- --bench \
                 2>"${RESULTS_DIR}/${bench}.flamegraph.stderr.txt"; then
                 echo "ERROR: flamegraph failed; stderr retained at ${RESULTS_DIR}/${bench}.flamegraph.stderr.txt" >&2
@@ -301,12 +334,29 @@ PY
         ([to_entries[] | select(.key | startswith("_") | not)] | length > 0) and
         all(to_entries[] | select(.key | startswith("_") | not);
             (.value | type == "object") and
-            (.value.p99_ns | type == "number") and
-            .value.p99_ns > 0 and .value.p99_ns <= 9007199254740991 and
-            (.value.threshold_pct == null or (.value.threshold_pct | type == "number")) and
-            (.value.threshold_pct // 0) >= 0 and (.value.threshold_pct // 0) <= 100)
+            (
+                ((.value._pending // "") != "") or
+                (
+                    (.value.kind // "criterion") == "criterion" and
+                    (.value.p99_ns | type == "number") and
+                    .value.p99_ns > 0 and .value.p99_ns <= 9007199254740991 and
+                    (.value.threshold_pct == null or (.value.threshold_pct | type == "number")) and
+                    (.value.threshold_pct // 0) >= 0 and (.value.threshold_pct // 0) <= 100
+                ) or
+                (
+                    .value.kind == "bytes" and
+                    (.value.scene | type == "string") and
+                    (.value.budget_expr | type == "string")
+                ) or
+                (
+                    .value.kind == "allocs" and
+                    (.value.scene | type == "string") and
+                    (.value.budget | type == "number") and
+                    .value.budget >= 0
+                )
+            ))
     ' "$BASELINE_FILE" >/dev/null; then
-        echo "ERROR: baseline must contain thresholds with positive finite ns ceilings and valid tolerances" >&2
+        echo "ERROR: baseline must contain thresholds with positive finite ns ceilings (or valid bytes/allocs budgets) and valid tolerances" >&2
         return 3
     fi
 
@@ -352,13 +402,134 @@ PY
     while IFS= read -r key; do
         ((total++))
 
-        local criterion_name bench_file p99_ns threshold_pct description slo_metric
+        local kind pending_bead criterion_name bench_file p99_ns threshold_pct description slo_metric
+        kind=$(jq -r --arg key "$key" '.[$key].kind // "criterion"' "$BASELINE_FILE")
+        pending_bead=$(jq -r --arg key "$key" '.[$key]._pending // ""' "$BASELINE_FILE")
         criterion_name=$(jq -r --arg key "$key" '.[$key].criterion_name // ""' "$BASELINE_FILE")
         bench_file=$(jq -r --arg key "$key" '.[$key].bench_file // ""' "$BASELINE_FILE")
         p99_ns=$(jq -r --arg key "$key" '.[$key].p99_ns // 0' "$BASELINE_FILE")
         threshold_pct=$(jq -r --arg key "$key" '.[$key].threshold_pct // 0' "$BASELINE_FILE")
         description=$(jq -r --arg key "$key" '.[$key].description // ""' "$BASELINE_FILE")
         slo_metric=$(jq -r --arg key "$key" '.[$key].slo_metric // ""' "$BASELINE_FILE")
+
+        if [[ -n "$pending_bead" ]]; then
+            printf "%-25s %-40s %12s %12s %8s %8s ${YELLOW}%10s${NC}\n" \
+                "$key" "${criterion_name:-$pending_bead}" "N/A" "pending" "-" "-" "SKIP"
+            ((skipped+=1))
+            if [[ "$JSON_OUTPUT" == "true" ]]; then
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"$(json_escape "$criterion_name")\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"skip\",\"reason\":\"pending_bead\",\"pending_bead\":\"$(json_escape "$pending_bead")\"}" >> "$REPORT_FILE"
+            fi
+            continue
+        fi
+
+        if [[ -z "$slo_metric" ]]; then
+            printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                "$key" "${criterion_name:-$kind}" "N/A" "-" "-" "${threshold_pct}%" "SLO_CFG"
+            ((failed++))
+            if [[ "$JSON_OUTPUT" == "true" ]]; then
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"status\":\"fail\",\"reason\":\"missing_slo_metric\"}" >> "$REPORT_FILE"
+            fi
+            continue
+        fi
+
+        if ! slo_metric_declared "$slo_metric"; then
+            printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                "$key" "${criterion_name:-$kind}" "N/A" "-" "-" "${threshold_pct}%" "SLO_CFG"
+            ((failed++))
+            if [[ "$JSON_OUTPUT" == "true" ]]; then
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"fail\",\"reason\":\"slo_metric_not_found\"}" >> "$REPORT_FILE"
+            fi
+            continue
+        fi
+
+        if [[ "$kind" == "bytes" ]]; then
+            local scene bytes_file
+            scene=$(jq -r --arg key "$key" '.[$key].scene // ""' "$BASELINE_FILE")
+            bytes_file="${RESULTS_DIR}/bytes_report.json"
+            if [[ ! -f "$bytes_file" ]] || [[ ! -s "$bytes_file" ]]; then
+                printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                    "$key" "bytes:${scene}" "N/A" "8*cells+64" "-" "-" "INCOMPLETE"
+                ((incomplete+=1))
+                if [[ "$JSON_OUTPUT" == "true" ]]; then
+                    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"bytes:${scene}\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"no_bytes_report\"}" >> "$REPORT_FILE"
+                fi
+                continue
+            fi
+            local bytes_info obs_bytes budget_bytes within_budget
+            if ! bytes_info=$(jq -r --arg scene "$scene" '
+                (if type == "array" then (.[] | select(.scene == $scene)) else . end)
+                | "\(.bytes) \(.budget) \(.within_budget)"
+            ' "$bytes_file" 2>/dev/null) || [[ -z "$bytes_info" ]]; then
+                printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                    "$key" "bytes:${scene}" "N/A" "8*cells+64" "-" "-" "INCOMPLETE"
+                ((incomplete+=1))
+                if [[ "$JSON_OUTPUT" == "true" ]]; then
+                    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"bytes:${scene}\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"scene_not_found\"}" >> "$REPORT_FILE"
+                fi
+                continue
+            fi
+            read -r obs_bytes budget_bytes within_budget <<< "$bytes_info"
+            if [[ "$within_budget" == "true" ]] && [[ "$obs_bytes" -le "$budget_bytes" ]]; then
+                ((passed++))
+                printf "%-25s %-40s %12s %12s %8s %8s ${GREEN}%10s${NC}\n" \
+                    "$key" "bytes:${scene}" "${obs_bytes}B" "${budget_bytes}B" "-" "0%" "PASS"
+                if [[ "$JSON_OUTPUT" == "true" ]]; then
+                    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"bytes:${scene}\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"pass\",\"bytes\":$obs_bytes,\"budget\":$budget_bytes,\"threshold_pct\":0,\"description\":\"$(json_escape "$description")\"}" >> "$REPORT_FILE"
+                fi
+            else
+                ((failed++))
+                printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                    "$key" "bytes:${scene}" "${obs_bytes}B" "${budget_bytes}B" "-" "0%" "REGRESS"
+                if [[ "$JSON_OUTPUT" == "true" ]]; then
+                    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"bytes:${scene}\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"fail\",\"reason\":\"bytes_exceeded\",\"bytes\":$obs_bytes,\"budget\":$budget_bytes,\"threshold_pct\":0,\"description\":\"$(json_escape "$description")\"}" >> "$REPORT_FILE"
+                fi
+            fi
+            continue
+        fi
+
+        if [[ "$kind" == "allocs" ]]; then
+            local scene budget_allocs alloc_file
+            scene=$(jq -r --arg key "$key" '.[$key].scene // ""' "$BASELINE_FILE")
+            budget_allocs=$(jq -r --arg key "$key" '.[$key].budget // 0' "$BASELINE_FILE")
+            alloc_file="${RESULTS_DIR}/alloc_report.json"
+            if [[ ! -f "$alloc_file" ]] || [[ ! -s "$alloc_file" ]]; then
+                printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                    "$key" "allocs:${scene}" "N/A" "${budget_allocs}" "-" "-" "INCOMPLETE"
+                ((incomplete+=1))
+                if [[ "$JSON_OUTPUT" == "true" ]]; then
+                    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"allocs:${scene}\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"no_alloc_report\"}" >> "$REPORT_FILE"
+                fi
+                continue
+            fi
+            local obs_allocs
+            if ! obs_allocs=$(jq -r --arg scene "$scene" '
+                .[] | select(.scene == $scene and .arena == true) | .allocs_per_frame
+            ' "$alloc_file" 2>/dev/null) || [[ -z "$obs_allocs" ]]; then
+                printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                    "$key" "allocs:${scene}" "N/A" "${budget_allocs}" "-" "-" "INCOMPLETE"
+                ((incomplete+=1))
+                if [[ "$JSON_OUTPUT" == "true" ]]; then
+                    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"allocs:${scene}\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"scene_not_found\"}" >> "$REPORT_FILE"
+                fi
+                continue
+            fi
+            if [[ "$obs_allocs" -le "$budget_allocs" ]]; then
+                ((passed++))
+                printf "%-25s %-40s %12s %12s %8s %8s ${GREEN}%10s${NC}\n" \
+                    "$key" "allocs:${scene}" "${obs_allocs}" "${budget_allocs}" "-" "0%" "PASS"
+                if [[ "$JSON_OUTPUT" == "true" ]]; then
+                    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"allocs:${scene}\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"pass\",\"allocs\":$obs_allocs,\"budget\":$budget_allocs,\"threshold_pct\":0,\"description\":\"$(json_escape "$description")\"}" >> "$REPORT_FILE"
+                fi
+            else
+                ((failed++))
+                printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                    "$key" "allocs:${scene}" "${obs_allocs}" "${budget_allocs}" "-" "0%" "REGRESS"
+                if [[ "$JSON_OUTPUT" == "true" ]]; then
+                    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"allocs:${scene}\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"fail\",\"reason\":\"allocs_exceeded\",\"allocs\":$obs_allocs,\"budget\":$budget_allocs,\"threshold_pct\":0,\"description\":\"$(json_escape "$description")\"}" >> "$REPORT_FILE"
+                fi
+            fi
+            continue
+        fi
 
         if [[ -z "$criterion_name" || -z "$bench_file" ]]; then
             local category
@@ -367,27 +538,7 @@ PY
                 "$key" "$category" "N/A" "$(format_ns "$p99_ns")" "-" "-" "INCOMPLETE"
             ((incomplete+=1))
             if [[ "$JSON_OUTPUT" == "true" ]]; then
-                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":null,\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"unbound_required_threshold\"}" >> "$REPORT_FILE"
-            fi
-            continue
-        fi
-
-        if [[ -z "$slo_metric" ]]; then
-            printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
-                "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${threshold_pct}%" "SLO_CFG"
-            ((failed++))
-            if [[ "$JSON_OUTPUT" == "true" ]]; then
-                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"status\":\"fail\",\"reason\":\"missing_slo_metric\"}" >> "$REPORT_FILE"
-            fi
-            continue
-        fi
-
-        if ! slo_metric_declared "$slo_metric"; then
-            printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
-                "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${threshold_pct}%" "SLO_CFG"
-            ((failed++))
-            if [[ "$JSON_OUTPUT" == "true" ]]; then
-                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"fail\",\"reason\":\"slo_metric_not_found\"}" >> "$REPORT_FILE"
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":null,\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"unbound_required_threshold\"}" >> "$REPORT_FILE"
             fi
             continue
         fi
@@ -412,7 +563,7 @@ PY
                 "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${effective_threshold_pct}%" "INCOMPLETE"
             ((incomplete+=1))
             if [[ "$JSON_OUTPUT" == "true" ]]; then
-                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"no_results\",\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"no_results\",\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
             fi
             continue
         fi
@@ -424,7 +575,7 @@ PY
                 "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${effective_threshold_pct}%" "INCOMPLETE"
             ((incomplete+=1))
             if [[ "$JSON_OUTPUT" == "true" ]]; then
-                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"parse_failed\",\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"parse_failed\",\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
             fi
             continue
         fi
@@ -466,7 +617,15 @@ PY
             "${delta_pct}%" "${effective_threshold_pct}%" "$status"
 
         if [[ "$JSON_OUTPUT" == "true" ]]; then
-            echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"$(echo "$status" | tr '[:upper:]' '[:lower:]')\",\"observed_ns\":$mean_ns,\"ci_low_ns\":$ci_low_ns,\"ci_high_ns\":$ci_high_ns,\"p99_baseline_ns\":$p99_ns,\"max_allowed_ns\":$max_allowed_ns,\"delta_pct\":$delta_pct,\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json,\"description\":\"$(json_escape "$description")\"}" >> "$REPORT_FILE"
+            local json_status="pass"
+            local json_reason_field=""
+            if [[ "$status" == "REGRESS" ]]; then
+                json_status="fail"
+                json_reason_field=",\"reason\":\"exceeded_threshold\""
+            elif [[ "$status" == "WARN" ]]; then
+                json_status="warn"
+            fi
+            echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"row\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"$json_status\"$json_reason_field,\"observed_ns\":$mean_ns,\"observed_mean_ns\":$mean_ns,\"ci_low_ns\":$ci_low_ns,\"ci_high_ns\":$ci_high_ns,\"p99_baseline_ns\":$p99_ns,\"baseline_p99_ns\":$p99_ns,\"max_allowed_ns\":$max_allowed_ns,\"delta_pct\":$delta_pct,\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json,\"description\":\"$(json_escape "$description")\"}" >> "$REPORT_FILE"
         fi
 
         # Log WARN for regression (per bead spec).
@@ -484,6 +643,7 @@ PY
     log "  Warned:     $warned"
     log "  Skipped:    $skipped"
     log "  Incomplete: $incomplete"
+    echo "SUMMARY total=${total} passed=${passed} failed=${failed} skipped=${skipped} incomplete=${incomplete}"
 
     if [[ "$JSON_OUTPUT" == "true" ]]; then
         echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"summary\",\"total\":$total,\"passed\":$passed,\"failed\":$failed,\"warned\":$warned,\"skipped\":$skipped,\"incomplete\":$incomplete,\"slo_file\":\"$(json_escape "$SLO_FILE")\",\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
@@ -491,7 +651,7 @@ PY
         log "Report: $REPORT_FILE"
     fi
 
-    if [[ "$total" -eq 0 || "$incomplete" -gt 0 || $((passed + failed)) -ne "$total" ]]; then
+    if [[ "$total" -eq 0 || "$incomplete" -gt 0 || $((passed + failed + skipped)) -ne "$total" ]]; then
         log "${RED}INCOMPLETE: every configured threshold requires bound, valid evidence.${NC}"
         return 3
     elif [[ "$failed" -gt 0 ]]; then

@@ -173,6 +173,102 @@ def _skip_to_item_end(text: str, start: int) -> int:
     return n
 
 
+def strip_comments_and_strings(text: str, strip_strings: bool = True) -> str:
+    """Replace comments (and optionally string/char literals) with spaces, preserving newlines.
+
+    Prevents string literals like `"cache::redis"` or doc comments mentioning
+    another crate's module from counting as code references, while keeping line
+    numbers identical to the file on disk.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "/" and i + 1 < n:
+            if text[i + 1] == "/":
+                end = text.find("\n", i + 2)
+                if end == -1:
+                    out.append(" " * (n - i))
+                    break
+                out.append(" " * (end - i))
+                i = end
+                continue
+            if text[i + 1] == "*":
+                depth = 1
+                j = i + 2
+                while j < n and depth > 0:
+                    if text[j : j + 2] == "/*":
+                        depth += 1
+                        j += 2
+                    elif text[j : j + 2] == "*/":
+                        depth -= 1
+                        j += 2
+                    else:
+                        j += 1
+                span = text[i:j]
+                out.append("".join("\n" if c == "\n" else " " for c in span))
+                i = j
+                continue
+        if ch == '"':
+            raw_hashes = 0
+            k = i - 1
+            while k >= 0 and text[k] == "#":
+                raw_hashes += 1
+                k -= 1
+            is_raw = False
+            if k >= 0 and text[k] == "r":
+                if k == 0 or not (text[k - 1].isalnum() or text[k - 1] == "_"):
+                    is_raw = True
+                elif k >= 1 and text[k - 1] in ("b", "c") and (
+                    k == 1 or not (text[k - 2].isalnum() or text[k - 2] == "_")
+                ):
+                    is_raw = True
+            if is_raw:
+                closing = '"' + "#" * raw_hashes
+                end = text.find(closing, i + 1)
+                j = n if end == -1 else end + len(closing)
+                span = text[i:j]
+                if strip_strings:
+                    out.append("".join("\n" if c == "\n" else " " for c in span))
+                else:
+                    out.append(span)
+                i = j
+                continue
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            span = text[i:j]
+            if strip_strings:
+                out.append("".join("\n" if c == "\n" else " " for c in span))
+            else:
+                out.append(span)
+            i = j
+            continue
+        if ch == "'":
+            if i + 2 < n and text[i + 1] == "\\":
+                end = text.find("'", i + 2)
+                if end != -1 and end - i <= 12:
+                    out.append(
+                        " " * (end + 1 - i) if strip_strings else text[i : end + 1]
+                    )
+                    i = end + 1
+                    continue
+            elif i + 2 < n and text[i + 2] == "'" and text[i + 1] != "\n":
+                out.append("   " if strip_strings else text[i : i + 3])
+                i += 3
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def strip_test_regions(text: str) -> str:
     """Blank out every `#[cfg(test)]` item, leaving the rest intact.
 
@@ -196,6 +292,44 @@ def strip_test_regions(text: str) -> str:
         search_from = marker + removed.count("\n")
 
 
+CFG_ATTR_RE = re.compile(r"#\[\s*cfg\s*\(([^]]*)\)\s*\]")
+
+
+def strip_disabled_cfg_regions(
+    text: str, crate_enabled: set[str] | None
+) -> str:
+    """Blank out `#[cfg(feature = ...)]` items whose feature is not enabled."""
+    out = text
+    search_from = 0
+    while True:
+        match = CFG_ATTR_RE.search(out, search_from)
+        if not match:
+            return out
+        body = match.group(1)
+        if "not(" in body:
+            search_from = match.end()
+            continue
+        fnames = [m.group(1) for m in FEATURE_NAME_RE.finditer(body)]
+        if not fnames:
+            search_from = match.end()
+            continue
+        disabled = "experimental" in fnames or (
+            crate_enabled is not None and not any(f in crate_enabled for f in fnames)
+        )
+        if not disabled:
+            search_from = match.end()
+            continue
+        marker = match.start()
+        end = _skip_to_item_end(out, match.end())
+        removed = out[marker:end]
+        out = out[:marker] + "\n" * removed.count("\n") + out[end:]
+        search_from = marker + removed.count("\n")
+
+
+ATTR_STRIP_RE = re.compile(r"#\[[^\]]*\]")
+NESTED_MOD_OPEN_RE = re.compile(r"\bpub\s+mod\s+[a-z0-9_]+\s*\{")
+
+
 def is_reexport_only(body: str) -> bool:
     """Whether an inline module's body is nothing but re-exports.
 
@@ -211,23 +345,139 @@ def is_reexport_only(body: str) -> bool:
     of false positive that teaches people to ignore the gate, so they are
     exempt. A module with any real item in it is not covered by this.
     """
-    meaningful = [
-        line.strip()
-        for line in body.splitlines()
-        if line.strip() and not line.strip().startswith("//")
-    ]
-    if not meaningful:
+    cleaned = strip_comments_and_strings(body)
+    cleaned = ATTR_STRIP_RE.sub(" ", cleaned)
+    cleaned = NESTED_MOD_OPEN_RE.sub(" ", cleaned)
+    cleaned = cleaned.replace("{", " ").replace("}", " ")
+    statements = [s.strip() for s in cleaned.split(";") if s.strip()]
+    if not statements:
         return False
-    return all(
-        line.startswith("pub use ") or line in {"{", "}"} for line in meaningful
-    )
+    return all(stmt.startswith("pub use ") for stmt in statements)
 
 
-def declared_modules(crate: str, crate_dir: Path) -> list[Module]:
+FEATURE_NAME_RE = re.compile(r'feature\s*=\s*"([^"]+)"')
+
+
+def workspace_enabled_features(root: Path) -> dict[str, set[str]]:
+    """Features enabled by workspace members, the public `ftui` facade, or README."""
+    manifest_path = root / "Cargo.toml"
+    if not manifest_path.is_file():
+        return {}
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    members = manifest.get("workspace", {}).get("members", [])
+
+    crate_features: dict[str, dict[str, list[str]]] = {}
+    direct_enabled: set[tuple[str, str]] = set()
+    ws_deps: dict[str, tuple[bool, list[str]]] = {}
+
+    for dep, spec in manifest.get("workspace", {}).get("dependencies", {}).items():
+        if isinstance(spec, dict):
+            ws_deps[dep] = (
+                spec.get("default-features", True),
+                list(spec.get("features", [])),
+            )
+        else:
+            ws_deps[dep] = (True, [])
+
+    for member in members:
+        cargo_toml = root / member / "Cargo.toml"
+        if not cargo_toml.is_file():
+            continue
+        c_toml = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
+        cname = c_toml.get("package", {}).get("name", Path(member).name)
+        feats = c_toml.get("features", {})
+        crate_features[cname] = {
+            k: list(v) for k, v in feats.items() if isinstance(v, list)
+        }
+        if "default" in feats:
+            direct_enabled.add((cname, "default"))
+        if cname == "ftui":
+            for fname in feats:
+                if fname != "experimental":
+                    direct_enabled.add((cname, fname))
+
+    readme_path = root / "README.md"
+    if readme_path.is_file():
+        in_ff = False
+        for line in readme_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("## "):
+                in_ff = line.strip() == "## Feature Flags"
+                continue
+            if in_ff and line.startswith("| `"):
+                parts = [c.strip().strip("`") for c in line.strip("|").split("|")]
+                if len(parts) >= 2:
+                    direct_enabled.add((parts[0], parts[1]))
+
+    for member in members:
+        cargo_toml = root / member / "Cargo.toml"
+        if not cargo_toml.is_file():
+            continue
+        c_toml = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
+        sections = [
+            c_toml.get(s, {})
+            for s in ("dependencies", "dev-dependencies", "build-dependencies")
+        ]
+        for tgt in c_toml.get("target", {}).values():
+            sections.extend(
+                tgt.get(s, {})
+                for s in ("dependencies", "dev-dependencies", "build-dependencies")
+            )
+        for sec in sections:
+            for dep, spec in sec.items():
+                pkg = spec.get("package", dep) if isinstance(spec, dict) else dep
+                use_ws = isinstance(spec, dict) and spec.get("workspace", False)
+                def_f = (
+                    spec.get("default-features", True)
+                    if isinstance(spec, dict)
+                    else True
+                )
+                f_list = (
+                    list(spec.get("features", [])) if isinstance(spec, dict) else []
+                )
+                if use_ws and pkg in ws_deps:
+                    ws_def, ws_flist = ws_deps[pkg]
+                    def_f = def_f and ws_def
+                    f_list = ws_flist + f_list
+                if def_f and "default" in crate_features.get(pkg, {}):
+                    direct_enabled.add((pkg, "default"))
+                for feat in f_list:
+                    direct_enabled.add((pkg, feat))
+
+    enabled = set(direct_enabled)
+    changed = True
+    while changed:
+        changed = False
+        for cname, feat in list(enabled):
+            for item in crate_features.get(cname, {}).get(feat, []):
+                if "/" in item:
+                    dep, df = item.split("/", 1)
+                    dep = dep.rstrip("?")
+                    if (dep, df) not in enabled:
+                        enabled.add((dep, df))
+                        changed = True
+                elif not item.startswith("dep:"):
+                    if (cname, item) not in enabled:
+                        enabled.add((cname, item))
+                        changed = True
+
+    by_crate: dict[str, set[str]] = {}
+    for cname, feat in enabled:
+        by_crate.setdefault(cname, set()).add(feat)
+    return by_crate
+
+
+def declared_modules(
+    crate: str,
+    crate_dir: Path,
+    enabled_features: dict[str, set[str]] | None = None,
+) -> list[Module]:
     """Parse `pub mod` declarations, carrying any `#[cfg(...)]` above them."""
     lib_rs = crate_dir / "src" / "lib.rs"
     source = lib_rs.read_text(encoding="utf-8")
     lines = source.splitlines()
+    crate_enabled = (
+        enabled_features.get(crate, set()) if enabled_features is not None else None
+    )
 
     modules: list[Module] = []
     pending_attrs: list[str] = []
@@ -245,20 +495,26 @@ def declared_modules(crate: str, crate_dir: Path) -> list[Module]:
             continue
 
         name = match.group("name")
-        experimental = any('feature = "experimental"' in a for a in pending_attrs)
-        # Any `#[cfg(feature = ...)]` module is conditionally compiled, so
-        # whether it is referenced depends on a feature set this scan does not
-        # resolve. `experimental` is the case the reality check named; the rest
-        # are exempt for the same reason rather than reported as dead.
-        gated = any("feature = " in a for a in pending_attrs)
+        feature_names = [
+            m.group(1) for a in pending_attrs for m in FEATURE_NAME_RE.finditer(a)
+        ]
+        experimental = "experimental" in feature_names
+        # A `#[cfg(feature = ...)]` module (other than `experimental`) is only
+        # treated as feature-gated when some workspace member, the `ftui`
+        # facade, or the README Feature Flags table enables that feature.
+        non_exp_features = [f for f in feature_names if f != "experimental"]
+        if non_exp_features:
+            if crate_enabled is None:
+                gated = True
+            else:
+                gated = any(f in crate_enabled for f in non_exp_features)
+        else:
+            gated = False
         inline = line.rstrip().endswith("{")
         reexport_only = False
         if inline:
             decl = source.find(line)
             if decl != -1:
-                # Scan from the opening brace, then keep only what is between
-                # the braces: the declaration line itself is not part of the
-                # body and would never look like a re-export.
                 brace = decl + len(line) - 1
                 end = _skip_to_item_end(source, brace)
                 reexport_only = is_reexport_only(source[brace + 1 : end - 1])
@@ -279,103 +535,222 @@ def declared_modules(crate: str, crate_dir: Path) -> list[Module]:
     return modules
 
 
-def production_files(root: Path, crates: list[tuple[str, Path]]) -> list[Path]:
-    """Every `.rs` file that counts as production code, across the workspace.
+MOD_DECL_WALK_RE = re.compile(
+    r"(?:^|\n)[ \t]*(?:#\[[^\]]*\]\s*)*[ \t]*(?:pub(?:\([^)]*\))?\s+)?mod\s+([a-zA-Z0-9_]+)\s*;"
+)
+PATH_ATTR_WALK_RE = re.compile(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]')
+INCLUDE_WALK_RE = re.compile(r'\binclude!\s*\(\s*"([^"]+)"\s*\)')
 
-    Includes `src/**` of every workspace member (not only the library ones, so
-    a binary crate's `main.rs` counts), plus `examples/**`, which is where the
-    harness demonstrates the types it exports.
+
+def _walk_compiled_file(
+    entry: Path,
+    seen: set[Path],
+    crate_enabled: set[str] | None,
+    is_root: bool = True,
+) -> None:
+    entry = entry.resolve()
+    if not entry.is_file() or entry in seen:
+        return
+    seen.add(entry)
+    try:
+        raw = entry.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    cleaned = strip_comments_and_strings(
+        strip_disabled_cfg_regions(strip_test_regions(raw), crate_enabled),
+        strip_strings=False,
+    )
+    base_dir = (
+        entry.parent
+        if (is_root or entry.name == "mod.rs")
+        else (entry.parent / entry.stem)
+    )
+    for match in MOD_DECL_WALK_RE.finditer(cleaned):
+        full = match.group(0)
+        fnames = [m.group(1) for m in FEATURE_NAME_RE.finditer(full)]
+        if "experimental" in fnames:
+            continue
+        if fnames and crate_enabled is not None and not any(
+            f in crate_enabled for f in fnames
+        ):
+            continue
+        name = match.group(1)
+        path_match = PATH_ATTR_WALK_RE.search(full)
+        if path_match:
+            rel = path_match.group(1)
+            cand = (base_dir / rel).resolve()
+            if not cand.is_file():
+                cand = (entry.parent / rel).resolve()
+            _walk_compiled_file(cand, seen, crate_enabled, False)
+        else:
+            for cand in (
+                base_dir / f"{name}.rs",
+                base_dir / name / "mod.rs",
+                entry.parent / f"{name}.rs",
+                entry.parent / name / "mod.rs",
+            ):
+                if cand.is_file():
+                    _walk_compiled_file(cand, seen, crate_enabled, False)
+                    break
+    for inc in INCLUDE_WALK_RE.finditer(cleaned):
+        cand = (entry.parent / inc.group(1)).resolve()
+        if cand.is_file():
+            _walk_compiled_file(cand, seen, crate_enabled, False)
+
+
+def production_files(
+    root: Path,
+    crates: list[tuple[str, Path]],
+    enabled_features: dict[str, set[str]] | None = None,
+) -> tuple[list[Path], dict[Path, str]]:
+    """Every compiled `.rs` file that counts as production code across the workspace.
+
+    Walks `mod`, `#[path]`, and `include!` declarations from crate roots
+    (`src/lib.rs`, `src/main.rs`, `src/bin/**`, `examples/**`) so uncompiled
+    orphan files under `src/` never count as production consumers.
     """
     manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
     members = manifest.get("workspace", {}).get("members", [])
 
     files: list[Path] = []
+    file_crates: dict[Path, str] = {}
     for member in members:
-        crate_dir = root / member
-        for sub in ("src", "examples"):
+        crate_dir = (root / member).resolve()
+        crate_name = crate_dir.name
+        crate_enabled = (
+            enabled_features.get(crate_name, set())
+            if enabled_features is not None
+            else None
+        )
+        seen: set[Path] = set()
+        for root_file in (crate_dir / "src" / "lib.rs", crate_dir / "src" / "main.rs"):
+            if root_file.is_file():
+                _walk_compiled_file(root_file, seen, crate_enabled, True)
+        for sub in ("src/bin", "examples"):
             base = crate_dir / sub
             if not base.is_dir():
                 continue
-            for dirpath, dirnames, filenames in os.walk(base):
-                dirnames[:] = [d for d in dirnames if d not in NON_PRODUCTION_DIRS]
-                for filename in filenames:
-                    if filename.endswith(".rs"):
-                        files.append(Path(dirpath) / filename)
-    return files
+            for entry in sorted(base.rglob("*.rs")):
+                if entry.name == "main.rs" or entry.parent == base:
+                    _walk_compiled_file(entry, seen, crate_enabled, True)
+        for path in sorted(seen):
+            files.append(path)
+            file_crates[path] = crate_name
+    return files, file_crates
 
 
-# A path segment naming a module: the `foo` of `foo::Bar` *and* of
-# `ftui_widgets::foo::Bar`. The lookbehind deliberately allows a preceding `:`,
-# since a nested segment is the common way one crate names another's module.
-PATH_SEGMENT_RE = re.compile(r"(?<![A-Za-z0-9_])([a-z_][a-z0-9_]*)::")
-# The tail of `use some::path::module;`, which has no trailing `::`.
-USE_TAIL_RE = re.compile(r"\buse [^;{]*::([a-z_][a-z0-9_]*)[ \t]*(?:as [A-Za-z_]\w*)?;")
-# Lowercase names inside `use some::path::{a, b::C, d};`.
-USE_GROUP_RE = re.compile(r"\buse [^;]*::\{([^}]*)\}")
+QUAL_SEGMENT_RE = re.compile(r"\b([a-z_][a-z0-9_]*)::([a-z_][a-z0-9_]*)\b")
+QUAL_USE_GROUP_RE = re.compile(r"\buse\s+([a-z_][a-z0-9_]*)::\{([^}]*)\}")
 GROUP_NAME_RE = re.compile(r"(?<![\w:])([a-z_][a-z0-9_]*)")
 
 
-def test_files(root: Path) -> list[Path]:
-    """Every `.rs` file under a `tests/` directory, plus the workspace suite."""
+def test_files(root: Path) -> tuple[list[Path], dict[Path, str]]:
+    """Every `.rs` file under a `tests/` directory, mapped to its owning crate."""
     manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
     members = manifest.get("workspace", {}).get("members", [])
 
-    bases = [root / member / "tests" for member in members]
-    bases.append(root / "tests")
-
     files: list[Path] = []
-    for base in bases:
+    file_crates: dict[Path, str] = {}
+    for member in members:
+        crate_dir = (root / member).resolve()
+        base = crate_dir / "tests"
         if not base.is_dir():
             continue
         for dirpath, _dirnames, filenames in os.walk(base):
-            for filename in filenames:
+            for filename in sorted(filenames):
                 if filename.endswith(".rs"):
-                    files.append(Path(dirpath) / filename)
-    return files
+                    p = (Path(dirpath) / filename).resolve()
+                    files.append(p)
+                    file_crates[p] = crate_dir.name
+    return files, file_crates
 
 
 def is_own_file(path: Path, module: Module) -> bool:
+    resolved = path.resolve()
     for own in module.own_paths:
-        if path == own:
+        own_res = own.resolve()
+        if resolved == own_res:
             return True
-        if own.is_dir() and own in path.parents:
+        if own_res.is_dir() and own_res in resolved.parents:
             return True
     return False
 
 
-def build_index(files: list[Path]) -> tuple[list[Path], dict[str, dict[int, int]]]:
-    """Map every module-ish name to the files and lines that mention it.
+def build_index(
+    files: list[Path],
+    file_crates: dict[Path, str],
+    snake_to_crate: dict[str, str],
+    root: Path,
+    enabled_features: dict[str, set[str]] | None = None,
+    is_test: bool = False,
+) -> tuple[list[Path], dict[tuple[str, str], dict[int, int]]]:
+    """Map every `(crate, module)` pair to the files and lines that reference it.
 
-    One pass over the workspace, not one pass per module: the obvious shape of
-    this check rescans ~30 MB of Rust for each of several hundred modules and
-    takes minutes. Inverting it takes seconds, which is the difference between
-    a gate people run and a gate people skip.
+    Resolves crate-qualified paths (`ftui_x::module`) and intra-crate root paths
+    (`crate::module`, or `super::module` from a top-level `src/*.rs` child)
+    after stripping `#[cfg(test)]` regions (for production files), disabled
+    `#[cfg(feature = "...")]` regions, and all comments and string/char literals.
     """
     paths: list[Path] = []
-    index: dict[str, dict[int, int]] = {}
+    index: dict[tuple[str, str], dict[int, int]] = {}
+    root_res = root.resolve()
 
-    def note(name: str, file_idx: int, line_no: int) -> None:
-        seen = index.setdefault(name, {})
+    def note(crate_name: str, mod_name: str, file_idx: int, line_no: int) -> None:
+        seen = index.setdefault((crate_name, mod_name), {})
         if file_idx not in seen:
             seen[file_idx] = line_no
 
     for path in files:
         try:
-            text = strip_test_regions(path.read_text(encoding="utf-8"))
+            raw = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
 
+        own_crate = file_crates.get(path)
+        crate_enabled = (
+            enabled_features.get(own_crate, set())
+            if (enabled_features is not None and own_crate is not None)
+            else None
+        )
+        stripped = (
+            strip_disabled_cfg_regions(raw, crate_enabled)
+            if is_test
+            else strip_disabled_cfg_regions(strip_test_regions(raw), crate_enabled)
+        )
+        text = strip_comments_and_strings(stripped, strip_strings=True)
+
         file_idx = len(paths)
         paths.append(path)
+        is_top_level_src = (
+            own_crate is not None
+            and path.parent == (root_res / "crates" / own_crate / "src")
+        )
 
-        for match in PATH_SEGMENT_RE.finditer(text):
-            note(match.group(1), file_idx, text.count("\n", 0, match.start()) + 1)
-        for match in USE_TAIL_RE.finditer(text):
-            note(match.group(1), file_idx, text.count("\n", 0, match.start()) + 1)
-        for match in USE_GROUP_RE.finditer(text):
+        for match in QUAL_SEGMENT_RE.finditer(text):
+            prefix, mod_name = match.group(1), match.group(2)
             line_no = text.count("\n", 0, match.start()) + 1
-            for inner in GROUP_NAME_RE.finditer(match.group(1)):
-                note(inner.group(1), file_idx, line_no)
+            if prefix in ("crate", "self"):
+                if own_crate:
+                    note(own_crate, mod_name, file_idx, line_no)
+            elif prefix == "super":
+                if own_crate and is_top_level_src:
+                    note(own_crate, mod_name, file_idx, line_no)
+            elif prefix in snake_to_crate:
+                note(snake_to_crate[prefix], mod_name, file_idx, line_no)
+
+        for match in QUAL_USE_GROUP_RE.finditer(text):
+            prefix, group_body = match.group(1), match.group(2)
+            line_no = text.count("\n", 0, match.start()) + 1
+            target_crate: str | None = None
+            if prefix in ("crate", "self"):
+                target_crate = own_crate
+            elif prefix == "super" and is_top_level_src:
+                target_crate = own_crate
+            elif prefix in snake_to_crate:
+                target_crate = snake_to_crate[prefix]
+            if target_crate:
+                for inner in GROUP_NAME_RE.finditer(group_body):
+                    note(target_crate, inner.group(1), file_idx, line_no)
 
     return paths, index
 
@@ -383,40 +758,68 @@ def build_index(files: list[Path]) -> tuple[list[Path], dict[str, dict[int, int]
 def find_reference(
     module: Module,
     paths: list[Path],
-    index: dict[str, dict[int, int]],
+    index: dict[tuple[str, str], dict[int, int]],
     root: Path,
 ) -> tuple[Path, int] | None:
-    """First production reference to `module` from outside its own code."""
-    lib_rs = root / "crates" / module.crate / "src" / "lib.rs"
-    for file_idx, line_no in index.get(module.name, {}).items():
-        path = paths[file_idx]
-        # The declaring lib.rs names every module by definition, so it says
-        # nothing about whether anyone uses one. Re-exports are judged
-        # separately, by `reexports_module`.
+    """First reference to `module` from outside its own code."""
+    root_res = root.resolve()
+    lib_rs = (root_res / "crates" / module.crate / "src" / "lib.rs").resolve()
+    for file_idx, line_no in index.get((module.crate, module.name), {}).items():
+        path = paths[file_idx].resolve()
         if path == lib_rs or is_own_file(path, module):
             continue
-        return (path.relative_to(root), line_no)
+        return (path.relative_to(root_res), line_no)
     return None
 
 
-def reexports_module(module: Module, root: Path) -> int | None:
-    """Line of the crate-root `pub use <module>::...`, if there is one.
-
-    A module the crate re-exports is part of its public API, and consumers
-    reach it by the re-exported name (`ftui_widgets::Tabs`) without ever
-    writing the module path. Treating those as unreachable would condemn most
-    of the widget library.
-    """
+def reexports_module(
+    module: Module,
+    root: Path,
+    enabled_features: dict[str, set[str]] | None = None,
+) -> int | None:
+    """Line of an enabled crate-root `pub use <module>::...`, if there is one."""
     lib_rs = root / "crates" / module.crate / "src" / "lib.rs"
     try:
-        text = lib_rs.read_text(encoding="utf-8")
+        raw = lib_rs.read_text(encoding="utf-8")
     except OSError:
         return None
-    pattern = re.compile(rf"^[ \t]*pub use {re.escape(module.name)}::", re.MULTILINE)
-    match = pattern.search(text)
-    if not match:
-        return None
-    return text.count("\n", 0, match.start()) + 1
+    crate_enabled = (
+        enabled_features.get(module.crate, set())
+        if enabled_features is not None
+        else None
+    )
+    text = strip_comments_and_strings(
+        strip_disabled_cfg_regions(strip_test_regions(raw), crate_enabled),
+        strip_strings=False,
+    )
+    pub_use_re = re.compile(
+        rf"^[ \t]*pub use (?:crate::)?{re.escape(module.name)}::"
+    )
+    pending_attrs: list[str] = []
+    for idx, line in enumerate(text.splitlines(), 1):
+        attr = ATTR_RE.match(line)
+        if attr:
+            pending_attrs.append(attr.group("body"))
+            continue
+        if pub_use_re.match(line):
+            fnames = [
+                m.group(1) for a in pending_attrs for m in FEATURE_NAME_RE.finditer(a)
+            ]
+            if "experimental" in fnames:
+                pending_attrs = []
+                continue
+            if (
+                fnames
+                and crate_enabled is not None
+                and not any(f in crate_enabled for f in fnames)
+            ):
+                pending_attrs = []
+                continue
+            return idx
+        if line.strip():
+            pending_attrs = []
+    return None
+
 
 
 def load_allowlist(path: Path) -> dict[str, str]:
@@ -520,20 +923,49 @@ def check_allowlist_owners(
 
 
 def evaluate(root: Path, allowlist: dict[str, str], only: str | None) -> list[Finding]:
-    crates = discover_crates(root)
+    all_crates = discover_crates(root)
+    crates = all_crates
     if only:
-        crates = [(name, d) for (name, d) in crates if name == only]
+        crates = [(name, d) for (name, d) in all_crates if name == only]
         if not crates:
             raise SystemExit(f"no workspace crate named {only!r} with a src/lib.rs")
 
-    paths, index = build_index(production_files(root, crates))
-    # A second index that also counts test files, consulted only for the
-    # test-support crates.
-    test_paths, test_index = build_index(test_files(root))
+    enabled_features = workspace_enabled_features(root)
+    manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+    members = manifest.get("workspace", {}).get("members", [])
+    snake_to_crate = {crate_snake(Path(m).name): Path(m).name for m in members}
+
+    prod_list, prod_file_crates = production_files(root, all_crates, enabled_features)
+    paths, index = build_index(
+        prod_list,
+        prod_file_crates,
+        snake_to_crate,
+        root,
+        enabled_features=enabled_features,
+        is_test=False,
+    )
+    # A second index that also counts test files and inline `#[cfg(test)]`
+    # regions, consulted only for the test-support crates and TEST_ONLY
+    # classification.
+    t_list, t_file_crates = test_files(root)
+    all_test_files = list(prod_list)
+    all_test_crates = dict(prod_file_crates)
+    for p in t_list:
+        if p not in all_test_crates:
+            all_test_files.append(p)
+            all_test_crates[p] = t_file_crates[p]
+    test_paths, test_index = build_index(
+        all_test_files,
+        all_test_crates,
+        snake_to_crate,
+        root,
+        enabled_features=enabled_features,
+        is_test=True,
+    )
     findings: list[Finding] = []
 
     for crate, crate_dir in crates:
-        for module in declared_modules(crate, crate_dir):
+        for module in declared_modules(crate, crate_dir, enabled_features):
             qualified = f"{crate}::{module.name}"
 
             if module.experimental:
@@ -553,17 +985,11 @@ def evaluate(root: Path, allowlist: dict[str, str], only: str | None) -> list[Fi
                 if hit:
                     detail = f"test consumer {hit[0]}:{hit[1]}"
             if not hit:
-                reexport_line = reexports_module(module, root)
+                reexport_line = reexports_module(module, root, enabled_features)
                 if reexport_line is not None:
                     hit = (Path(f"crates/{crate}/src/lib.rs"), reexport_line)
                     detail = f"re-exported at {hit[0]}:{reexport_line}"
 
-            # "Nothing uses this at all" and "only tests use this" are
-            # different states, and reporting both as UNREACHABLE is what makes
-            # this gate cry wolf. `ftui_render::headless` is 843 lines of
-            # documented CI harness with two test consumers; calling it dead
-            # code is simply wrong. TEST_ONLY names that case, does not fail,
-            # and stays countable so the set can be audited.
             test_hit = None
             if not hit:
                 test_hit = find_reference(module, test_paths, test_index, root)
@@ -579,9 +1005,6 @@ def evaluate(root: Path, allowlist: dict[str, str], only: str | None) -> list[Fi
             elif hit:
                 findings.append(Finding(crate, module.name, "OK", detail))
             elif test_hit and allowlisted:
-                # Test infrastructure does not belong on a dead-code list, so
-                # the entry is stale even though production still does not
-                # reference it.
                 findings.append(
                     Finding(
                         crate,
@@ -609,9 +1032,69 @@ def evaluate(root: Path, allowlist: dict[str, str], only: str | None) -> list[Fi
     return findings
 
 
+def self_test() -> None:
+    # 1. Comment & string stripping preserves line numbers and removes false matches.
+    sample = (
+        '// fit_metrics::Fake in line comment\n'
+        '/* outer /* nested */ debug::Fake */\n'
+        'let s = "cache::redis";\n'
+        'let r = r#"help_registry::Fake"#;\n'
+        'use ftui_core::animation::Spring;\n'
+    )
+    cleaned = strip_comments_and_strings(sample)
+    assert cleaned.count("\n") == sample.count("\n")
+    assert "fit_metrics" not in cleaned
+    assert "debug" not in cleaned
+    assert "cache" not in cleaned
+    assert "help_registry" not in cleaned
+    assert "use ftui_core::animation::Spring;" in cleaned
+
+    # 2. Inline re-export-only module detection (including nested pub mod and multi-line pub use).
+    facade_body = """
+        /// Doc comment
+        pub use ftui_layout::pane::*;
+        #[cfg(feature = "runtime")]
+        pub mod keyboard {
+            pub use ftui_runtime::pane_keymap::{
+                PaneKeymap,
+                pane_keyboard_hints,
+            };
+        }
+    """
+    assert is_reexport_only(facade_body)
+    assert not is_reexport_only("pub use a::b;\npub fn not_reexport() {}")
+
+    # 3. Qualified path resolution on the real workspace:
+    #    - `ftui-core::animation` must NOT be marked OK via `ftui-widgets/src/modal/mod.rs`
+    #    - `ftui-render::fit_metrics` must NOT be marked OK via doc comment in `vertical_metrics.rs`
+    #    - `ftui-layout::debug` must NOT be marked OK via `input_parser.rs`
+    root = Path(__file__).resolve().parent.parent
+    allowlist = load_allowlist(root / "docs/module-reachability-allowlist.txt")
+    by_qual = {f.qualified: f for f in evaluate(root, allowlist, None)}
+    assert by_qual["ftui-core::animation"].verdict == "TEST_ONLY", by_qual[
+        "ftui-core::animation"
+    ]
+    assert by_qual["ftui-render::fit_metrics"].verdict == "TEST_ONLY", by_qual[
+        "ftui-render::fit_metrics"
+    ]
+    assert by_qual["ftui-layout::debug"].verdict in ("ALLOWLISTED", "UNREACHABLE"), (
+        by_qual["ftui-layout::debug"]
+    )
+    assert by_qual["ftui-text::normalization"].verdict in (
+        "ALLOWLISTED",
+        "UNREACHABLE",
+    ), by_qual["ftui-text::normalization"]
+    print(json.dumps({"scope": "reachability-self-test", "passed": 7}))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Fail when a public module is unreachable from production code."
+    )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="run in-memory and workspace resolution self-tests",
     )
     parser.add_argument(
         "--allowlist",
@@ -633,6 +1116,9 @@ def main() -> int:
         help="print only failures and the summary",
     )
     args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
 
     root = args.root.resolve()
     allowlist_path = (
@@ -732,3 +1218,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

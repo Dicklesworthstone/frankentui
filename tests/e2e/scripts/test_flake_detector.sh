@@ -96,7 +96,7 @@ EOF
 log_info "Building ftui-runtime tests..."
 BUILD_START="$(now_ms)"
 
-if ! cargo build -p ftui-runtime --tests 2>"$OUTPUT_DIR/build.log"; then
+if ! cargo build -p ftui-runtime --features experimental --lib --tests 2>"$OUTPUT_DIR/build.log"; then
     log_fail "Build failed! See $OUTPUT_DIR/build.log"
     exit 2
 fi

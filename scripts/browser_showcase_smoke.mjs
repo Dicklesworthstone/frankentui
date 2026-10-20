@@ -161,7 +161,7 @@ async function screenshot(name) {
 }
 try {
   const response = await fetch(`${endpoint}/json/version`, {
-    headers: { "User-Agent": "OpenAI File Downloader, XaiImageApiFetch/1.0" },
+    headers: { "User-Agent": "frankentui-test (+https://github.com/Dicklesworthstone/frankentui)" },
   });
   assert.ok(response.ok);
   observations.browser = await response.json();

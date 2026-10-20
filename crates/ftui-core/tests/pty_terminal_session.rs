@@ -280,6 +280,7 @@ fn pty_cleanup_child() {
         focus_events: false,
         kitty_keyboard: false,
         intercept_signals: true,
+        pixel_mouse: false,
     };
     let _session = TerminalSession::new(options).expect("TerminalSession::new");
     println!("READY");
@@ -299,6 +300,7 @@ fn pty_cleanup_panic_child() {
         focus_events: false,
         kitty_keyboard: false,
         intercept_signals: true,
+        pixel_mouse: false,
     };
     let _session = TerminalSession::new(options).expect("TerminalSession::new");
     println!("PANIC_READY");
@@ -318,6 +320,7 @@ fn pty_event_parse_child() {
         focus_events: false,
         kitty_keyboard: false,
         intercept_signals: true,
+        pixel_mouse: false,
     };
     let session = TerminalSession::new(options).expect("TerminalSession::new");
     println!("READY");

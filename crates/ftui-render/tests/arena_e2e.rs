@@ -243,12 +243,29 @@ fn arena_multi_frame_memory_bounded() {
             ev.emit();
         }
 
-        // Frame boundary: reset arena
+        // Frame boundary: reset arena (retains largest chunk for reuse without growth)
         arena.reset();
+        assert!(
+            arena.allocated_bytes() <= first_frame_bytes,
+            "Frame {frame_id}: retained chunk bytes ({}) should not exceed first frame ({first_frame_bytes})",
+            arena.allocated_bytes()
+        );
     }
 
     // After 100 frames, capacity should not grow unboundedly.
     let final_capacity = arena.allocated_bytes_including_metadata();
+    assert!(
+        first_frame_bytes > 0,
+        "First frame should allocate arena memory"
+    );
+    assert_eq!(
+        peak_bytes, first_frame_bytes,
+        "Per-frame peak bytes should stay constant across identical frames"
+    );
+    assert!(
+        final_capacity <= 128 * 1024,
+        "Arena capacity grew beyond 2x initial chunk across {num_frames} resets: {final_capacity}"
+    );
 
     let mut ev = Evidence::new("arena_multi_frame_memory_bounded");
     ev.frame_id = Some(num_frames);
@@ -268,6 +285,7 @@ fn arena_multi_frame_memory_bounded() {
 fn arena_reset_once_per_frame() {
     let mut arena = FrameArena::new(16 * 1024);
     let num_frames = 10u64;
+    let initial_chunk_bytes = arena.allocated_bytes();
 
     for frame_id in 0..num_frames {
         // Simulate rendering: multiple allocations within a single frame
@@ -288,8 +306,13 @@ fn arena_reset_once_per_frame() {
             "Frame {frame_id}: arena should have allocations before reset"
         );
 
-        // Single reset at frame boundary
+        // Single reset at frame boundary — retains initial chunk without allocating extra chunks
         arena.reset();
+        assert_eq!(
+            arena.allocated_bytes(),
+            initial_chunk_bytes,
+            "Frame {frame_id}: arena should retain only initial chunk after reset"
+        );
 
         let mut ev = Evidence::new("arena_reset_once_per_frame");
         ev.frame_id = Some(frame_id);
@@ -618,9 +641,24 @@ fn arena_memory_report() {
         f64::INFINITY
     };
 
+    let final_capacity = arena.allocated_bytes_including_metadata();
+    assert!(
+        arena.allocated_bytes() > 0 && arena.allocated_bytes() <= final_capacity,
+        "Arena retained bytes ({}) should be positive and bounded by capacity ({final_capacity})",
+        arena.allocated_bytes()
+    );
+    assert!(
+        final_capacity <= 256 * 1024,
+        "Arena capacity should remain bounded across {num_frames} frames (got {final_capacity})"
+    );
+    assert!(
+        speedup.is_finite() && speedup > 0.0,
+        "Speedup ratio should be positive and finite (got {speedup})"
+    );
+
     let mut ev = Evidence::new("arena_memory_report");
     ev.alloc_time_ns = Some(arena_elapsed.as_nanos());
-    ev.arena_bytes_capacity = Some(arena.allocated_bytes_including_metadata());
+    ev.arena_bytes_capacity = Some(final_capacity);
     ev.detail = Some(format!(
         "frames={num_frames}, allocs_per_frame={allocs_per_frame}, \
          arena_ns={}, heap_ns={}, speedup={speedup:.2}x",

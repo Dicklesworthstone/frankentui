@@ -166,15 +166,25 @@ struct EvidenceSinkInner {
 #[derive(Clone)]
 pub struct EvidenceSink {
     inner: Arc<Mutex<EvidenceSinkInner>>,
+    path: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for EvidenceSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EvidenceSink").finish()
+        f.debug_struct("EvidenceSink")
+            .field("path", &self.path)
+            .finish()
     }
 }
 
 impl EvidenceSink {
+    /// Return the file path if this sink writes to a file destination.
+    #[inline]
+    #[must_use]
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+
     /// Build an evidence sink from config. Returns `Ok(None)` when disabled.
     ///
     /// For file destinations the existing file size is counted toward the cap
@@ -186,17 +196,18 @@ impl EvidenceSink {
             return Ok(None);
         }
 
-        let (writer, existing_bytes): (Box<dyn Write + Send>, u64) = match &config.destination {
-            EvidenceSinkDestination::Stdout => (Box::new(io::stdout()), 0),
-            EvidenceSinkDestination::File(path) => {
-                if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                    fs::create_dir_all(parent)?;
+        let (writer, existing_bytes, sink_path): (Box<dyn Write + Send>, u64, Option<PathBuf>) =
+            match &config.destination {
+                EvidenceSinkDestination::Stdout => (Box::new(io::stdout()), 0, None),
+                EvidenceSinkDestination::File(path) => {
+                    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                        fs::create_dir_all(parent)?;
+                    }
+                    let existing_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                    let file = OpenOptions::new().create(true).append(true).open(path)?;
+                    (Box::new(file), existing_size, Some(path.clone()))
                 }
-                let existing_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                let file = OpenOptions::new().create(true).append(true).open(path)?;
-                (Box::new(file), existing_size)
-            }
-        };
+            };
 
         let cap_enabled = matches!(&config.destination, EvidenceSinkDestination::File(_));
         let already_capped =
@@ -213,6 +224,7 @@ impl EvidenceSink {
 
         Ok(Some(Self {
             inner: Arc::new(Mutex::new(inner)),
+            path: sink_path,
         }))
     }
 
@@ -228,6 +240,7 @@ impl EvidenceSink {
                 bytes_written: 0,
                 capped: false,
             })),
+            path: None,
         }
     }
 
@@ -515,6 +528,7 @@ mod tests {
                 bytes_written: u64::MAX - 1,
                 capped: false,
             })),
+            path: None,
         };
 
         sink.write_jsonl("{}").unwrap();

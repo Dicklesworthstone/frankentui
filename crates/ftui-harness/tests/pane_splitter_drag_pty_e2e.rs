@@ -231,6 +231,7 @@ fn pty_splitter_drag_restores_terminal_cleanly() {
             focus_events: false,
             kitty_keyboard: false,
             intercept_signals: true,
+            pixel_mouse: false,
         };
         let expectations = CleanupExpectations::for_session(&options);
         assert_terminal_restored(&output, &expectations)

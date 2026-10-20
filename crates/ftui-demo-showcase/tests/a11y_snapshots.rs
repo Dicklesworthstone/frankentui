@@ -702,6 +702,11 @@ fn a11y_tree_dump_dashboard_80x24() {
     }
 }
 
+#[test]
+fn dashboard_a11y_tree_80x24() {
+    a11y_tree_dump_dashboard_80x24();
+}
+
 /// `Accessible`'s contract is that node ids are unique within a render pass,
 /// but nothing enforces it. `A11yTreeBuilder::add_node` inserts into a map, so
 /// a second node under the same id silently replaces the first and the widget

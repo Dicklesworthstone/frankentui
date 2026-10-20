@@ -65,14 +65,8 @@ use crate::render_trace::RenderTraceConfig;
 use crate::resize_coalescer::{CoalesceAction, CoalescerConfig, ResizeCoalescer};
 use crate::state_persistence::StateRegistry;
 use crate::subscription::SubscriptionManager;
-use crate::terminal_presenter::TerminalPresenter;
-#[cfg(any(
-    feature = "crossterm-compat",
-    all(feature = "native-backend", unix),
-    test
-))]
-use crate::terminal_writer::TerminalWriter;
-use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, UiAnchor};
+pub use crate::terminal_presenter::TerminalPresenter;
+use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, TerminalWriter, UiAnchor};
 use crate::voi_sampling::{VoiConfig, VoiSampler};
 use crate::{BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor, ConformalStatus};
 #[cfg(feature = "asupersync-executor")]
@@ -82,7 +76,6 @@ use ftui_backend::{BackendEventSource, BackendFeatures, BackendPresenter};
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-#[cfg(feature = "crossterm-compat")]
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 #[cfg(feature = "crossterm-compat")]
 use ftui_core::terminal_session::{SessionOptions, TerminalSession};
@@ -2372,6 +2365,12 @@ pub enum TaskExecutorBackend {
     Asupersync,
 }
 
+/// Default task executor backend for [`RuntimeLane::Legacy`] and [`RuntimeLane::Structured`].
+///
+/// Benchmarked in `benches/effect_backend_bench.rs` and documented in
+/// `docs/perf/effect_backend_2026-10-19.md`.
+pub const DEFAULT_TASK_BACKEND: TaskExecutorBackend = TaskExecutorBackend::Spawned;
+
 #[derive(Debug, Clone)]
 pub struct EffectQueueConfig {
     /// Whether effect queue scheduling is enabled.
@@ -2405,8 +2404,8 @@ impl Default for EffectQueueConfig {
             ..Default::default()
         };
         Self {
-            enabled: false,
-            backend: TaskExecutorBackend::Spawned,
+            enabled: matches!(DEFAULT_TASK_BACKEND, TaskExecutorBackend::EffectQueue),
+            backend: DEFAULT_TASK_BACKEND,
             scheduler,
             max_queue_depth: 0,
             explicit_backend: false,
@@ -2456,7 +2455,7 @@ impl EffectQueueConfig {
 
     #[must_use]
     fn uses_legacy_default_backend(&self) -> bool {
-        !self.explicit_backend && !self.enabled && self.backend == TaskExecutorBackend::Spawned
+        !self.explicit_backend && !self.enabled && self.backend == DEFAULT_TASK_BACKEND
     }
 }
 
@@ -3147,14 +3146,14 @@ impl RuntimeLane {
     /// (the lane default only applies when the app uses the legacy default
     /// backend — see `EffectQueueConfig::uses_legacy_default_backend`).
     #[must_use]
-    fn task_executor_backend(self) -> TaskExecutorBackend {
+    pub fn task_executor_backend(self) -> TaskExecutorBackend {
         #[cfg(feature = "asupersync-executor")]
         if self == Self::Asupersync {
             return TaskExecutorBackend::Asupersync;
         }
         // Structured cancellation does not serialize tasks. An unavailable
         // Asupersync lane resolves to Structured before backend selection.
-        TaskExecutorBackend::Spawned
+        DEFAULT_TASK_BACKEND
     }
 
     /// Read the lane from the `FTUI_RUNTIME_LANE` environment variable.
@@ -3398,6 +3397,13 @@ pub struct ProgramConfig {
     /// events are coalesced so intermediate states do not trigger redundant
     /// updates and renders. The recognizer still receives all raw events.
     pub event_coalescing: bool,
+    /// Opt into SGR-Pixels (`DECSET ?1016h`) mouse reporting when mouse capture
+    /// is enabled (`false` by default).
+    pub pixel_mouse: bool,
+    /// Forward [`Event::TerminalResponse`] (DCS/APC/XTWINOPS replies) to
+    /// [`Model::update`] instead of consuming them inside `Program` (`false`
+    /// by default).
+    pub deliver_terminal_responses: bool,
 }
 
 impl Default for ProgramConfig {
@@ -3443,6 +3449,8 @@ impl Default for ProgramConfig {
             runtime_lane: RuntimeLane::default(),
             rollout_policy: RolloutPolicy::default(),
             event_coalescing: false,
+            pixel_mouse: false,
+            deliver_terminal_responses: false,
         }
     }
 }
@@ -3495,6 +3503,20 @@ impl ProgramConfig {
     #[must_use]
     pub fn with_event_coalescing(mut self, enabled: bool) -> Self {
         self.event_coalescing = enabled;
+        self
+    }
+
+    /// Opt into SGR-Pixels (`DECSET ?1016h`) mouse reporting.
+    #[must_use]
+    pub fn with_pixel_mouse(mut self, enabled: bool) -> Self {
+        self.pixel_mouse = enabled;
+        self
+    }
+
+    /// Forward [`Event::TerminalResponse`] replies to [`Model::update`].
+    #[must_use]
+    pub fn with_deliver_terminal_responses(mut self, enabled: bool) -> Self {
+        self.deliver_terminal_responses = enabled;
         self
     }
 
@@ -3786,11 +3808,19 @@ impl ProgramConfig {
     /// are ignored. Unrecognized values emit a `tracing::warn` and are
     /// ignored (the programmatic default or prior builder value is retained).
     #[must_use]
-    pub fn with_env_overrides(mut self) -> Self {
-        if let Some(lane) = RuntimeLane::from_env() {
+    pub fn with_env_overrides(self) -> Self {
+        self.with_env_values(
+            std::env::var("FTUI_RUNTIME_LANE").ok().as_deref(),
+            std::env::var("FTUI_ROLLOUT_POLICY").ok().as_deref(),
+        )
+    }
+
+    #[must_use]
+    fn with_env_values(mut self, lane: Option<&str>, rollout_policy: Option<&str>) -> Self {
+        if let Some(lane) = lane.and_then(RuntimeLane::parse) {
             self.runtime_lane = lane;
         }
-        if let Some(policy) = RolloutPolicy::from_env() {
+        if let Some(policy) = rollout_policy.and_then(RolloutPolicy::parse) {
             self.rollout_policy = policy;
         }
         self
@@ -3880,7 +3910,10 @@ impl<M: Send + 'static> EffectQueue<M> {
         use std::sync::atomic::Ordering;
         if self.closed {
             crate::effect_system::record_queue_drop("post_shutdown");
-            tracing::debug!("rejecting task enqueue after effect queue shutdown");
+            tracing::debug!(
+                target: crate::telemetry_schema::TARGET_EFFECT,
+                "rejecting task enqueue after effect queue shutdown"
+            );
             return;
         }
         let max_depth = self.max_depth;
@@ -3999,7 +4032,10 @@ impl<M: Send + 'static> SpawnTaskExecutor<M> {
         if self.closed {
             self.dropped += 1;
             crate::effect_system::record_queue_drop("post_shutdown");
-            tracing::debug!("rejecting spawned task submit after shutdown");
+            tracing::debug!(
+                target: crate::telemetry_schema::TARGET_EFFECT,
+                "rejecting spawned task submit after shutdown"
+            );
             return;
         }
         // Join finished threads first so the in-flight depth used for
@@ -4141,7 +4177,10 @@ impl<M: Send + 'static> AsupersyncTaskExecutor<M> {
         if self.closed {
             self.dropped += 1;
             crate::effect_system::record_queue_drop("post_shutdown");
-            tracing::debug!("rejecting asupersync task submit after shutdown");
+            tracing::debug!(
+                target: crate::telemetry_schema::TARGET_EFFECT,
+                "rejecting asupersync task submit after shutdown"
+            );
             return;
         }
         // Prune completed handles so the in-flight depth used for backpressure
@@ -4186,6 +4225,7 @@ impl<M: Send + 'static> AsupersyncTaskExecutor<M> {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() || !handle.wait_timeout(remaining) {
                 tracing::warn!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     timeout_ms = Self::SHUTDOWN_TIMEOUT.as_millis() as u64,
                     pending_handles = self
                         .handles
@@ -4371,6 +4411,7 @@ fn panic_payload_message(payload: Box<dyn Any + Send>) -> String {
 fn log_task_executor_panic(backend: &str, panic_msg: &str) {
     #[cfg(feature = "tracing")]
     tracing::error!(
+        target: crate::telemetry_schema::TARGET_EFFECT,
         executor_backend = backend,
         panic_msg,
         "task executor task panicked"
@@ -4675,6 +4716,7 @@ struct BudgetDecisionEvidence {
     pid_i: f64,
     pid_d: f64,
     e_value: f64,
+    eprocess_lambda: f64,
     frames_observed: u32,
     frames_since_change: u32,
     in_warmup: bool,
@@ -4717,7 +4759,7 @@ impl BudgetDecisionEvidence {
         let queue_max_depth = Self::opt_usize(self.load_governor.queue_max_depth);
 
         format!(
-            r#"{{"schema_version":"ftui-evidence-v1","event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"recovery_streak":{},"total_degrades":{},"total_recoveries":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"resize_detector":"{}","recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"conformal_status":{},"required_rank":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
+            r#"{{"schema_version":"ftui-evidence-v1","event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"eprocess_lambda":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"recovery_streak":{},"total_degrades":{},"total_recoveries":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"resize_detector":"{}","recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"conformal_status":{},"required_rank":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
             self.frame_idx,
             self.decision.as_str(),
             self.controller_decision.as_str(),
@@ -4731,6 +4773,7 @@ impl BudgetDecisionEvidence {
             self.pid_i,
             self.pid_d,
             self.e_value,
+            self.eprocess_lambda,
             self.frames_observed,
             self.frames_since_change,
             self.in_warmup,
@@ -4865,6 +4908,39 @@ impl FairnessDecisionEvidence {
             self.dominance_threshold,
             self.fairness_threshold,
             self.input_priority_threshold_ms
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ShadowFrameEvidence {
+    frame: u64,
+    checksum: u64,
+    lane: &'static str,
+    requested_lane: &'static str,
+    rollout_policy: &'static str,
+    task_backend: &'static str,
+    cols: u16,
+    rows: u16,
+    ts_ns: u128,
+}
+
+impl ShadowFrameEvidence {
+    #[must_use]
+    fn to_jsonl(&self) -> String {
+        format!(
+            r#"{{"schema_version":"{}","event":"{}","frame":{},"checksum":"{:016x}","lane":"{}","requested_lane":"{}","rollout_policy":"{}","task_backend":"{}","cols":{},"rows":{},"ts_ns":{}}}"#,
+            crate::evidence_sink::EVIDENCE_SCHEMA_VERSION,
+            crate::telemetry_schema::EVENT_SHADOW_FRAME,
+            self.frame,
+            self.checksum,
+            self.lane,
+            self.requested_lane,
+            self.rollout_policy,
+            self.task_backend,
+            self.cols,
+            self.rows,
+            self.ts_ns,
         )
     }
 }
@@ -5273,6 +5349,117 @@ impl BackendEventSource for HeadlessEventSource {
     }
 }
 
+impl<M: Model> Program<M, HeadlessEventSource, TerminalPresenter<Vec<u8>>> {
+    /// Construct a headless program backed by an in-memory `TerminalPresenter<Vec<u8>>`.
+    pub fn new_headless(model: M, config: ProgramConfig) -> io::Result<Self> {
+        let (width, height) = config.forced_size.unwrap_or((80, 24));
+        let features = BackendFeatures::default();
+        let events = HeadlessEventSource::new(width, height, features);
+        let writer = TerminalWriter::with_diff_config(
+            Vec::new(),
+            config.screen_mode,
+            config.ui_anchor,
+            TerminalCapabilities::basic(),
+            config.diff_config.clone(),
+        );
+        Self::with_event_source(
+            model,
+            events,
+            features,
+            TerminalPresenter::new(writer),
+            config,
+        )
+    }
+}
+
+impl<M: Model, P: BackendPresenter<Error = io::Error>> Program<M, HeadlessEventSource, P> {
+    /// Step a single headless frame through the full budget, conformal, render,
+    /// present, and evidence pipeline.
+    pub fn step_headless_frame(&mut self) -> io::Result<()> {
+        self.dirty = true;
+        self.render_frame()
+    }
+
+    /// Initialize the model, execute its initial command, drain any spawned
+    /// background tasks, and render the initial frame.
+    pub fn init_headless(&mut self, task_timeout: Duration) -> io::Result<()> {
+        let cmd = self.model.init();
+        self.execute_cmd(cmd)?;
+        self.drain_headless_tasks(task_timeout)?;
+        if self.running {
+            self.reconcile_subscriptions();
+            self.process_subscription_failures(false)?;
+            if self.running {
+                self.render_frame()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Deliver a single event to the headless program and submit any resulting
+    /// commands without waiting for background tasks to drain or rendering.
+    pub fn enqueue_headless_event(&mut self, event: Event) -> io::Result<()> {
+        if !self.running {
+            return Ok(());
+        }
+        self.handle_event(event)
+    }
+
+    /// Deliver a single event to the headless program, drain all resulting
+    /// background tasks up to `task_timeout`, and render if dirty.
+    pub fn step_headless_event(&mut self, event: Event, task_timeout: Duration) -> io::Result<()> {
+        if !self.running {
+            return Ok(());
+        }
+        self.handle_event(event)?;
+        self.drain_headless_tasks(task_timeout)?;
+        if self.running && self.dirty {
+            self.render_frame()?;
+        }
+        Ok(())
+    }
+
+    /// Drain all in-flight background tasks on the active task executor up to `timeout`.
+    pub fn drain_headless_tasks(&mut self, timeout: Duration) -> io::Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.process_task_results()?;
+            self.reap_finished_tasks();
+            if self.task_executor.in_flight() == 0 {
+                self.process_task_results()?;
+                self.reap_finished_tasks();
+                if self.task_executor.in_flight() == 0 {
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "headless task drain timed out with {} tasks still in flight on {}",
+                        self.task_executor.in_flight(),
+                        self.task_executor.kind_name_for_logs()
+                    ),
+                ));
+            }
+            thread::yield_now();
+        }
+        Ok(())
+    }
+
+    /// Return the active task executor backend label (`"spawned"`, `"queued"`, or `"asupersync"`).
+    #[must_use]
+    pub fn task_backend_name(&self) -> &'static str {
+        self.task_executor.kind_name_for_logs()
+    }
+
+    /// Return the resolved runtime lane.
+    #[must_use]
+    pub fn resolved_runtime_lane(&self) -> RuntimeLane {
+        self.resolved_lane
+    }
+}
+
 // =============================================================================
 // Program
 // =============================================================================
@@ -5378,6 +5565,8 @@ pub struct Program<
     resize_behavior: ResizeBehavior,
     /// Input fairness guard for scheduler integration.
     fairness_guard: InputFairnessGuard,
+    /// Accumulated input processing duration awaiting the cycle's resize-fairness check.
+    pending_fairness_input_duration: Option<Duration>,
     /// Optional event recorder for macro capture.
     event_recorder: Option<EventRecorder>,
     /// Subscription lifecycle manager.
@@ -5427,6 +5616,8 @@ pub struct Program<
     startup_events: Vec<Event>,
     /// Preserve sequence state across successive recovered byte chunks.
     startup_parser: ftui_core::input_parser::InputParser,
+    /// Forward [`Event::TerminalResponse`] replies to [`Model::update`].
+    deliver_terminal_responses: bool,
     /// Per-frame bump arena for temporary render-path allocations.
     frame_arena: FrameArena,
     /// Unified frame guardrails (memory/queue limits).
@@ -5443,6 +5634,56 @@ pub struct Program<
     tick_strategy: Option<Box<dyn crate::tick_strategy::TickStrategy>>,
     /// Last active screen observed by the tick strategy dispatch path.
     last_active_screen_for_strategy: Option<String>,
+    /// Requested runtime lane from `ProgramConfig`.
+    requested_lane: RuntimeLane,
+    /// Effective runtime lane after feature-gated fallback resolution.
+    resolved_lane: RuntimeLane,
+    /// Rollout policy controlling shadow evidence recording.
+    rollout_policy: RolloutPolicy,
+    /// Monotonic 0-based counter of frames presented under `RolloutPolicy::Shadow`.
+    shadow_frame_idx: u64,
+}
+
+/// Canonical error message returned when a live terminal session is opened
+/// with redirected stdin or stdout.
+pub const NOT_A_CONSOLE_MESSAGE: &str =
+    "stdin is not a console; run inside Windows Terminal, conhost, or use the headless simulator";
+
+/// Return `true` when both standard input and standard output are attached to a
+/// terminal/console handle.
+#[must_use]
+pub fn console_available() -> bool {
+    io::IsTerminal::is_terminal(&io::stdin()) && io::IsTerminal::is_terminal(&io::stdout())
+}
+
+/// Validate whether a live console is available, returning
+/// [`io::ErrorKind::Unsupported`] with [`NOT_A_CONSOLE_MESSAGE`] when `false`.
+pub fn validate_console_available(is_console: bool) -> io::Result<()> {
+    if is_console {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            NOT_A_CONSOLE_MESSAGE,
+        ))
+    }
+}
+
+/// Parse a positive millisecond string (such as `"1500"`) into a [`Duration`].
+///
+/// Rejects empty strings, zero, negative numbers, and non-numeric input.
+#[must_use]
+pub fn parse_exit_after_ms(raw: &str) -> Option<Duration> {
+    let ms = raw.trim().parse::<u64>().ok()?;
+    (ms > 0).then(|| Duration::from_millis(ms))
+}
+
+/// Read an environment variable (such as `"FTUI_EXIT_AFTER_MS"`) and parse a
+/// positive millisecond duration for deterministic smoke/test exit.
+#[must_use]
+pub fn exit_after_env(var_name: &str) -> Option<Duration> {
+    let raw = std::env::var(var_name).ok()?;
+    parse_exit_after_ms(&raw)
 }
 
 #[cfg(feature = "crossterm-compat")]
@@ -5472,14 +5713,22 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
         };
         let initial_features =
             sanitize_backend_features_for_capabilities(requested_features, &capabilities);
-        let session = TerminalSession::new(SessionOptions {
+        let session = match TerminalSession::new(SessionOptions {
             alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
             mouse_capture: initial_features.mouse_capture,
+            pixel_mouse: config.pixel_mouse,
             bracketed_paste: initial_features.bracketed_paste,
             focus_events: initial_features.focus_events,
             kitty_keyboard: initial_features.kitty_keyboard,
             intercept_signals: config.intercept_signals,
-        })?;
+        }) {
+            Ok(session) => session,
+            Err(_) if !console_available() => {
+                validate_console_available(false)?;
+                unreachable!()
+            }
+            Err(err) => return Err(err),
+        };
         let events = CrosstermEventSource::new(session, initial_features);
 
         // Raw mode is active now, so the terminal can answer probes; the
@@ -5579,12 +5828,23 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
         let guardrails = FrameGuardrails::new(config.guardrails);
 
         // Log runtime lane and rollout policy at startup (bd-2crbt)
+        let shadow_evidence_path = if config.rollout_policy.is_shadow() {
+            evidence_sink
+                .as_ref()
+                .and_then(EvidenceSink::path)
+                .map(|p| p.display().to_string())
+        } else {
+            None
+        };
         tracing::info!(
             target: crate::telemetry_schema::TARGET_RUNTIME,
+            os = std::env::consts::OS,
+            console = console_available(),
             requested_lane = config.runtime_lane.label(),
             resolved_lane = resolved_lane.label(),
             task_backend = task_executor.kind_name_for_logs(),
             rollout_policy = config.rollout_policy.label(),
+            evidence_path = shadow_evidence_path.as_deref(),
             "runtime startup: lane={}, rollout={}",
             resolved_lane.label(),
             config.rollout_policy.label(),
@@ -5594,6 +5854,9 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
         let job_control_claim = (suspend_enabled && config.intercept_signals)
             .then(ftui_core::job_control::JobControlClaim::acquire)
             .flatten();
+
+        let mut startup_parser = ftui_core::input_parser::InputParser::new();
+        startup_parser.set_pixel_mouse(config.pixel_mouse);
 
         Ok(Self {
             model,
@@ -5618,7 +5881,8 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
             a11y_changed: false,
             a11y_dropped: 0,
             startup_events: Vec::new(),
-            startup_parser: ftui_core::input_parser::InputParser::new(),
+            startup_parser,
+            deliver_terminal_responses: config.deliver_terminal_responses,
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -5648,6 +5912,7 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
             fairness_config_logged: false,
             resize_behavior: config.resize_behavior,
             fairness_guard: InputFairnessGuard::new(),
+            pending_fairness_input_duration: None,
             event_recorder: None,
             subscriptions,
             #[cfg(test)]
@@ -5667,6 +5932,10 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
                 .tick_strategy
                 .map(|strategy| Box::new(strategy) as Box<dyn crate::tick_strategy::TickStrategy>),
             last_active_screen_for_strategy: None,
+            requested_lane: config.runtime_lane,
+            resolved_lane,
+            rollout_policy: config.rollout_policy,
+            shadow_frame_idx: 0,
         })
     }
 }
@@ -5757,12 +6026,23 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 
         let guardrails = FrameGuardrails::new(config.guardrails);
 
+        let shadow_evidence_path = if config.rollout_policy.is_shadow() {
+            evidence_sink
+                .as_ref()
+                .and_then(EvidenceSink::path)
+                .map(|p| p.display().to_string())
+        } else {
+            None
+        };
         tracing::info!(
             target: crate::telemetry_schema::TARGET_RUNTIME,
+            os = std::env::consts::OS,
+            console = console_available(),
             requested_lane = config.runtime_lane.label(),
             resolved_lane = resolved_lane.label(),
             task_backend = task_executor.kind_name_for_logs(),
             rollout_policy = config.rollout_policy.label(),
+            evidence_path = shadow_evidence_path.as_deref(),
             "runtime startup: lane={}, rollout={}",
             resolved_lane.label(),
             config.rollout_policy.label(),
@@ -5772,6 +6052,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         let job_control_claim = (suspend_enabled && config.intercept_signals)
             .then(ftui_core::job_control::JobControlClaim::acquire)
             .flatten();
+
+        let mut startup_parser = ftui_core::input_parser::InputParser::new();
+        startup_parser.set_pixel_mouse(config.pixel_mouse);
 
         Ok(Self {
             model,
@@ -5796,7 +6079,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             a11y_changed: false,
             a11y_dropped: 0,
             startup_events: Vec::new(),
-            startup_parser: ftui_core::input_parser::InputParser::new(),
+            startup_parser,
+            deliver_terminal_responses: config.deliver_terminal_responses,
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -5826,6 +6110,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             fairness_config_logged: false,
             resize_behavior: config.resize_behavior,
             fairness_guard: InputFairnessGuard::new(),
+            pending_fairness_input_duration: None,
             event_recorder: None,
             subscriptions,
             #[cfg(test)]
@@ -5845,6 +6130,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 .tick_strategy
                 .map(|strategy| Box::new(strategy) as Box<dyn crate::tick_strategy::TickStrategy>),
             last_active_screen_for_strategy: None,
+            requested_lane: config.runtime_lane,
+            resolved_lane,
+            rollout_policy: config.rollout_policy,
+            shadow_frame_idx: 0,
         })
     }
 }
@@ -5853,7 +6142,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 // Native TTY backend constructor (feature-gated)
 // =============================================================================
 
-#[cfg(any(feature = "crossterm-compat", feature = "native-backend"))]
+#[cfg(any(
+    feature = "crossterm-compat",
+    all(feature = "native-backend", unix),
+    test
+))]
 #[inline]
 const fn sanitize_backend_features_for_capabilities(
     requested: BackendFeatures,
@@ -5914,6 +6207,7 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, TerminalPresenter<Stdout>> {
         let options = ftui_tty::TtySessionOptions {
             alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
             features,
+            pixel_mouse: config.pixel_mouse,
             intercept_signals: config.intercept_signals,
         };
         let backend = ftui_tty::TtyBackend::open(0, 0, options)?;
@@ -6095,7 +6389,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         }
         self.write_job_control_evidence("resume", signal, Some(size_changed));
         if let Err(error) = stopped {
-            tracing::warn!(signal, %error, "job-control stop failed; resumed without stopping");
+            tracing::warn!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
+                signal,
+                %error,
+                "job-control stop failed; resumed without stopping"
+            );
         }
         Ok(())
     }
@@ -6156,6 +6455,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         }
         let events = self.startup_parser.parse(bytes);
         debug!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             bytes = bytes.len(),
             events = events.len(),
             "queued startup input recovered from the capability probes"
@@ -6215,11 +6515,18 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             self.drain_startup_events()?;
         }
 
+        // Optional deterministic exit hook (FTUI_EXIT_AFTER_MS).
+        let exit_deadline = exit_after_env("FTUI_EXIT_AFTER_MS").map(|d| Instant::now() + d);
+
         // Main loop
         let mut loop_count: u64 = 0;
         while self.running {
             termination_signal = termination_signal.or_else(|| self.observed_termination_signal());
             if termination_signal.is_some() {
+                self.running = false;
+                break;
+            }
+            if exit_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 self.running = false;
                 break;
             }
@@ -6233,8 +6540,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 crate::debug_trace!("main loop heartbeat: iteration {}", loop_count);
             }
 
-            // Poll for input with tick timeout
-            let timeout = self.effective_timeout();
+            // Poll for input with tick timeout (capped by exit_deadline if active)
+            let mut timeout = self.effective_timeout();
+            if let Some(deadline) = exit_deadline {
+                timeout = timeout.min(deadline.saturating_duration_since(Instant::now()));
+            }
 
             // Poll for events with timeout
             let poll_result = self.events.poll_event(timeout)?;
@@ -6294,6 +6604,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 
             // Check for tick - deliver to model so periodic logic can run
             if self.should_tick() {
+                let tick_start = Instant::now();
                 self.tick_count = self.tick_count.wrapping_add(1);
                 let tick_count = self.tick_count;
 
@@ -6350,6 +6661,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                         }
 
                         trace!(
+                            target: crate::telemetry_schema::TARGET_RUNTIME,
                             tick = tick_count,
                             active = %active,
                             ticked = tick_targets.len(),
@@ -6399,6 +6711,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                         self.reconcile_subscriptions();
                     }
                 }
+
+                self.fairness_guard.event_processed(
+                    FairnessEventType::Tick,
+                    tick_start.elapsed(),
+                    Instant::now(),
+                );
             }
 
             // Check for periodic checkpoint save
@@ -6412,8 +6730,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 break;
             }
 
-            // Render if dirty
-            if self.dirty {
+            // Render if dirty and no resize is waiting in the coalescer
+            if self.dirty && !self.resize_coalescer.has_pending() {
                 self.render_frame()?;
             }
 
@@ -6421,6 +6739,24 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             if loop_count.is_multiple_of(1000) {
                 self.presenter.gc();
             }
+        }
+
+        // If a resize was still coalescing when the loop exited, apply it now
+        // so the final inline frame reflects the terminal's current geometry.
+        if termination_signal.is_none()
+            && self.resize_coalescer.has_pending()
+            && matches!(
+                self.presenter.screen_mode(),
+                ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
+            )
+            && let CoalesceAction::ApplyResize {
+                width,
+                height,
+                coalesce_time,
+                forced_by_deadline,
+            } = self.resize_coalescer.flush_pending()
+        {
+            self.apply_resize(width, height, coalesce_time, forced_by_deadline)?;
         }
 
         // A quit returned by update() ends the loop before that update's
@@ -6541,6 +6877,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             shutdown_error.get_or_insert(error);
         }
 
+        self.resize_coalescer.flush_summary_to_evidence_sink();
+
         if let Some(ref sink) = self.evidence_sink {
             let (hits, misses, len, capacity, enabled) =
                 if let Some(stats) = ftui_core::text_width::width_cache_stats() {
@@ -6609,7 +6947,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             }
 
             let budget_exhausted = (zero_polls_in_burst_window as usize) >= zero_poll_limit
-                || burst_start.elapsed() >= max_burst_duration;
+                || (zero_polls_in_burst_window > 0 && burst_start.elapsed() >= max_burst_duration);
 
             if budget_exhausted {
                 if !capped_this_burst {
@@ -6622,6 +6960,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                     .immediate_drain_stats
                     .max_zero_timeout_polls_in_burst
                     .max(zero_polls_in_burst_window);
+
+                if self.subscriptions.may_have_pending_messages() {
+                    break;
+                }
 
                 std::thread::yield_now();
                 self.immediate_drain_stats.backoff_polls =
@@ -6661,10 +7003,18 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         if let Some(registry) = &self.state_registry {
             match registry.load() {
                 Ok(count) => {
-                    info!(count, "loaded widget state from persistence");
+                    info!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        count,
+                        "loaded widget state from persistence"
+                    );
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to load widget state");
+                    tracing::warn!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        error = %e,
+                        "failed to load widget state"
+                    );
                 }
             }
         }
@@ -6675,13 +7025,20 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         if let Some(registry) = &self.state_registry {
             match registry.flush() {
                 Ok(true) => {
-                    debug!("saved widget state to persistence");
+                    debug!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        "saved widget state to persistence"
+                    );
                 }
                 Ok(false) => {
                     // No changes to save
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to save widget state");
+                    tracing::warn!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        error = %e,
+                        "failed to save widget state"
+                    );
                 }
             }
         }
@@ -6759,6 +7116,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                     coalescer.clear();
                 }
                 debug!(
+                    target: crate::telemetry_schema::TARGET_RESIZE,
                     width,
                     height,
                     behavior = ?self.resize_behavior,
@@ -6766,6 +7124,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 );
                 if let Some((forced_width, forced_height)) = self.forced_size {
                     debug!(
+                        target: crate::telemetry_schema::TARGET_RESIZE,
                         forced_width,
                         forced_height, "Resize ignored due to forced size override"
                     );
@@ -6792,7 +7151,13 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                         return result;
                     }
                     ResizeBehavior::Throttled => {
-                        let action = self.resize_coalescer.handle_resize(width, height);
+                        let defer_immediate_apply =
+                            self.fairness_guard.should_yield_resize(Instant::now());
+                        let action = self.resize_coalescer.handle_resize_with_fairness(
+                            width,
+                            height,
+                            defer_immediate_apply,
+                        );
                         if let CoalesceAction::ApplyResize {
                             width,
                             height,
@@ -6818,6 +7183,14 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                         return Ok(());
                     }
                 }
+            }
+            Event::TerminalResponse(ref resp) => {
+                self.on_terminal_response(resp);
+                if !self.deliver_terminal_responses {
+                    self.record_fairness_event(fairness_event_type, event_start.elapsed());
+                    return Ok(());
+                }
+                event
             }
             other => other,
         };
@@ -6857,6 +7230,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             for evt in to_dispatch {
                 self.dispatch_input_event(evt)?;
                 if !self.running {
+                    self.record_fairness_event(fairness_event_type, event_start.elapsed());
                     return Ok(());
                 }
             }
@@ -6871,13 +7245,66 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         }
 
         // Track input event processing for fairness.
-        self.fairness_guard.event_processed(
-            fairness_event_type,
-            event_start.elapsed(),
-            Instant::now(),
-        );
+        self.record_fairness_event(fairness_event_type, event_start.elapsed());
 
         Ok(())
+    }
+
+    fn on_terminal_response(&mut self, resp: &ftui_core::event::TerminalResponse) {
+        match resp {
+            ftui_core::event::TerminalResponse::Dcs { payload, truncated } => {
+                debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
+                    payload_len = payload.len(),
+                    truncated,
+                    "terminal DCS response received"
+                );
+            }
+            ftui_core::event::TerminalResponse::Apc { payload, truncated } => {
+                debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
+                    payload_len = payload.len(),
+                    truncated,
+                    "terminal APC response received"
+                );
+            }
+            ftui_core::event::TerminalResponse::CellSize { width, height } => {
+                debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
+                    cell_width_px = width,
+                    cell_height_px = height,
+                    "terminal cell-size response received"
+                );
+                if *width > 0 && *height > 0 {
+                    self.startup_parser.set_cell_size_px(*width, *height);
+                }
+            }
+        }
+    }
+
+    fn record_fairness_event(&mut self, event_type: FairnessEventType, duration: Duration) {
+        if event_type == FairnessEventType::Input && self.resize_behavior.uses_coalescer() {
+            *self
+                .pending_fairness_input_duration
+                .get_or_insert(Duration::ZERO) += duration;
+        } else {
+            self.fairness_guard
+                .event_processed(event_type, duration, Instant::now());
+        }
+    }
+
+    fn complete_pending_fairness_input(&mut self, now: Instant) {
+        if self
+            .event_coalescer
+            .as_ref()
+            .is_some_and(ftui_core::event_coalescer::EventCoalescer::has_pending)
+        {
+            return;
+        }
+        if let Some(duration) = self.pending_fairness_input_duration.take() {
+            self.fairness_guard
+                .event_processed(FairnessEventType::Input, duration, now);
+        }
     }
 
     /// Dispatch a single input event to the model's `update()` method,
@@ -6918,12 +7345,14 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             Some(coalescer) if coalescer.has_pending() => coalescer.flush(),
             _ => return Ok(()),
         };
+        let flush_start = Instant::now();
         for event in pending {
             self.dispatch_input_event(event)?;
             if !self.running {
                 break;
             }
         }
+        self.record_fairness_event(FairnessEventType::Input, flush_start.elapsed());
         Ok(())
     }
 
@@ -6941,7 +7370,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             | Event::Paste(_)
             | Event::Ime(_)
             | Event::Focus(_)
-            | Event::Clipboard(_) => FairnessEventType::Input,
+            | Event::Clipboard(_)
+            | Event::TerminalResponse(_) => FairnessEventType::Input,
             Event::Resize { .. } => FairnessEventType::Resize,
             Event::Tick => FairnessEventType::Tick,
         }
@@ -7199,9 +7629,18 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 if let Some(mut previous) = self.tick_strategy.replace(strategy) {
                     let old_name = previous.name().to_owned();
                     previous.shutdown();
-                    info!(old = %old_name, new = %new_name, "tick strategy changed at runtime");
+                    info!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        old = %old_name,
+                        new = %new_name,
+                        "tick strategy changed at runtime"
+                    );
                 } else {
-                    info!(new = %new_name, "tick strategy changed at runtime");
+                    info!(
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
+                        new = %new_name,
+                        "tick strategy changed at runtime"
+                    );
                 }
                 self.last_active_screen_for_strategy = None;
             }
@@ -7423,6 +7862,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             // stop collecting measurements by repeatedly degrading to SkipFrame.
             if !predictor.is_calibrated(&prediction) {
                 debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     bucket = %prediction.bucket,
                     sample_count = prediction.sample_count,
                     fallback_level = prediction.fallback_level,
@@ -7431,9 +7871,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                     action = "defer_to_budget_controller",
                     "conformal bound unavailable"
                 );
-            } else if prediction.risk {
-                self.budget.degrade();
+            } else if prediction.risk && self.budget.degrade_respecting_floor() {
                 info!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     bucket = %prediction.bucket,
                     upper_us = ?prediction.upper_us,
                     budget_us = prediction.budget_us,
@@ -7442,12 +7882,14 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                     "conformal gate triggered strategy downgrade"
                 );
                 debug!(
-                    monotonic.counter.conformal_gate_triggers_total = 1_u64,
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     bucket = %prediction.bucket,
+                    monotonic.counter.conformal_gate_triggers_total = 1_u64,
                     "conformal gate trigger"
                 );
             }
             debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 bucket = %prediction.bucket,
                 upper_us = ?prediction.upper_us,
                 budget_us = prediction.budget_us,
@@ -7459,8 +7901,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 && let Some(quantile) = prediction.quantile
             {
                 debug!(
-                    monotonic.histogram.conformal_prediction_interval_width_us = quantile.max(0.0),
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     bucket = %prediction.bucket,
+                    monotonic.histogram.conformal_prediction_interval_width_us = quantile.max(0.0),
                     "conformal prediction interval width"
                 );
             }
@@ -7484,6 +7927,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 self.budget.degradation().as_str()
             );
             debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 degradation = self.budget.degradation().as_str(),
                 "frame skipped: budget exhausted before render"
             );
@@ -7498,11 +7942,39 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         if auto_bounds.is_some()
             && let Some(state) = self.inline_auto_remeasure.as_mut()
         {
+            let (alpha, beta) = state.sampler.posterior_params();
             let decision = state.sampler.decide(Instant::now());
+            let decision_str = if decision.should_sample {
+                "sample"
+            } else {
+                "skip"
+            };
+            debug!(
+                target: crate::telemetry_schema::TARGET_VOI,
+                source = "inline_auto",
+                widget_id = 0u64,
+                index = 0usize,
+                alpha = alpha,
+                beta = beta,
+                voi = decision.voi_gain,
+                sample_cost = decision.cost,
+                decision = decision_str,
+                "voi_sample decision"
+            );
             // The VOI decision is an evidence event like diff and budget
             // decisions: without this line the sampler's reasoning was only
             // visible through the in-process telemetry snapshot.
             if let Some(ref sink) = self.evidence_sink {
+                let sample_line = format!(
+                    r#"{{"schema_version":"ftui-evidence-v1","event":"{}","source":"inline_auto","widget_id":0,"index":0,"alpha":{:.6},"beta":{:.6},"voi":{:.6},"sample_cost":{:.6},"decision":"{}"}}"#,
+                    crate::telemetry_schema::evidence::VOI_SAMPLE,
+                    alpha,
+                    beta,
+                    decision.voi_gain,
+                    decision.cost,
+                    decision_str,
+                );
+                let _ = sink.write_jsonl(&sample_line);
                 let _ = sink.write_jsonl(&decision.to_jsonl());
             }
             if decision.should_sample {
@@ -7559,6 +8031,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         let render_budget = self.budget.phase_budgets().render;
         if render_elapsed > render_budget {
             debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 render_ms = render_elapsed.as_millis() as u32,
                 budget_ms = render_budget.as_millis() as u32,
                 "render phase exceeded budget"
@@ -7573,6 +8046,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 
         // --- Present phase ---
         if !self.budget.exhausted() {
+            let shadow_checksum = if self.rollout_policy.is_shadow() && self.evidence_sink.is_some()
+            {
+                Some(ftui_render::buffer::buffer_checksum(&buffer))
+            } else {
+                None
+            };
             let present_start = Instant::now();
             {
                 let _present_span =
@@ -7583,9 +8062,31 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             presented = true;
             present_elapsed = present_start.elapsed();
 
+            if let (Some(checksum), Some(sink)) = (shadow_checksum, self.evidence_sink.as_ref()) {
+                let frame = self.shadow_frame_idx;
+                self.shadow_frame_idx = self.shadow_frame_idx.saturating_add(1);
+                let ts_ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let evidence = ShadowFrameEvidence {
+                    frame,
+                    checksum,
+                    lane: self.resolved_lane.label(),
+                    requested_lane: self.requested_lane.label(),
+                    rollout_policy: self.rollout_policy.label(),
+                    task_backend: self.task_executor.kind_name_for_logs(),
+                    cols: self.width,
+                    rows: frame_height,
+                    ts_ns,
+                };
+                let _ = sink.write_jsonl(&evidence.to_jsonl());
+            }
+
             let present_budget = self.budget.phase_budgets().present;
             if present_elapsed > present_budget {
                 debug!(
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     present_ms = present_elapsed.as_millis() as u32,
                     budget_ms = present_budget.as_millis() as u32,
                     "present phase exceeded budget"
@@ -7593,6 +8094,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             }
         } else {
             debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 degradation = self.budget.degradation().as_str(),
                 elapsed_ms = self.budget.elapsed().as_millis() as u32,
                 "frame present skipped: budget exhausted after render"
@@ -7737,6 +8239,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             pid_i: telemetry.pid_i,
             pid_d: telemetry.pid_d,
             e_value: telemetry.e_value,
+            eprocess_lambda: telemetry.eprocess_lambda,
             frames_observed: telemetry.frames_observed,
             frames_since_change: telemetry.frames_since_change,
             in_warmup: telemetry.in_warmup,
@@ -7835,6 +8338,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         .entered();
         self.model.view(&mut frame);
         self.widget_signals = frame.take_widget_signals();
+        let remeasure_requests = frame.take_remeasure_requests();
         frame.finish_a11y();
         let a11y_order = frame.take_a11y_order();
         tracing::Span::current().record("duration_us", view_start.elapsed().as_micros() as u64);
@@ -7844,7 +8348,38 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         // `frame` is not used past this point, which releases its borrow of
         // the builder so the tree can be built.
         self.a11y_pending = a11y_builder.map(|builder| (builder.build(), a11y_order));
+        self.process_remeasure_requests(remeasure_requests);
         output
+    }
+
+    fn process_remeasure_requests(&self, requests: Vec<ftui_render::frame::RemeasureRequest>) {
+        for req in requests {
+            debug!(
+                target: crate::telemetry_schema::TARGET_VOI,
+                source = "virtualized_list",
+                widget_id = req.widget_id,
+                index = req.index,
+                alpha = req.alpha,
+                beta = req.beta,
+                voi = req.voi,
+                sample_cost = req.cost,
+                decision = "sample",
+                "voi_sample decision"
+            );
+            if let Some(ref sink) = self.evidence_sink {
+                let line = format!(
+                    r#"{{"schema_version":"ftui-evidence-v1","event":"{}","source":"virtualized_list","widget_id":{},"index":{},"alpha":{:.6},"beta":{:.6},"voi":{:.6},"sample_cost":{:.6},"decision":"sample"}}"#,
+                    crate::telemetry_schema::evidence::VOI_SAMPLE,
+                    req.widget_id,
+                    req.index,
+                    req.alpha,
+                    req.beta,
+                    req.voi,
+                    req.cost,
+                );
+                let _ = sink.write_jsonl(&line);
+            }
+        }
     }
 
     /// Diff the accessibility tree collected by the last `render_buffer`
@@ -8129,16 +8664,20 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 
     fn process_resize_coalescer(&mut self) -> io::Result<()> {
         if !self.resize_behavior.uses_coalescer() {
+            self.complete_pending_fairness_input(Instant::now());
             return Ok(());
         }
 
         // Check fairness: if input is starving, skip resize application this cycle.
         // This ensures input events are processed before resize is finalized.
+        let now = Instant::now();
         let dominance_count = self.fairness_guard.resize_dominance_count();
-        let fairness_decision = self.fairness_guard.check_fairness(Instant::now());
+        let fairness_decision = self.fairness_guard.check_fairness(now);
         self.emit_fairness_evidence(&fairness_decision, dominance_count);
+        self.complete_pending_fairness_input(now);
         if !fairness_decision.should_process {
             debug!(
+                target: crate::telemetry_schema::TARGET_RESIZE,
                 reason = ?fairness_decision.reason,
                 pending_latency_ms = fairness_decision.pending_input_latency.map(|d| d.as_millis() as u64),
                 "Resize yielding to input for fairness"
@@ -8174,7 +8713,16 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 height,
                 coalesce_time,
                 forced_by_deadline,
-            } => self.apply_resize(width, height, coalesce_time, forced_by_deadline),
+            } => {
+                let apply_start = Instant::now();
+                let result = self.apply_resize(width, height, coalesce_time, forced_by_deadline);
+                self.fairness_guard.event_processed(
+                    FairnessEventType::Resize,
+                    apply_start.elapsed(),
+                    Instant::now(),
+                );
+                result
+            }
             _ => Ok(()),
         }
     }
@@ -8193,6 +8741,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         self.height = height;
         self.presenter.resize(width, height);
         info!(
+            target: crate::telemetry_schema::TARGET_RESIZE,
             width = width,
             height = height,
             coalesce_ms = coalesce_time.as_millis() as u64,
@@ -9060,6 +9609,40 @@ mod tests {
         let config = ProgramConfig::default().with_mouse();
         assert_eq!(config.mouse_capture_policy, MouseCapturePolicy::On);
         assert!(config.resolved_mouse_capture());
+    }
+
+    #[test]
+    fn exit_after_env_parses_ms_and_rejects_garbage() {
+        assert_eq!(
+            parse_exit_after_ms("1500"),
+            Some(Duration::from_millis(1500))
+        );
+        assert_eq!(
+            parse_exit_after_ms("  250 \n"),
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(parse_exit_after_ms("0"), None);
+        assert_eq!(parse_exit_after_ms(""), None);
+        assert_eq!(parse_exit_after_ms("-50"), None);
+        assert_eq!(parse_exit_after_ms("garbage"), None);
+        assert_eq!(parse_exit_after_ms("1500ms"), None);
+        assert_eq!(
+            exit_after_env("FTUI_NONEXISTENT_EXIT_AFTER_MS_TEST_VAR"),
+            None
+        );
+    }
+
+    #[test]
+    fn with_config_reports_not_a_console_cleanly() {
+        assert!(validate_console_available(true).is_ok());
+        let err = validate_console_available(false)
+            .expect_err("non-console handle must report Unsupported");
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(err.to_string(), NOT_A_CONSOLE_MESSAGE);
+        assert!(err.to_string().contains("not a console"));
+        // Verify a non-terminal handle (anonymous file / pipe) is detected as false
+        let temp = tempfile::tempfile().expect("tempfile");
+        assert!(!io::IsTerminal::is_terminal(&temp));
     }
 
     #[cfg(feature = "native-backend")]
@@ -11891,6 +12474,7 @@ mod tests {
             pid_i: 0.25,
             pid_d: 0.5,
             e_value: 2.0,
+            eprocess_lambda: 0.65,
             frames_observed: 42,
             frames_since_change: 3,
             in_warmup: false,
@@ -11944,6 +12528,7 @@ mod tests {
         assert!(jsonl.contains("\"budget_us\":16000.000000"));
         assert!(jsonl.contains("\"pid_output\":1.250000"));
         assert!(jsonl.contains("\"e_value\":2.000000"));
+        assert!(jsonl.contains("\"eprocess_lambda\":0.650000"));
         assert!(jsonl.contains("\"recovery_streak\":5"));
         assert!(jsonl.contains("\"total_degrades\":2"));
         assert!(jsonl.contains("\"total_recoveries\":1"));
@@ -13160,8 +13745,8 @@ mod tests {
     where
         M::Message: Send + 'static,
     {
-        let effect_queue_config =
-            config.resolved_effect_queue_config(config.runtime_lane.resolve());
+        let resolved_lane = config.runtime_lane.resolve();
+        let effect_queue_config = config.resolved_effect_queue_config(resolved_lane);
         let capabilities = TerminalCapabilities::basic();
         let mut writer = TerminalWriter::with_diff_config(
             Vec::new(),
@@ -13233,6 +13818,9 @@ mod tests {
         )
         .expect("task executor");
 
+        let mut startup_parser = ftui_core::input_parser::InputParser::new();
+        startup_parser.set_pixel_mouse(config.pixel_mouse);
+
         Program {
             model,
             presenter: TerminalPresenter::new(writer),
@@ -13256,7 +13844,8 @@ mod tests {
             a11y_changed: false,
             a11y_dropped: 0,
             startup_events: Vec::new(),
-            startup_parser: ftui_core::input_parser::InputParser::new(),
+            startup_parser,
+            deliver_terminal_responses: config.deliver_terminal_responses,
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -13292,6 +13881,7 @@ mod tests {
             fairness_config_logged: false,
             resize_behavior: config.resize_behavior,
             fairness_guard: InputFairnessGuard::new(),
+            pending_fairness_input_duration: None,
             event_recorder: None,
             subscriptions,
             #[cfg(test)]
@@ -13311,6 +13901,10 @@ mod tests {
                 .tick_strategy
                 .map(|strategy| Box::new(strategy) as Box<dyn crate::tick_strategy::TickStrategy>),
             last_active_screen_for_strategy: None,
+            requested_lane: config.runtime_lane,
+            resolved_lane,
+            rollout_policy: config.rollout_policy,
+            shadow_frame_idx: 0,
         }
     }
 
@@ -14368,7 +14962,9 @@ mod tests {
         let model = DirectionModel {
             directions: Rc::clone(&directions),
         };
-        let config = ProgramConfig::default().with_locale("ar");
+        let config = ProgramConfig::default()
+            .with_locale("ar")
+            .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)));
         let mut program = headless_program_with_config(model, config);
 
         program.render_frame().expect("render initial frame");
@@ -14426,7 +15022,11 @@ mod tests {
             }
         }
 
-        let mut program = headless_program_with_config(RenderModel, ProgramConfig::default());
+        let mut program = headless_program_with_config(
+            RenderModel,
+            ProgramConfig::default()
+                .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5))),
+        );
         program.render_frame().expect("render frame");
 
         assert!(!program.dirty);
@@ -14611,6 +15211,123 @@ mod tests {
     #[test]
     fn voi_sample_written_for_inline_auto() {
         headless_inline_auto_exports_voi_decision_evidence();
+    }
+
+    #[test]
+    fn inline_auto_remeasure_emits_voi_sample_evidence() {
+        struct TallModel;
+
+        #[derive(Debug)]
+        enum TallMsg {
+            Noop,
+        }
+
+        impl From<Event> for TallMsg {
+            fn from(_: Event) -> Self {
+                TallMsg::Noop
+            }
+        }
+
+        impl Model for TallModel {
+            type Message = TallMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('V'));
+            }
+        }
+
+        let evidence_path = temp_evidence_path("voi_sample_inline_auto");
+        let config = ProgramConfig::inline_auto(1, 6)
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+
+        let mut program = headless_program_with_config(TallModel, config);
+        program.dirty = true;
+        program.render_frame().expect("render inline-auto frame");
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
+        let voi_sample_line = contents
+            .lines()
+            .find(|line| line.contains(r#""event":"voi_sample""#))
+            .expect("voi_sample line emitted for inline_auto");
+        let parsed: serde_json::Value =
+            serde_json::from_str(voi_sample_line).expect("valid voi_sample json");
+        assert_eq!(parsed["source"].as_str(), Some("inline_auto"));
+        assert!(parsed["alpha"].is_number());
+        assert!(parsed["beta"].is_number());
+        assert!(parsed["voi"].is_number());
+        assert!(parsed["sample_cost"].is_number());
+        assert!(matches!(
+            parsed["decision"].as_str(),
+            Some("sample" | "skip")
+        ));
+    }
+
+    #[test]
+    fn virtualized_list_remeasure_request_emits_voi_sample_evidence() {
+        struct RemeasureModel;
+
+        #[derive(Debug)]
+        enum RemeasureMsg {}
+
+        impl From<Event> for RemeasureMsg {
+            fn from(_: Event) -> Self {
+                unreachable!()
+            }
+        }
+
+        impl Model for RemeasureModel {
+            type Message = RemeasureMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('L'));
+                frame.push_remeasure_request(ftui_render::frame::RemeasureRequest {
+                    widget_id: 42,
+                    index: 3,
+                    voi: 0.027_778,
+                    cost: 0.01,
+                    alpha: 1.0,
+                    beta: 1.0,
+                });
+            }
+        }
+
+        let evidence_path = temp_evidence_path("voi_sample_virtualized_list");
+        let config = ProgramConfig::default()
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+
+        let mut program = headless_program_with_config(RemeasureModel, config);
+        program.dirty = true;
+        program.render_frame().expect("render frame");
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
+        let voi_sample_line = contents
+            .lines()
+            .find(|line| line.contains(r#""event":"voi_sample""#))
+            .expect("voi_sample line emitted for virtualized_list");
+        let parsed: serde_json::Value =
+            serde_json::from_str(voi_sample_line).expect("valid voi_sample json");
+        assert_eq!(parsed["source"].as_str(), Some("virtualized_list"));
+        assert_eq!(parsed["widget_id"].as_u64(), Some(42));
+        assert_eq!(parsed["index"].as_u64(), Some(3));
+        assert!((parsed["alpha"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+        assert!((parsed["beta"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+        assert!(parsed["voi"].as_f64().unwrap() > 0.02);
+        assert!((parsed["sample_cost"].as_f64().unwrap() - 0.01).abs() < 1e-6);
+        assert_eq!(parsed["decision"].as_str(), Some("sample"));
+    }
+
+    #[test]
+    fn voi_sample_line_is_valid_json_with_registered_fields() {
+        virtualized_list_remeasure_request_emits_voi_sample_evidence();
+        inline_auto_remeasure_emits_voi_sample_evidence();
     }
 
     #[test]
@@ -14892,6 +15609,7 @@ mod tests {
         let evidence_path = temp_evidence_path("a11y");
         let config = ProgramConfig::default()
             .with_accessibility(ScreenReaderPolicy::default())
+            .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)))
             .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
         let mut program = headless_program_with_config(
             A11yModel {
@@ -14978,6 +15696,290 @@ mod tests {
             !contents.contains("Saved"),
             "ordinary evidence must not contain accessibility content"
         );
+    }
+
+    #[test]
+    fn accessibility_tree_is_built_when_enabled() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+        use ftui_core::geometry::Rect;
+
+        struct SimpleA11yModel;
+        impl Model for SimpleA11yModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(10, A11yRole::Button, Rect::new(0, 0, 8, 1))
+                        .with_name("Submit")
+                        .with_state(A11yState {
+                            focused: true,
+                            ..A11yState::default()
+                        }),
+                );
+            }
+        }
+
+        let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+        let mut program = headless_program_with_config(SimpleA11yModel, config);
+        program.dirty = true;
+        program.render_frame().expect("render enabled a11y frame");
+        let tree = program
+            .accessibility_tree()
+            .expect("tree built when enabled");
+        assert_eq!(tree.node_count(), 1);
+        assert_eq!(tree.focused_id(), Some(10));
+    }
+
+    #[test]
+    fn accessibility_tree_is_none_when_disabled() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+        use ftui_core::geometry::Rect;
+
+        struct SimpleA11yModel;
+        impl Model for SimpleA11yModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(10, A11yRole::Button, Rect::new(0, 0, 8, 1))
+                        .with_name("Submit"),
+                );
+            }
+        }
+
+        let mut program = headless_program_with_config(SimpleA11yModel, ProgramConfig::default());
+        program.dirty = true;
+        program.render_frame().expect("render disabled a11y frame");
+        assert!(program.accessibility_tree().is_none());
+        assert!(program.accessibility_announcements().is_empty());
+    }
+
+    #[test]
+    fn focus_move_between_two_inputs_emits_one_announcement() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+        use ftui_a11y::tree::AnnouncementReason;
+        use ftui_core::geometry::Rect;
+
+        struct TwoInputModel {
+            focused_idx: usize,
+        }
+        impl Model for TwoInputModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                for (i, label) in ["First", "Second"].into_iter().enumerate() {
+                    frame.push_a11y(
+                        A11yNodeInfo::new(
+                            (i + 1) as u64,
+                            A11yRole::TextInput,
+                            Rect::new(0, i as u16, 12, 1),
+                        )
+                        .with_name(label)
+                        .with_state(A11yState {
+                            focused: self.focused_idx == i,
+                            ..A11yState::default()
+                        }),
+                    );
+                }
+            }
+        }
+
+        let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+        let mut program = headless_program_with_config(TwoInputModel { focused_idx: 0 }, config);
+        program.dirty = true;
+        program.render_frame().expect("render initial focus");
+        assert_eq!(program.accessibility_tree().unwrap().focused_id(), Some(1));
+
+        program.model.focused_idx = 1;
+        program.dirty = true;
+        program.render_frame().expect("render moved focus");
+        assert_eq!(program.accessibility_tree().unwrap().focused_id(), Some(2));
+        let focus_announcements: Vec<_> = program
+            .accessibility_announcements()
+            .iter()
+            .filter(|a| a.reason == AnnouncementReason::FocusChanged)
+            .collect();
+        assert_eq!(focus_announcements.len(), 1);
+        assert_eq!(focus_announcements[0].node_id, Some(2));
+        assert!(focus_announcements[0].text.contains("Second"));
+    }
+
+    #[test]
+    fn progress_value_change_emits_polite_live_region_announcement() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState, LiveRegion};
+        use ftui_a11y::tree::AnnouncementReason;
+        use ftui_core::geometry::Rect;
+
+        struct ProgressModel {
+            pct: u8,
+        }
+        impl Model for ProgressModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(1, A11yRole::ProgressBar, Rect::new(0, 0, 20, 1))
+                        .with_name("Upload")
+                        .with_state(A11yState {
+                            value_now: Some(f64::from(self.pct) / 100.0),
+                            value_min: Some(0.0),
+                            value_max: Some(1.0),
+                            value_text: Some(format!("{}%", self.pct)),
+                            ..A11yState::default()
+                        })
+                        .with_live_region(LiveRegion::Polite),
+                );
+            }
+        }
+
+        let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+        let mut program = headless_program_with_config(ProgressModel { pct: 20 }, config);
+        program.dirty = true;
+        program.render_frame().expect("render initial progress");
+
+        program.model.pct = 65;
+        program.dirty = true;
+        program.render_frame().expect("render updated progress");
+        let announcements = program.accessibility_announcements();
+        assert!(
+            announcements.iter().any(|a| {
+                a.reason == AnnouncementReason::LiveContentChanged
+                    && a.urgency == LiveRegion::Polite
+                    && a.text.contains("65%")
+            }),
+            "expected polite LiveContentChanged announcement for 65%; got {announcements:?}"
+        );
+    }
+
+    #[test]
+    fn unchanged_frame_emits_no_announcement() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+        use ftui_core::geometry::Rect;
+
+        struct StaticModel;
+        impl Model for StaticModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(1, A11yRole::Button, Rect::new(0, 0, 10, 1))
+                        .with_name("Save")
+                        .with_state(A11yState {
+                            focused: true,
+                            ..A11yState::default()
+                        }),
+                );
+            }
+        }
+
+        let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+        let mut program = headless_program_with_config(StaticModel, config);
+        program.dirty = true;
+        program.render_frame().expect("first frame");
+        assert!(!program.accessibility_announcements().is_empty());
+
+        program.dirty = true;
+        program.render_frame().expect("unchanged second frame");
+        assert!(program.accessibility_announcements().is_empty());
+    }
+
+    #[test]
+    fn on_accessibility_tree_hook_receives_arc() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+        use ftui_a11y::tree::A11yTree;
+        use ftui_core::geometry::Rect;
+        use std::sync::Arc;
+
+        #[derive(Default)]
+        struct HookModel {
+            shared: Option<Arc<A11yTree>>,
+        }
+        impl Model for HookModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(7, A11yRole::Group, Rect::new(0, 0, 20, 4))
+                        .with_name("Panel"),
+                );
+            }
+            fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Event> {
+                self.shared = Some(Arc::new(a11y.tree.clone()));
+                Cmd::none()
+            }
+        }
+
+        let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+        let mut program = headless_program_with_config(HookModel::default(), config);
+        program.dirty = true;
+        program.render_frame().expect("render frame with hook");
+        let arc_tree = program.model.shared.as_ref().expect("hook received tree");
+        assert_eq!(arc_tree.node_count(), 1);
+        assert_eq!(arc_tree.node(7).unwrap().name.as_deref(), Some("Panel"));
+    }
+
+    #[test]
+    fn a11y_announcement_line_is_valid_json_with_registered_fields() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+        use ftui_core::geometry::Rect;
+
+        struct JsonModel;
+        impl Model for JsonModel {
+            type Message = Event;
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.push_a11y(
+                    A11yNodeInfo::new(42, A11yRole::TextInput, Rect::new(0, 0, 16, 1))
+                        .with_name("Email")
+                        .with_state(A11yState {
+                            focused: true,
+                            ..A11yState::default()
+                        }),
+                );
+            }
+        }
+
+        let path = temp_evidence_path("a11y_json_fields");
+        let config = ProgramConfig::default()
+            .with_accessibility(ScreenReaderPolicy::default())
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&path));
+        let mut program = headless_program_with_config(JsonModel, config);
+        program.dirty = true;
+        program.render_frame().expect("render json model");
+
+        let contents = std::fs::read_to_string(&path).expect("read evidence file");
+        let announcement_rows: Vec<serde_json::Value> = contents
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("valid JSON line"))
+            .filter(|row: &serde_json::Value| row["event"] == "a11y_announcement")
+            .collect();
+        assert!(
+            !announcement_rows.is_empty(),
+            "expected a11y_announcement rows"
+        );
+        for row in &announcement_rows {
+            assert!(row.get("frame_idx").is_some());
+            assert!(row.get("node_id").is_some());
+            assert!(row.get("urgency").is_some());
+            assert!(row.get("reason").is_some());
+            assert!(row.get("text").is_some());
+            assert!(row.get("text_chars").is_some());
+        }
     }
 
     const A11Y_PRIVACY_CANARY: &str = "A11Y_SECRET_450512_\"é\\\n日";
@@ -15248,7 +16250,7 @@ mod tests {
         telemetry.processor = crate::telemetry::SpanProcessorKind::Simple;
         telemetry.headers.push((
             "User-Agent".into(),
-            "OpenAI File Downloader, XaiImageApiFetch/1.0".into(),
+            "frankentui-test (+https://github.com/Dicklesworthstone/frankentui)".into(),
         ));
         let (layer, provider) = telemetry.build_layer().expect("real OTLP exporter");
         let subscriber = tracing_subscriber::registry().with(layer);
@@ -15460,6 +16462,233 @@ mod tests {
         assert!(!predictor.is_calibrated(&prediction));
     }
 
+    #[test]
+    fn headless_calibrated_conformal_risk_gate_respects_degradation_floor() {
+        use ftui_render::budget::DegradationLevel;
+        let config = ProgramConfig::default()
+            .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)))
+            .with_conformal_config(ConformalConfig {
+                alpha: 0.2,
+                min_samples: 5,
+                window_size: 32,
+                q_default: 10_000_000.0,
+            });
+        let mut program = headless_program_with_config(TestModel { value: 0 }, config);
+        let key = BucketKey::from_context(ScreenMode::AltScreen, DiffStrategy::Full, 80, 24);
+        if let Some(predictor) = program.conformal_predictor.as_mut() {
+            for _ in 0..10 {
+                predictor.observe(key, 5_000_000.0, 20_000_000.0);
+            }
+        }
+        // Calibrated conformal predictor now predicts risk (upper_us > budget_us),
+        // while fast 1ms frame times keep the PID controller from degrading on its own.
+        // Repeated risky renders must clamp at the default floor (SimpleBorders)
+        // rather than bypassing the floor all the way to SkipFrame.
+        for _ in 0..5 {
+            program.budget.record_frame_time(Duration::from_millis(1));
+            program.dirty = true;
+            program.render_frame().expect("calibrated conformal gate");
+        }
+        assert_eq!(
+            program.budget.degradation(),
+            DegradationLevel::SimpleBorders,
+            "calibrated conformal risk gate must honor the controller degradation_floor"
+        );
+    }
+
+    #[test]
+    fn without_conformal_opts_out() {
+        let evidence_path = temp_evidence_path("without_conformal_opt_out");
+        let config = ProgramConfig::default()
+            .without_conformal()
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+        assert!(config.conformal_config.is_none());
+
+        let mut program = headless_program_with_config(TestModel { value: 0 }, config);
+        assert!(
+            program.conformal_predictor.is_none(),
+            "without_conformal() must leave conformal_predictor as None"
+        );
+        program
+            .step_headless_frame()
+            .expect("render without conformal");
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence written");
+        let row: serde_json::Value = contents
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("valid JSON"))
+            .find(|r: &serde_json::Value| r["event"] == "budget_decision")
+            .expect("budget_decision row");
+        assert!(row["conformal_status"].is_null());
+        assert!(row["fallback_level"].is_null());
+        assert!(row["upper_us"].is_null());
+    }
+
+    #[test]
+    fn headless_program_warms_up_then_degrades_then_recovers() {
+        use ftui_render::budget::DegradationLevel;
+
+        let evidence_path = temp_evidence_path("conformal_warmup_degrade_recover");
+        let defaults = ProgramConfig::default()
+            .conformal_config
+            .expect("conformal on by default");
+        let min_samples = defaults.min_samples;
+        assert_eq!(min_samples, 20);
+
+        // Use the default alpha (0.05) and min_samples (20) with a window_size
+        // of 24 so that after warm-up and a single slow residual spike, 24 fast
+        // frames evict the spike from the calibration window and allow recovery.
+        let window_size = 24;
+        let budget_total = Duration::from_secs(5);
+        let config = ProgramConfig::default()
+            .with_budget(FrameBudgetConfig::with_total(budget_total))
+            .with_conformal_config(ConformalConfig {
+                alpha: defaults.alpha,
+                min_samples,
+                window_size,
+                q_default: 10_000_000.0,
+            })
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+        let mut program = headless_program_with_config(TestModel { value: 0 }, config);
+
+        // Phase 1: Warm-up (frames 1..=min_samples, where pre-render n_b = 0..19).
+        // On the last warm-up frame (frame 20, pre-render n_b = 19), we inject a
+        // single slow residual into the bucket after render (or via baseline_us)
+        // so that as soon as warm-up completes (frame 21, pre-render n_b = 20),
+        // the 95% conformal quantile exceeds the 5s budget while the PID/e-process
+        // controller itself remains at Hold.
+        for frame in 1..=min_samples {
+            program.step_headless_frame().expect("warmup frame");
+            assert_eq!(
+                program.budget.degradation(),
+                DegradationLevel::Full,
+                "frame {frame}: must never degrade during warm-up (n_b < {min_samples})"
+            );
+        }
+
+        // Inject a single slow observation into the active bucket (replace the
+        // 20th sample with a 20s residual against the 5s budget) while keeping
+        // the budget controller's own frame-time history fast.
+        let active_key = BucketKey::from_context(
+            program.presenter.screen_mode(),
+            program
+                .presenter
+                .last_diff_strategy()
+                .unwrap_or(DiffStrategy::Full),
+            program.width,
+            program.presenter.render_height_hint().max(1),
+        );
+        if let Some(predictor) = program.conformal_predictor.as_mut() {
+            predictor.observe(active_key, 100.0, 20_000_000.0);
+        }
+
+        // Phase 2: Post-warmup calibrated conformal risk gate triggers degradation
+        // on the very next frame (n_b >= min_samples, fallback_level == 0,
+        // status == "calibrated", risk == true).
+        program
+            .step_headless_frame()
+            .expect("first calibrated risky frame");
+        assert_eq!(
+            program.budget.degradation(),
+            DegradationLevel::SimpleBorders,
+            "calibrated conformal risk gate must degrade Full -> SimpleBorders"
+        );
+
+        // Phase 3: Recovery. Run fast frames until the slow residual ages out of
+        // the sliding window (window_size = 24) and the budget controller's
+        // underload e-process upgrades SimpleBorders -> Full.
+        let mut recovered_at = None;
+        for step in 0..80 {
+            program.budget.record_frame_time(Duration::from_micros(50));
+            program.step_headless_frame().expect("recovery frame");
+            if program.budget.degradation() == DegradationLevel::Full {
+                recovered_at = Some(step);
+                break;
+            }
+        }
+        assert!(
+            recovered_at.is_some(),
+            "program must recover to DegradationLevel::Full once fast frames evict the spike and pass the upgrade gate"
+        );
+
+        // Verify the JSONL evidence trail records all three phases.
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file");
+        let rows: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("valid JSON"))
+            .filter(|r: &serde_json::Value| r["event"] == "budget_decision")
+            .collect();
+        assert!(rows.len() > min_samples + window_size);
+
+        // All warm-up rows (first min_samples frames) have status == "warmup",
+        // fallback_level == 3, and degradation_after == "Full".
+        for (idx, row) in rows.iter().take(min_samples).enumerate() {
+            assert_eq!(row["conformal_status"], "warmup", "warmup row {idx}: {row}");
+            assert_eq!(row["fallback_level"], 3, "warmup row {idx}: {row}");
+            assert_eq!(row["degradation_after"], "Full", "warmup row {idx}: {row}");
+        }
+
+        // The first post-warmup frame is calibrated at fallback_level == 0 and degrades.
+        let degrade_row = &rows[min_samples];
+        assert_eq!(degrade_row["conformal_status"], "calibrated");
+        assert_eq!(degrade_row["fallback_level"], 0);
+        assert_eq!(degrade_row["risk"], true);
+        assert_eq!(degrade_row["decision"], "degrade");
+        assert_eq!(degrade_row["decision_controller"], "stay");
+        assert_eq!(degrade_row["degradation_before"], "Full");
+        assert_eq!(degrade_row["degradation_after"], "SimpleBorders");
+
+        // A later calibrated row upgrades back to Full once risk clears.
+        assert!(
+            rows.iter().skip(min_samples + 1).any(|r| {
+                r["conformal_status"] == "calibrated"
+                    && r["fallback_level"] == 0
+                    && r["risk"] == false
+                    && r["decision"] == "upgrade"
+                    && r["degradation_after"] == "Full"
+            }),
+            "evidence must record calibrated upgrade back to Full"
+        );
+    }
+
+    #[test]
+    fn simulator_has_no_conformal_predictor() {
+        use crate::simulator::ProgramSimulator;
+        use ftui_render::budget::DegradationLevel;
+
+        struct DegradationCheckModel {
+            observed: Arc<std::sync::Mutex<Vec<DegradationLevel>>>,
+        }
+
+        impl Model for DegradationCheckModel {
+            type Message = TestMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                self.observed.lock().unwrap().push(frame.buffer.degradation);
+                frame.buffer.set_raw(0, 0, Cell::from_char('S'));
+            }
+        }
+
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut sim = ProgramSimulator::new(DegradationCheckModel {
+            observed: Arc::clone(&observed),
+        });
+        sim.init();
+        for _ in 0..40 {
+            sim.capture_frame(80, 24);
+        }
+        let levels = observed.lock().unwrap();
+        assert_eq!(levels.len(), 40);
+        assert!(
+            levels.iter().all(|&lvl| lvl == DegradationLevel::Full),
+            "ProgramSimulator must stay strictly deterministic at DegradationLevel::Full with no conformal gating"
+        );
+    }
+
     /// With `ProgramConfig::gestures` set, raw mouse events still reach
     /// `update()` and every recognized gesture reaches `Model::on_gesture`;
     /// without it nothing is recognized.
@@ -15511,6 +16740,7 @@ mod tests {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 x: 3,
                 y: 3,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             }))
             .unwrap();
@@ -15579,6 +16809,7 @@ mod tests {
                 kind,
                 x,
                 y,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             })
         };
@@ -15681,6 +16912,7 @@ mod tests {
                     kind: MouseEventKind::Moved,
                     x: i,
                     y: i,
+                    pixel: None,
                     modifiers: Modifiers::NONE,
                 }))
                 .unwrap();
@@ -15717,6 +16949,7 @@ mod tests {
                     kind: MouseEventKind::Moved,
                     x: i,
                     y: i * 2,
+                    pixel: None,
                     modifiers: Modifiers::NONE,
                 }))
                 .unwrap();
@@ -15770,6 +17003,7 @@ mod tests {
                     kind: MouseEventKind::ScrollUp,
                     x: 10,
                     y: 20,
+                    pixel: None,
                     modifiers: Modifiers::NONE,
                 }))
                 .unwrap();
@@ -15827,6 +17061,7 @@ mod tests {
                 kind: MouseEventKind::ScrollUp,
                 x: 5,
                 y: 5,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             }))
             .unwrap();
@@ -15841,6 +17076,7 @@ mod tests {
                 kind: MouseEventKind::ScrollDown,
                 x: 6,
                 y: 6,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             }))
             .unwrap();
@@ -15889,6 +17125,7 @@ mod tests {
                 kind: MouseEventKind::Moved,
                 x: 42,
                 y: 24,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             }))
             .unwrap();
@@ -15933,6 +17170,7 @@ mod tests {
                 kind: MouseEventKind::Moved,
                 x: 10,
                 y: 10,
+                pixel: None,
                 modifiers: Modifiers::NONE,
             }))
             .unwrap();
@@ -15959,6 +17197,52 @@ mod tests {
             program.model.events[0],
             Event::Key(KeyEvent::new(KeyCode::Char('a')))
         );
+    }
+
+    #[test]
+    fn headless_program_terminal_response_intercepted_unless_opted_in() {
+        use ftui_core::event::TerminalResponse;
+
+        #[derive(Default)]
+        struct RespTestModel {
+            events: Vec<Event>,
+        }
+
+        impl Model for RespTestModel {
+            type Message = Event;
+            fn update(&mut self, msg: Event) -> Cmd<Event> {
+                self.events.push(msg);
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let dcs = Event::TerminalResponse(TerminalResponse::Dcs {
+            payload: b"1$r0m".to_vec(),
+            truncated: false,
+        });
+        let cell_size = Event::TerminalResponse(TerminalResponse::CellSize {
+            width: 10,
+            height: 20,
+        });
+
+        // Default: intercepted inside Program without reaching Model::update.
+        let mut program =
+            headless_program_with_config(RespTestModel::default(), ProgramConfig::default());
+        program.handle_event(dcs.clone()).unwrap();
+        program.handle_event(cell_size.clone()).unwrap();
+        assert!(program.model.events.is_empty());
+        assert_eq!(program.startup_parser.cell_size_px(), Some((10, 20)));
+
+        // Opt-in: forwarded to Model::update.
+        let mut opted_in = headless_program_with_config(
+            RespTestModel::default(),
+            ProgramConfig::default().with_deliver_terminal_responses(true),
+        );
+        opted_in.handle_event(dcs.clone()).unwrap();
+        opted_in.handle_event(cell_size.clone()).unwrap();
+        assert_eq!(opted_in.model.events, vec![dcs, cell_size]);
+        assert_eq!(opted_in.startup_parser.cell_size_px(), Some((10, 20)));
     }
 
     /// CONTRACT (bd-1za0z item 3): the queue guardrail sees the live effect
@@ -17105,6 +18389,128 @@ mod tests {
         assert!(decision_line["dominance_threshold"].is_number());
         assert!(decision_line["fairness_threshold"].is_number());
         assert!(decision_line["input_priority_threshold_ms"].is_number());
+    }
+
+    #[test]
+    fn headless_input_event_starvation_defers_resize_coalescer_then_applies_next_cycle() {
+        struct ResizeAndKeyModel {
+            events: Vec<String>,
+            last_size: Option<(u16, u16)>,
+        }
+
+        #[derive(Debug)]
+        enum Msg {
+            Resize(u16, u16),
+            Key(char),
+            Other,
+        }
+
+        impl From<Event> for Msg {
+            fn from(event: Event) -> Self {
+                match event {
+                    Event::Resize { width, height } => Msg::Resize(width, height),
+                    Event::Key(k) => match k.code {
+                        KeyCode::Char(c) => Msg::Key(c),
+                        _ => Msg::Other,
+                    },
+                    _ => Msg::Other,
+                }
+            }
+        }
+
+        impl Model for ResizeAndKeyModel {
+            type Message = Msg;
+
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    Msg::Resize(w, h) => {
+                        self.events.push(format!("resize:{w}x{h}"));
+                        self.last_size = Some((w, h));
+                    }
+                    Msg::Key(c) => {
+                        self.events.push(format!("key:{c}"));
+                    }
+                    Msg::Other => {}
+                }
+                Cmd::none()
+            }
+
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let evidence_path = temp_evidence_path("fairness_handle_event_storm");
+        let sink_config = EvidenceSinkConfig::enabled_file(&evidence_path);
+        let mut config = ProgramConfig::default().with_resize_behavior(ResizeBehavior::Throttled);
+        config.resize_coalescer.steady_delay_ms = 0;
+        config.resize_coalescer.burst_delay_ms = 0;
+        config.resize_coalescer.hard_deadline_ms = 10_000;
+        config.evidence_sink = sink_config.clone();
+
+        let mut program = headless_program_with_config(
+            ResizeAndKeyModel {
+                events: Vec::new(),
+                last_size: None,
+            },
+            config,
+        );
+        let sink = EvidenceSink::from_config(&sink_config)
+            .expect("evidence sink config")
+            .expect("evidence sink enabled");
+        program.evidence_sink = Some(sink);
+
+        // Configure dominance threshold = 2 and disable fairness_index so we isolate
+        // resize dominance across real handle_event() calls.
+        program.fairness_guard =
+            InputFairnessGuard::with_config(crate::input_fairness::FairnessConfig {
+                input_priority_threshold: Duration::from_secs(10),
+                dominance_threshold: 2,
+                fairness_threshold: 0.5,
+                enabled: true,
+            });
+
+        // Key arrives, followed by 2 throttled resizes in the same burst before
+        // process_resize_coalescer runs.
+        program
+            .handle_event(Event::Key(KeyEvent::new(KeyCode::Char('a'))))
+            .expect("handle key");
+        program
+            .handle_event(Event::Resize {
+                width: 100,
+                height: 30,
+            })
+            .expect("handle resize 1");
+        program
+            .handle_event(Event::Resize {
+                width: 120,
+                height: 40,
+            })
+            .expect("handle resize 2");
+
+        // Key was dispatched, and resize was coalesced (not applied prematurely).
+        assert_eq!(program.model().events, vec!["key:a"]);
+        assert_eq!(program.model().last_size, None);
+        assert!(program.resize_coalescer.has_pending());
+
+        // Cycle 1: process_resize_coalescer sees the pending input from this cycle
+        // and yields due to resize dominance, deferring the pending resize.
+        program
+            .process_resize_coalescer()
+            .expect("process resize coalescer cycle 1");
+        assert_eq!(program.model().last_size, None);
+        assert!(program.resize_coalescer.has_pending());
+
+        let decision_line = read_evidence_event(&evidence_path, "fairness_decision");
+        assert_eq!(decision_line["decision"], "yield");
+        assert_eq!(decision_line["reason"], "resize_dominance");
+
+        // Cycle 2: input turn completed and reset dominance, so the next cycle
+        // applies the pending resize.
+        program
+            .process_resize_coalescer()
+            .expect("process resize coalescer cycle 2");
+        assert_eq!(program.model().last_size, Some((120, 40)));
+        assert!(!program.resize_coalescer.has_pending());
+        assert_eq!(program.model().events, vec!["key:a", "resize:120x40"]);
     }
 
     #[test]
@@ -19415,6 +20821,234 @@ mod tests {
         assert_eq!(RolloutPolicy::parse("bogus"), None);
     }
 
+    #[test]
+    fn structured_and_legacy_lanes_keep_default_backend() {
+        for lane in [RuntimeLane::Legacy, RuntimeLane::Structured] {
+            let resolved_lane = lane.resolve();
+            assert_eq!(resolved_lane, lane);
+            assert_eq!(resolved_lane.task_executor_backend(), DEFAULT_TASK_BACKEND);
+            let resolved_config = ProgramConfig::default()
+                .with_lane(lane)
+                .resolved_effect_queue_config(resolved_lane);
+            assert_eq!(resolved_config.backend, DEFAULT_TASK_BACKEND);
+        }
+    }
+
+    #[test]
+    fn env_override_lane_asupersync_round_trips() {
+        let direct = ProgramConfig::default().with_env_values(Some("asupersync"), Some("shadow"));
+        assert_eq!(direct.runtime_lane, RuntimeLane::Asupersync);
+        assert_eq!(direct.rollout_policy, RolloutPolicy::Shadow);
+
+        if std::env::var("FTUI_TEST_ENV_OVERRIDE_CHILD").is_ok() {
+            let via_env = ProgramConfig::default().with_env_overrides();
+            assert_eq!(via_env.runtime_lane, RuntimeLane::Asupersync);
+            assert_eq!(via_env.rollout_policy, RolloutPolicy::Shadow);
+            return;
+        }
+
+        let exe = std::env::current_exe().expect("current test executable");
+        let output = std::process::Command::new(exe)
+            .arg("--exact")
+            .arg("program::tests::env_override_lane_asupersync_round_trips")
+            .arg("--nocapture")
+            .env("FTUI_TEST_ENV_OVERRIDE_CHILD", "1")
+            .env("FTUI_RUNTIME_LANE", "asupersync")
+            .env("FTUI_ROLLOUT_POLICY", "shadow")
+            .output()
+            .expect("spawn child test");
+        assert!(
+            output.status.success(),
+            "child test failed: stdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    struct ShadowVisibleModel {
+        value: i32,
+    }
+
+    impl Model for ShadowVisibleModel {
+        type Message = TestMsg;
+
+        fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+            if let TestMsg::Increment = msg {
+                self.value += 1;
+            }
+            Cmd::none()
+        }
+
+        fn view(&self, frame: &mut Frame) {
+            let text = format!("value={}", self.value);
+            for (col, ch) in text.chars().enumerate() {
+                if (col as u16) < frame.width() {
+                    frame
+                        .buffer
+                        .set_raw(col as u16, 0, ftui_render::cell::Cell::from_char(ch));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shadow_policy_writes_shadow_frame_evidence() {
+        let path = std::env::temp_dir().join(format!(
+            "ftui_shadow_frame_evidence_{}_{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let config = ProgramConfig::fullscreen()
+            .with_lane(RuntimeLane::Structured)
+            .with_rollout_policy(RolloutPolicy::Shadow)
+            .with_evidence_sink(crate::evidence_sink::EvidenceSinkConfig::enabled_file(
+                &path,
+            ))
+            .with_signal_interception(false);
+
+        let mut program =
+            headless_program_with_resolved_config(ShadowVisibleModel { value: 0 }, config);
+        for i in 0..5 {
+            program.model_mut().value = i;
+            program.render_frame().expect("render shadow frame");
+        }
+
+        let contents = std::fs::read_to_string(&path).expect("read shadow evidence");
+        let shadow_lines: Vec<serde_json::Value> = contents
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|v| v.get("event").and_then(|e| e.as_str()) == Some("shadow_frame"))
+            .collect();
+        if shadow_lines.len() != 5 {
+            eprintln!("captured evidence:\n{contents}");
+        }
+        assert_eq!(shadow_lines.len(), 5);
+        for (expected_idx, row) in shadow_lines.iter().enumerate() {
+            assert_eq!(
+                row.get("frame").and_then(|v| v.as_u64()),
+                Some(expected_idx as u64)
+            );
+            let checksum = row
+                .get("checksum")
+                .and_then(|v| v.as_str())
+                .expect("checksum string");
+            assert_eq!(checksum.len(), 16, "checksum={checksum}");
+            assert!(
+                checksum
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                "checksum must be 16 lowercase hex digits: {checksum}"
+            );
+            assert_eq!(row.get("lane").and_then(|v| v.as_str()), Some("structured"));
+            assert_eq!(
+                row.get("requested_lane").and_then(|v| v.as_str()),
+                Some("structured")
+            );
+            assert_eq!(
+                row.get("rollout_policy").and_then(|v| v.as_str()),
+                Some("shadow")
+            );
+            assert_eq!(
+                row.get("task_backend").and_then(|v| v.as_str()),
+                Some("spawned")
+            );
+            assert_eq!(row.get("cols").and_then(|v| v.as_u64()), Some(80));
+            assert_eq!(row.get("rows").and_then(|v| v.as_u64()), Some(24));
+            assert!(row.get("ts_ns").and_then(|v| v.as_u64()).is_some());
+        }
+    }
+
+    #[test]
+    fn off_and_enabled_policies_write_no_shadow_frames() {
+        for policy in [RolloutPolicy::Off, RolloutPolicy::Enabled] {
+            let path = std::env::temp_dir().join(format!(
+                "ftui_no_shadow_frames_{}_{}_{}.jsonl",
+                policy.label(),
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            let config = ProgramConfig::fullscreen()
+                .with_lane(RuntimeLane::Structured)
+                .with_rollout_policy(policy)
+                .with_evidence_sink(crate::evidence_sink::EvidenceSinkConfig::enabled_file(
+                    &path,
+                ))
+                .with_signal_interception(false);
+
+            let mut program =
+                headless_program_with_resolved_config(ShadowVisibleModel { value: 0 }, config);
+            for i in 0..5 {
+                program.model_mut().value = i;
+                program.render_frame().expect("render frame");
+            }
+
+            let contents = std::fs::read_to_string(&path).unwrap_or_default();
+            let shadow_count = contents
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|v| v.get("event").and_then(|e| e.as_str()) == Some("shadow_frame"))
+                .count();
+            assert_eq!(
+                shadow_count, 0,
+                "policy {:?} must not write shadow_frame lines:\n{contents}",
+                policy
+            );
+        }
+    }
+
+    #[test]
+    fn shadow_frame_checksum_is_deterministic_for_identical_frames() {
+        let mut checksums_per_run = Vec::new();
+        for run_idx in 0..2 {
+            let path = std::env::temp_dir().join(format!(
+                "ftui_shadow_det_{}_{}_{}.jsonl",
+                run_idx,
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            let config = ProgramConfig::fullscreen()
+                .with_lane(RuntimeLane::Structured)
+                .with_rollout_policy(RolloutPolicy::Shadow)
+                .with_evidence_sink(crate::evidence_sink::EvidenceSinkConfig::enabled_file(
+                    &path,
+                ))
+                .with_signal_interception(false);
+
+            let mut program =
+                headless_program_with_resolved_config(ShadowVisibleModel { value: 0 }, config);
+            for step in [10, 20, 30, 40, 50] {
+                program.model_mut().value = step;
+                program.render_frame().expect("render frame");
+            }
+
+            let contents = std::fs::read_to_string(&path).expect("read shadow evidence");
+            let checksums: Vec<String> = contents
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|v| v.get("event").and_then(|e| e.as_str()) == Some("shadow_frame"))
+                .map(|v| {
+                    v.get("checksum")
+                        .and_then(|c| c.as_str())
+                        .expect("checksum")
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(checksums.len(), 5);
+            checksums_per_run.push(checksums);
+        }
+        assert_eq!(checksums_per_run[0], checksums_per_run[1]);
+        assert_ne!(checksums_per_run[0][0], checksums_per_run[0][1]);
+    }
+
     // =========================================================================
     // PersistenceConfig Debug (bd-2yjus)
     // =========================================================================
@@ -19640,8 +21274,8 @@ mod tests {
         assert!(output.contains("a\r\nlineb\r\n"));
         assert!(!output.contains("hidden"));
         assert!(!output.contains("\x1b[2J"));
-        assert!(output.contains("\x1b[31mred\x1b[0m\r"));
-        assert!(output.contains("\x1b[0m\nplain\x1b[0m\r"));
+        assert!(output.contains("\x1b[31mred\x1b[0m\r\n"));
+        assert!(output.contains("\x1b[0m\r\nplain\x1b[0m\r\n"));
     }
 
     #[test]
@@ -21028,5 +22662,43 @@ mod tests {
             (Some(100), Some(30))
         );
         assert_eq!(resume["size_changed"], true);
+    }
+
+    #[test]
+    fn cmd_log_dispatches_to_writer_modes() {
+        let mut program = headless_program_with_config(
+            TestModel { value: 0 },
+            ProgramConfig::inline(3)
+                .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5))),
+        );
+        program
+            .execute_cmd(Cmd::log("a\x1b[31mb"))
+            .expect("sanitized log");
+        program
+            .execute_cmd(Cmd::log_sgr_only("c\x1b[31md\x1b[2J"))
+            .expect("sgr_only log");
+        program
+            .execute_cmd(Cmd::log_raw("\x1b[31mz"))
+            .expect("raw log");
+        program.render_frame().expect("render_frame flushes logs");
+
+        let raw_bytes = program.presenter.into_inner().expect("presenter output");
+        let out = String::from_utf8_lossy(&raw_bytes).into_owned();
+        assert!(
+            out.contains("ab"),
+            "Sanitized mode must strip escapes from 'a\\x1b[31mb'; out={out:?}"
+        );
+        assert!(
+            out.contains("c\x1b[31md"),
+            "SgrOnly mode must retain SGR '\\x1b[31m'; out={out:?}"
+        );
+        assert!(
+            !out.contains("\x1b[2J"),
+            "SgrOnly mode must strip non-SGR '\\x1b[2J'; out={out:?}"
+        );
+        assert!(
+            out.contains("\x1b[31mz"),
+            "Raw mode must emit '\\x1b[31mz' verbatim; out={out:?}"
+        );
     }
 }

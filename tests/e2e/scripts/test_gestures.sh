@@ -51,14 +51,25 @@ ALL_CASES=(
 )
 
 # run_all.sh exports FTUI_DEMO_BIN; standalone runs usually set E2E_DEMO_BIN.
-DEMO_BIN="${E2E_DEMO_BIN:-${FTUI_DEMO_BIN:-}}"
-if [[ ! -x "$DEMO_BIN" ]]; then
+DEMO_BIN="${DEMO_BIN:-${E2E_DEMO_BIN:-${FTUI_DEMO_BIN:-}}}"
+rc=0
+e2e_require bin "$DEMO_BIN" "ftui-demo-showcase binary missing (E2E_DEMO_BIN / FTUI_DEMO_BIN)" || rc=$?
+if (( rc != 0 )); then
+    mkdir -p "$E2E_LOG_DIR"
     LOG_FILE="$E2E_LOG_DIR/gestures_missing.log"
     for t in "${ALL_CASES[@]}"; do
-        log_test_skip "$t" "ftui-demo-showcase binary missing (E2E_DEMO_BIN / FTUI_DEMO_BIN)"
-        record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
+        if (( rc == 1 )); then
+            log_test_skip "$t" "ftui-demo-showcase binary missing (E2E_DEMO_BIN / FTUI_DEMO_BIN)"
+            record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
+        else
+            log_test_fail "$t" "ftui-demo-showcase binary missing (E2E_DEMO_BIN / FTUI_DEMO_BIN)"
+            record_result "$t" "failed" 0 "$LOG_FILE" "missing_prerequisite: ftui-demo-showcase binary missing"
+        fi
     done
-    exit 0
+    if (( rc == 1 )); then
+        exit 0
+    fi
+    exit "$rc"
 fi
 
 PLAYGROUND_SCREEN="$(e2e_demo_screen "$DEMO_BIN" mouse_playground)"

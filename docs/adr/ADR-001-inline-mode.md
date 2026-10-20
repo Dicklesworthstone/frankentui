@@ -1,8 +1,6 @@
 # ADR-001: Inline Mode Strategy
 
-## Status
-
-ACCEPTED
+Status: ACCEPTED
 
 ## Context
 

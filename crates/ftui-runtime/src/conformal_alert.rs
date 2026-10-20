@@ -20,23 +20,40 @@
 //! This is the (n+1) rule: we pretend the new observation is one of (n+1) equally
 //! likely positions, ensuring finite-sample coverage P(r_{n+1} <= q) >= 1-alpha.
 //!
-//! ## E-Process Layer (Anytime-Valid)
+//! ## E-Process Layer (Sub-Gaussian Sequential Test)
 //!
-//! For early stopping without FPR inflation, we maintain an e-process:
+//! For sequential drift detection, we maintain a sub-Gaussian exponential e-process:
 //!
 //! ```text
-//! e_t = exp(lambda * (z_t - mu_0) - lambda^2 * sigma_0^2 / 2)
-//! E_t = prod_{s=1}^{t} e_s
+//! e_t(λ_t) = exp(λ_t * (z_t - μ_0) - λ_t^2 * σ_0^2 / 2)
+//! E_t = prod_{s=1}^{t} e_s(λ_s)
 //! ```
 //!
-//! where z_t = (r_t - mean) / std is the standardized residual. Alert when E_t > 1/alpha.
+//! where $z_t = (r_t - \hat{\mu}) / \hat{\sigma}$ is the standardized residual.
+//! When `adaptive_lambda` is enabled, $\lambda_t$ is updated *after* evaluating $e_t(\lambda_t)$
+//! by online gradient ascent on the sub-Gaussian log-wealth $\ell_t(\lambda) = \log e_t(\lambda)$:
 //!
-//! # Key Invariants
+//! ```text
+//! ∂ℓ_t / ∂λ = (z_t - μ_0) - λ_t * σ_0^2
+//! λ_{t+1} = clamp(λ_t + η * ((z_t - μ_0) - λ_t * σ_0^2), ε, 1 - ε)
+//! ```
 //!
-//! 1. **Coverage guarantee**: P(FP) <= alpha under H_0 for conformal threshold
-//! 2. **Anytime-valid**: E_t is a supermartingale, so P(exists t: E_t >= 1/alpha) <= alpha
-//! 3. **Non-negative wealth**: E_t >= 0 always (floored at epsilon)
-//! 4. **Calibration monotonicity**: Threshold is non-decreasing in calibration set size
+//! Because $\lambda_t$ is $\mathcal{F}_{t-1}$-measurable (chosen prior to observing $z_t$),
+//! $E[e_t(\lambda_t) \mid \mathcal{F}_{t-1}] \le 1$ under an exact $(\mu_0, \sigma_0)$-sub-Gaussian
+//! conditional null for $z_t$.
+//!
+//! # Key Invariants & Assumptions
+//!
+//! 1. **Conformal coverage guarantee**: $P(|R_{n+1}| \le q) \ge 1 - \alpha$ under exchangeability
+//!    of calibration and test residuals (when $(1-\alpha)(n+1) \le n$).
+//! 2. **Sequential e-process**: Under a known $(\mu_0, \sigma_0)$-sub-Gaussian null without
+//!    lower-floor clamping or post-alert resets, $E_t$ is a nonnegative supermartingale satisfying
+//!    Ville's inequality $P(\exists t: E_t \ge 1/\alpha \mid H_0) \le \alpha$. With finite-sample
+//!    plug-in standardization $(\hat{\mu}_n, \hat{\sigma}_n)$, `E_MIN` clamping, and post-alert
+//!    resets, treat the combined OR trigger (`conformal_alert || eprocess_alert`) as a hybrid
+//!    calibrated + sequential detector rather than a single-threshold α-test.
+//! 3. **Non-negative wealth**: $E_t \ge E_{\min} > 0$ always.
+//! 4. **Calibration monotonicity**: Threshold index is non-decreasing in calibration set size.
 //!
 //! # Failure Modes
 //!
@@ -422,11 +439,14 @@ impl ConformalAlert {
 
         let eprocess_alert = self.e_value > self.e_threshold;
 
-        // Adaptive lambda update (GRAPA)
+        // Adaptive lambda update: online gradient ascent on the sub-Gaussian
+        // log-wealth ell_t(lambda) = lambda * z_centered - 0.5 * lambda^2 * sigma_0^2.
+        // Because lambda_t is used in `exponent` BEFORE updating to lambda_{t+1},
+        // lambda_t is F_{t-1}-measurable (predictable), preserving E[e_t | F_{t-1}] <= 1
+        // under a (mu_0, sigma_0)-sub-Gaussian null.
         if self.config.adaptive_lambda {
-            let denominator = 1.0 + self.lambda * z_centered;
-            if denominator.abs() > EPSILON {
-                let grad = z_centered / denominator;
+            let grad = z_centered - self.lambda * self.config.sigma_0.powi(2);
+            if grad.is_finite() {
                 self.lambda =
                     (self.lambda + self.config.grapa_eta * grad).clamp(EPSILON, 1.0 - EPSILON);
             }
@@ -1817,5 +1837,126 @@ mod tests {
         assert!(config.sigma_0 > 0.0);
         assert!(config.hysteresis >= 1.0);
         assert!(config.grapa_eta > 0.0);
+    }
+
+    #[test]
+    fn adaptive_lambda_matches_subgaussian_log_wealth_gradient() {
+        // Calibrate with [2, 4, 6, 8, 10]: mean = 6.0, variance = 10.0, std = sqrt(10).
+        let mut config = test_config();
+        config.adaptive_lambda = true;
+        config.lambda = 0.4;
+        config.grapa_eta = 0.1;
+        config.mu_0 = 0.0;
+        config.sigma_0 = 1.0;
+        config.hysteresis = 1e10; // Prevent post-alert reset
+        let mut alerter = ConformalAlert::new(config);
+
+        for v in [2.0, 4.0, 6.0, 8.0, 10.0] {
+            alerter.calibrate(v);
+        }
+
+        // Observe value = 6.0 + sqrt(10.0) * 1.5 -> z_centered = 1.5.
+        let value = 6.0 + 10.0_f64.sqrt() * 1.5;
+        let dec = alerter.observe(value);
+
+        // e_t was evaluated using lambda_0 = 0.4:
+        // exp(0.4 * 1.5 - 0.5 * 0.4^2 * 1.0^2) = exp(0.6 - 0.08) = exp(0.52)
+        let expected_e = 0.52_f64.exp();
+        assert!(
+            (dec.evidence.e_value - expected_e).abs() < 1e-10,
+            "expected e_value={expected_e}, got {}",
+            dec.evidence.e_value
+        );
+
+        // Next lambda updated by exact log-wealth gradient: z_centered - lambda_0 * sigma_0^2 = 1.5 - 0.4 = 1.1
+        let expected_lambda = 0.4 + 0.1 * (1.5 - 0.4);
+        assert!(
+            (dec.evidence.lambda - expected_lambda).abs() < 1e-10,
+            "expected lambda={expected_lambda}, got {}",
+            dec.evidence.lambda
+        );
+    }
+
+    #[test]
+    fn adaptive_eprocess_is_supermartingale_under_gaussian_null_with_ci() {
+        // Deterministic Box-Muller over SplitMix64 for N(0, 1) trajectories under H_0.
+        fn splitmix64_u01(state: &mut u64) -> f64 {
+            *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = *state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            (((z >> 11) as f64) + 0.5) * (1.0 / ((1u64 << 53) as f64))
+        }
+
+        fn next_normal(state: &mut u64) -> f64 {
+            let u1 = splitmix64_u01(state);
+            let u2 = splitmix64_u01(state);
+            (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+        }
+
+        // Symmetric calibration set with exact sample mean = 0.0 and sample std = 1.0:
+        // For [-1, -1, 0, 1, 1], sum of squares = 4, n - 1 = 4 -> sample variance = 4/4 = 1.0!
+        let cal_exact = [-1.0, -1.0, 0.0, 1.0, 1.0];
+
+        let alpha = 0.05;
+        let threshold = 1.0 / alpha; // 20.0
+        let trials = 2_000usize;
+        let horizon = 60usize;
+        let mut rng = 0xC04F_2026_1016_0043u64;
+
+        let mut terminal_e = Vec::with_capacity(trials);
+        let mut ville_crossings = 0usize;
+
+        for _ in 0..trials {
+            let mut config = test_config();
+            config.alpha = alpha;
+            config.lambda = 0.3;
+            config.adaptive_lambda = true;
+            config.grapa_eta = 0.05;
+            config.hysteresis = 1e12; // Disable reset so we track the pure martingale trajectory
+            let mut alerter = ConformalAlert::new(config);
+            for &v in &cal_exact {
+                alerter.calibrate(v);
+            }
+            assert!((alerter.mean() - 0.0).abs() < 1e-12);
+            assert!((alerter.std() - 1.0).abs() < 1e-12);
+
+            let mut crossed = false;
+            for _ in 0..horizon {
+                let z = next_normal(&mut rng);
+                let dec = alerter.observe(z);
+                if dec.evidence.e_value >= threshold {
+                    crossed = true;
+                }
+            }
+            if crossed {
+                ville_crossings += 1;
+            }
+            terminal_e.push(alerter.e_value());
+        }
+
+        let n = trials as f64;
+        let mean_e = terminal_e.iter().sum::<f64>() / n;
+        let var_e = terminal_e
+            .iter()
+            .map(|&e| (e - mean_e).powi(2))
+            .sum::<f64>()
+            / (n - 1.0);
+        let se_e = (var_e / n).sqrt();
+
+        // Under H_0 (z_t ~ N(0, 1)) with predictable lambda_t, E[E_T] = 1.0 (supermartingale <= 1.0).
+        assert!(
+            (mean_e - 1.0).abs() <= 3.0 * se_e + 0.05,
+            "Expected E[E_T] ≈ 1.0 under H_0, got mean_e={mean_e:.4} (se={se_e:.4})"
+        );
+
+        // Ville's inequality: P(exists t <= T: E_t >= 1/alpha) <= alpha = 0.05.
+        let empirical_ville_rate = ville_crossings as f64 / n;
+        let se_ville = (alpha * (1.0 - alpha) / n).sqrt();
+        assert!(
+            empirical_ville_rate <= alpha + 3.0 * se_ville,
+            "Ville's inequality violated: empirical rate {empirical_ville_rate:.4} > alpha={alpha} + 3*se"
+        );
     }
 }

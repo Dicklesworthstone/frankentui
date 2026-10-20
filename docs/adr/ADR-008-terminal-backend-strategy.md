@@ -1,7 +1,12 @@
 # ADR-008: Terminal Backend Strategy (Replace Crossterm, Enable WASM, Unify Interfaces)
 
-Status: PROPOSED
+Status: ACCEPTED (2026-10-16 — scope: native unix backend via `ftui-tty` + optional `crossterm` + `ftui-web`; unified `BackendPresenter` seam tracked by `bd-g00-root-epic-ewths.17` / G13)
 Date: 2026-02-08
+
+## Realization
+
+- **Shipped**: Native Unix backend (`ftui-tty` via `termios`/`poll`/`SIGWINCH`, default on Unix per `bd-g00-root-epic-ewths.1`); optional `crossterm` backend retained for non-Unix/fallback; deterministic step-driven WASM backend (`ftui-web` + `ftui-showcase-wasm`); `ftui-backend` traits (`BackendEventSource`, `BackendPresenter`, `BackendFeatures`).
+- **Remaining in G13 (`bd-g00-root-epic-ewths.17`)**: Routing `Program` presentation through `BackendPresenter` across terminal and web hosts.
 
 ## Context
 

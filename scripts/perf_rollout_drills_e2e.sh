@@ -5,8 +5,14 @@
 # artifacts (reports, per-drill summary, replay helper, manifest).
 #
 # Usage:
-#   scripts/perf_rollout_drills_e2e.sh [RUN_ROOT]
+#   scripts/perf_rollout_drills_e2e.sh [--shadow-only] [RUN_ROOT]
 set -euo pipefail
+
+SHADOW_ONLY=0
+if [[ "${1:-}" == "--shadow-only" ]]; then
+  SHADOW_ONLY=1
+  shift
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -18,6 +24,7 @@ STDOUT_LOG="${LOG_DIR}/cargo.stdout.log"
 STDERR_LOG="${LOG_DIR}/cargo.stderr.log"
 REPORT_JSON="${ARTIFACT_DIR}/drill_validation_report.json"
 REPORTS_JSONL="${ARTIFACT_DIR}/drill_reports.jsonl"
+SHADOW_COMPARE_JSONL="${ARTIFACT_DIR}/shadow_recorded_compare.jsonl"
 REPLAY_SH="${ARTIFACT_DIR}/replay.sh"
 SUMMARY_TXT="${META_DIR}/summary.txt"
 MANIFEST_JSON="${META_DIR}/artifact_manifest.json"
@@ -36,30 +43,96 @@ require_command() {
   fi
 }
 
-require_command "rch" "install or configure remote_compilation_helper"
+require_command "cargo" "install Rust/Cargo toolchain"
 require_command "jq" "install jq"
 require_command "python3" "install Python 3"
 
-CMD=(
-  rch exec --
-  cargo
-  test
-  -p
-  ftui-harness
-  --test
-  perf_rollout_drills_e2e
-  --
-  --nocapture
-)
-
-printf '%q ' "${CMD[@]}" > "${COMMAND_TXT}"
-printf '\n' >> "${COMMAND_TXT}"
-
-if "${CMD[@]}" >"${STDOUT_LOG}" 2>"${STDERR_LOG}"; then
-  STATUS=0
+if [[ "${RCH_ENABLED:-true}" == "false" ]] || ! command -v rch >/dev/null 2>&1; then
+  CARGO_PREFIX=(cargo)
 else
-  STATUS=$?
+  CARGO_PREFIX=(rch exec -- cargo)
 fi
+
+: > "${STDOUT_LOG}"
+: > "${STDERR_LOG}"
+: > "${COMMAND_TXT}"
+
+run_cargo_step() {
+  local -a cmd=("${CARGO_PREFIX[@]}" "$@")
+  printf '%q ' "${cmd[@]}" >> "${COMMAND_TXT}"
+  printf '\n' >> "${COMMAND_TXT}"
+  if ! "${cmd[@]}" >>"${STDOUT_LOG}" 2>>"${STDERR_LOG}"; then
+    STATUS=$?
+  fi
+}
+
+if [[ "${SHADOW_ONLY}" -eq 0 ]]; then
+  run_cargo_step test -p ftui-harness --test perf_rollout_drills_e2e -- --nocapture
+fi
+run_cargo_step test -p ftui-harness --test rollout_drills -- --nocapture
+
+# Execute shadow_recorded_compare positive (A vs B) and negative control scenarios
+FIXTURE_DIR="${ROOT_DIR}/crates/ftui-harness/tests/fixtures/shadow"
+COMPARE_AB_JSON="$("${CARGO_PREFIX[@]}" run -q -p ftui-harness --bin shadow_compare -- "${FIXTURE_DIR}/a.jsonl" "${FIXTURE_DIR}/b.jsonl")"
+COMPARE_AB_EXIT=$?
+set +e
+COMPARE_NEG_JSON="$("${CARGO_PREFIX[@]}" run -q -p ftui-harness --bin shadow_compare -- "${FIXTURE_DIR}/a.jsonl" "${FIXTURE_DIR}/b_divergent.jsonl")"
+COMPARE_NEG_EXIT=$?
+set -e
+
+if [[ "${COMPARE_AB_EXIT}" -ne 0 ]] || [[ "${COMPARE_NEG_EXIT}" -ne 1 ]]; then
+  STATUS=1
+fi
+
+python3 - "${SHADOW_COMPARE_JSONL}" "${TIMESTAMP_UTC}" "${COMPARE_AB_JSON}" "${COMPARE_AB_EXIT}" "${COMPARE_NEG_JSON}" "${COMPARE_NEG_EXIT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+out_path = Path(sys.argv[1])
+run_id = f"shadow_recorded_compare_{sys.argv[2]}"
+ts = sys.argv[2]
+ab = json.loads(sys.argv[3])
+ab_exit = int(sys.argv[4])
+neg = json.loads(sys.argv[5])
+neg_exit = int(sys.argv[6])
+
+events = [
+    {
+        "schema_version": "e2e-jsonl-v1",
+        "type": "shadow_step",
+        "timestamp": ts,
+        "run_id": run_id,
+        "scenario": "shadow_recorded_compare",
+        "step": "compare_ab",
+        "lane": "structured_vs_asupersync",
+        "rollout_policy": "shadow",
+        "seed": 42,
+        "verdict": ab.get("verdict"),
+        "frames_compared": ab.get("frames_compared"),
+        "first_divergent_frame": ab.get("first_divergent_frame"),
+        "exit_code": ab_exit,
+        "status": "passed" if ab_exit == 0 and ab.get("verdict") == "match" else "failed",
+    },
+    {
+        "schema_version": "e2e-jsonl-v1",
+        "type": "shadow_step",
+        "timestamp": ts,
+        "run_id": run_id,
+        "scenario": "shadow_recorded_compare",
+        "step": "negative_control",
+        "lane": "structured_vs_divergent",
+        "rollout_policy": "shadow",
+        "seed": 42,
+        "verdict": neg.get("verdict"),
+        "frames_compared": neg.get("frames_compared"),
+        "first_divergent_frame": neg.get("first_divergent_frame"),
+        "exit_code": neg_exit,
+        "status": "passed" if neg_exit == 1 and neg.get("first_divergent_frame") == 11 else "failed",
+    },
+]
+out_path.write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
+PY
 
 # Harvest DRILL_REPORT JSONL and the libtest result. Under `rch` the remote
 # test output is surfaced on stderr, so parse both streams.

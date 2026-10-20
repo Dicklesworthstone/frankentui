@@ -14,11 +14,19 @@ source "$PROJECT_ROOT/tests/e2e/lib/logging.sh"
 source "$PROJECT_ROOT/tests/e2e/lib/pty.sh"
 
 require_harness() {
-    if [[ ! -x "${E2E_HARNESS_BIN:-}" ]]; then
-        LOG_FILE="$E2E_LOG_DIR/${TEST_NAME//\//_}.log"
-        log_test_skip "$TEST_NAME" "ftui-harness binary missing"
-        record_result "$TEST_NAME" "skipped" 0 "$LOG_FILE" "binary missing"
-        exit 0
+    mkdir -p "$E2E_LOG_DIR"
+    LOG_FILE="$E2E_LOG_DIR/${TEST_NAME//\//_}.log"
+    local rc=0
+    e2e_require bin "${E2E_HARNESS_BIN:-}" "ftui-harness binary missing" || rc=$?
+    if (( rc != 0 )); then
+        if (( rc == 1 )); then
+            log_test_skip "$TEST_NAME" "ftui-harness binary missing (opted out)"
+            record_result "$TEST_NAME" "skipped" 0 "$LOG_FILE" "binary missing"
+            exit 0
+        fi
+        log_test_fail "$TEST_NAME" "ftui-harness binary missing"
+        record_result "$TEST_NAME" "failed" 0 "$LOG_FILE" "missing_prerequisite: ftui-harness binary missing"
+        exit "$rc"
     fi
 }
 

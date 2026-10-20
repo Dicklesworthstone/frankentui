@@ -118,7 +118,9 @@ pub struct Table<'a> {
     highlight_style: Style,
     theme: TableTheme,
     theme_phase: f32,
-    column_spacing: u16,
+    column_spacing: Option<u16>,
+    cell_padding: Option<u8>,
+    use_theme_padding: bool,
     /// Optional hit ID for mouse interaction.
     /// When set, each table row registers a hit region with the hit grid.
     hit_id: Option<HitId>,
@@ -146,7 +148,9 @@ impl<'a> Table<'a> {
             highlight_style: Style::default(),
             theme: TableTheme::default(),
             theme_phase: 0.0,
-            column_spacing: 1,
+            column_spacing: None,
+            cell_padding: None,
+            use_theme_padding: false,
             hit_id: None,
             data_hash: None,
         }
@@ -288,11 +292,41 @@ impl<'a> Table<'a> {
         self
     }
 
-    /// Set the spacing between columns.
+    /// Set the spacing between columns, overriding [`TableTheme::column_gap`].
     #[must_use]
     pub fn column_spacing(mut self, spacing: u16) -> Self {
-        self.column_spacing = spacing;
+        self.column_spacing = Some(spacing);
         self
+    }
+
+    /// Set horizontal cell padding (in cells on both left and right of each column),
+    /// overriding [`TableTheme::padding`].
+    #[must_use]
+    pub fn cell_padding(mut self, padding: u8) -> Self {
+        self.cell_padding = Some(padding);
+        self
+    }
+
+    /// Opt in to applying [`TableTheme::padding`] as horizontal cell inset on each column.
+    #[must_use]
+    pub fn use_theme_padding(mut self, enabled: bool) -> Self {
+        self.use_theme_padding = enabled;
+        self
+    }
+
+    #[inline]
+    fn effective_column_spacing(&self) -> u16 {
+        self.column_spacing
+            .unwrap_or(u16::from(self.theme.column_gap))
+    }
+
+    #[inline]
+    fn effective_cell_padding(&self) -> u16 {
+        u16::from(self.cell_padding.unwrap_or(if self.use_theme_padding {
+            self.theme.padding
+        } else {
+            0
+        }))
     }
 
     /// Set a hit ID for mouse interaction.
@@ -398,37 +432,45 @@ impl<'a> Table<'a> {
         })
     }
 
-    fn compute_intrinsic_widths(rows: &[Row], header: Option<&Row>, col_count: usize) -> Vec<u16> {
+    fn compute_intrinsic_widths(
+        rows: &[Row],
+        header: Option<&Row>,
+        col_count: usize,
+        cell_padding: u16,
+    ) -> Vec<u16> {
         if col_count == 0 {
             return Vec::new();
         }
 
+        let pad_extra = cell_padding.saturating_mul(2);
         let mut col_widths: Vec<u16> = vec![0; col_count];
 
         if let Some(header) = header {
             for (i, cell) in header.cells.iter().enumerate().take(col_count) {
-                let cell_width = cell
+                let cell_width = (cell
                     .lines()
                     .iter()
                     .take(header.height as usize)
                     .map(|l| l.width())
                     .max()
                     .unwrap_or(0)
-                    .min(u16::MAX as usize) as u16;
+                    .min(u16::MAX as usize) as u16)
+                    .saturating_add(pad_extra);
                 col_widths[i] = col_widths[i].max(cell_width);
             }
         }
 
         for row in rows {
             for (i, cell) in row.cells.iter().enumerate().take(col_count) {
-                let cell_width = cell
+                let cell_width = (cell
                     .lines()
                     .iter()
                     .take(row.height as usize)
                     .map(|l| l.width())
                     .max()
                     .unwrap_or(0)
-                    .min(u16::MAX as usize) as u16;
+                    .min(u16::MAX as usize) as u16)
+                    .saturating_add(pad_extra);
                 col_widths[i] = col_widths[i].max(cell_width);
             }
         }
@@ -850,45 +892,73 @@ impl<'a> StatefulWidget for Table<'a> {
         }
 
         // Calculate column widths
+        let col_spacing = self.effective_column_spacing();
+        let cell_padding = self.effective_cell_padding();
+        let pad_extra = cell_padding.saturating_mul(2);
         let flex = Flex::horizontal()
-            .constraints(self.widths.clone())
-            .gap(self.column_spacing);
+            .constraints(self.widths.iter().copied())
+            .gap(col_spacing);
 
-        let intrinsic_col_widths = if Self::requires_measurement(&self.widths) {
-            if let Some(hash) = self.data_hash {
-                if let Some((cached_hash, ref widths)) = state.cached_intrinsic_widths
-                    && cached_hash == hash
-                    && widths.len() == self.widths.len()
-                {
-                    widths.clone()
+        let intrinsic_col_widths: Option<std::sync::Arc<[u16]>> =
+            if Self::requires_measurement(&self.widths) {
+                if let Some(hash) = self.data_hash {
+                    let cache_key = hash.rotate_left(8) ^ u64::from(cell_padding);
+                    if let Some((cached_hash, ref widths)) = state.cached_intrinsic_widths
+                        && cached_hash == cache_key
+                        && widths.len() == self.widths.len()
+                    {
+                        Some(widths.clone())
+                    } else {
+                        let widths: std::sync::Arc<[u16]> = Self::compute_intrinsic_widths(
+                            &self.rows,
+                            None,
+                            self.widths.len(),
+                            cell_padding,
+                        )
+                        .into();
+                        state.cached_intrinsic_widths = Some((cache_key, widths.clone()));
+                        Some(widths)
+                    }
                 } else {
-                    let widths: std::sync::Arc<[u16]> =
-                        Self::compute_intrinsic_widths(&self.rows, None, self.widths.len()).into();
-                    state.cached_intrinsic_widths = Some((hash, widths.clone()));
-                    widths
+                    Some(
+                        Self::compute_intrinsic_widths(
+                            &self.rows,
+                            None,
+                            self.widths.len(),
+                            cell_padding,
+                        )
+                        .into(),
+                    )
                 }
             } else {
-                Self::compute_intrinsic_widths(&self.rows, None, self.widths.len()).into()
-            }
-        } else {
-            std::sync::Arc::new([])
+                None
+            };
+
+        let arena = frame.arena();
+        let col_area = Rect::new(table_area.x, table_area.y, table_area.width, 1);
+        let measurer = |idx: usize, _: u16| {
+            let row_width = intrinsic_col_widths
+                .as_deref()
+                .and_then(|w| w.get(idx).copied())
+                .unwrap_or(0);
+            let header_width = self
+                .header
+                .as_ref()
+                .and_then(|h| h.cells.get(idx))
+                .map(|c| (c.width().min(u16::MAX as usize) as u16).saturating_add(pad_extra))
+                .unwrap_or(0);
+            ftui_layout::LayoutSizeHint::exact(row_width.max(header_width))
         };
 
         // Solve column widths across table area
-        let column_rects = flex.split_with_measurer_stably(
-            Rect::new(table_area.x, table_area.y, table_area.width, 1),
-            |idx, _| {
-                let row_width = intrinsic_col_widths.get(idx).copied().unwrap_or(0);
-                let header_width = self
-                    .header
-                    .as_ref()
-                    .and_then(|h| h.cells.get(idx))
-                    .map(|c| c.width().min(u16::MAX as usize) as u16)
-                    .unwrap_or(0);
-                ftui_layout::LayoutSizeHint::exact(row_width.max(header_width))
-            },
-            &mut state.coherence,
-        );
+        let column_rects_owned;
+        let column_rects: &[Rect] = if let Some(arena) = arena {
+            flex.split_with_measurer_stably_in(arena, col_area, measurer, &mut state.coherence)
+        } else {
+            column_rects_owned =
+                flex.split_with_measurer_stably(col_area, measurer, &mut state.coherence);
+            &column_rects_owned
+        };
 
         // Viewport geometry for rows (below the header).
         let rows_height = table_area.height.saturating_sub(header_height);
@@ -896,7 +966,17 @@ impl<'a> StatefulWidget for Table<'a> {
         let rows_max_y = table_area.bottom();
 
         // Calculate display indices (filtered & sorted)
-        let display_indices = self.filtered_and_sorted_indices(state);
+        let display_indices_owned;
+        let display_indices: &[usize] = if let Some(arena) = arena
+            && self.data_hash.is_none()
+            && state.filter.trim().is_empty()
+            && state.sort_column.is_none()
+        {
+            arena.alloc_iter(0..self.rows.len())
+        } else {
+            display_indices_owned = self.filtered_and_sorted_indices(state);
+            &display_indices_owned
+        };
         let row_count = display_indices.len();
 
         // Clamp offset to valid range
@@ -913,8 +993,13 @@ impl<'a> StatefulWidget for Table<'a> {
             let mut bottom_offset = row_count.saturating_sub(1);
             for i in (0..row_count).rev() {
                 let row = &self.rows[display_indices[i]];
-                let eff_h =
-                    effective_row_height(row, &column_rects, &self.column_specs, theme.row_height);
+                let eff_h = effective_row_height(
+                    row,
+                    column_rects,
+                    &self.column_specs,
+                    theme.row_height,
+                    cell_padding,
+                );
                 let total_row_height = if i == row_count - 1 {
                     eff_h
                 } else {
@@ -958,9 +1043,10 @@ impl<'a> StatefulWidget for Table<'a> {
                     let row = &self.rows[row_idx];
                     let eff_h = effective_row_height(
                         row,
-                        &column_rects,
+                        column_rects,
                         &self.column_specs,
                         theme.row_height,
+                        cell_padding,
                     );
                     if eff_h > max_y.saturating_sub(current_y) {
                         break;
@@ -980,9 +1066,10 @@ impl<'a> StatefulWidget for Table<'a> {
                         let row = &self.rows[display_indices[i]];
                         let eff_h = effective_row_height(
                             row,
-                            &column_rects,
+                            column_rects,
                             &self.column_specs,
                             theme.row_height,
+                            cell_padding,
                         );
                         let total_row_height = if i == selected_display_idx {
                             eff_h
@@ -1069,14 +1156,14 @@ impl<'a> StatefulWidget for Table<'a> {
             draw_vertical_dividers(
                 &mut frame.buffer,
                 divider_area,
-                &column_rects,
+                column_rects,
                 divider_char,
                 divider_style,
             );
 
             render_row(
                 header,
-                &column_rects,
+                column_rects,
                 frame,
                 y,
                 header_style,
@@ -1087,6 +1174,7 @@ impl<'a> StatefulWidget for Table<'a> {
                 &self.column_specs,
                 header.height,
                 theme.preset_id,
+                cell_padding,
             );
 
             // Draw sort indicator
@@ -1095,10 +1183,11 @@ impl<'a> StatefulWidget for Table<'a> {
             {
                 let rect = column_rects[col];
                 let symbol = if state.sort_ascending { "▲" } else { "▼" };
-                // Draw at end of cell
-                let x = rect.right().saturating_sub(1);
-                if x >= rect.x {
-                    crate::draw_text_span(frame, x, y, symbol, header_style, rect.right());
+                // Draw at end of cell (inside horizontal padding)
+                let right_edge = rect.right().saturating_sub(cell_padding);
+                let x = right_edge.saturating_sub(1);
+                if x >= rect.x.saturating_add(cell_padding) {
+                    crate::draw_text_span(frame, x, y, symbol, header_style, right_edge);
                 }
             }
 
@@ -1122,8 +1211,13 @@ impl<'a> StatefulWidget for Table<'a> {
             }
 
             let row = &self.rows[row_idx];
-            let eff_height =
-                effective_row_height(row, &column_rects, &self.column_specs, theme.row_height);
+            let eff_height = effective_row_height(
+                row,
+                column_rects,
+                &self.column_specs,
+                theme.row_height,
+                cell_padding,
+            );
             let is_selected = state.selected == Some(row_idx);
             let is_hovered = state.hovered == Some(row_idx);
             let row_area = Rect::new(table_area.x, y, table_area.width, eff_height);
@@ -1195,14 +1289,14 @@ impl<'a> StatefulWidget for Table<'a> {
             draw_vertical_dividers(
                 &mut frame.buffer,
                 divider_area,
-                &column_rects,
+                column_rects,
                 divider_char,
                 divider_style,
             );
 
             render_row(
                 row,
-                &column_rects,
+                column_rects,
                 frame,
                 y,
                 row_style,
@@ -1213,6 +1307,7 @@ impl<'a> StatefulWidget for Table<'a> {
                 &self.column_specs,
                 eff_height,
                 theme.preset_id,
+                cell_padding,
             );
 
             // Register hit region for this row (if hit testing enabled)
@@ -1240,12 +1335,14 @@ fn effective_row_height(
     col_rects: &[Rect],
     column_specs: &[ColumnSpec],
     theme_row_height: u8,
+    cell_padding: u16,
 ) -> u16 {
     let mut h = row.height;
+    let pad_total = cell_padding.saturating_mul(2);
     for (col_idx, cell) in row.cells.iter().enumerate() {
         let spec = column_specs.get(col_idx).copied().unwrap_or_default();
         if spec.truncation == Truncate::Wrap && col_idx < col_rects.len() {
-            let col_w = col_rects[col_idx].width as usize;
+            let col_w = col_rects[col_idx].width.saturating_sub(pad_total) as usize;
             if col_w > 0 {
                 let mut cell_lines = 0usize;
                 for line in cell.lines() {
@@ -1274,6 +1371,7 @@ fn render_row(
     column_specs: &[ColumnSpec],
     rendered_height: u16,
     preset_id: Option<TablePresetId>,
+    cell_padding: u16,
 ) {
     let apply_styling = frame.degradation.apply_styling();
     let row_effect_base = if apply_styling {
@@ -1301,13 +1399,22 @@ fn render_row(
     } else {
         ("…", 1)
     };
+    let pad_total = cell_padding.saturating_mul(2);
 
     for (col_idx, cell_text) in row.cells.iter().enumerate() {
         if col_idx >= col_rects.len() {
             break;
         }
         let rect = col_rects[col_idx];
-        let cell_area = Rect::new(rect.x, y, rect.width, rendered_height);
+        if rect.width <= pad_total {
+            continue;
+        }
+        let cell_area = Rect::new(
+            rect.x.saturating_add(cell_padding),
+            y,
+            rect.width.saturating_sub(pad_total),
+            rendered_height,
+        );
         if cell_area.width == 0 {
             continue;
         }
@@ -1333,30 +1440,74 @@ fn render_row(
         let spec = column_specs.get(col_idx).copied().unwrap_or_default();
         let max_w = cell_area.width as usize;
 
-        let lines_to_render: Vec<Line<'static>> = match spec.truncation {
+        match spec.truncation {
             Truncate::Wrap => {
-                let mut out_lines = Vec::new();
+                let mut line_idx = 0usize;
+                let max_lines = rendered_height as usize;
                 for line in cell_text.lines() {
+                    if line_idx >= max_lines {
+                        break;
+                    }
                     let wrapped = line.wrap(max_w, ftui_text::WrapMode::WordChar);
                     if wrapped.is_empty() {
-                        out_lines.push(Line::new());
+                        line_idx += 1;
                     } else {
-                        out_lines.extend(wrapped);
+                        for wline in wrapped {
+                            if line_idx >= max_lines {
+                                break;
+                            }
+                            let line_width = wline
+                                .spans()
+                                .iter()
+                                .map(|s| ftui_core::text_width::display_width(&s.content))
+                                .sum::<usize>();
+                            render_cell_spans(
+                                wline.spans(),
+                                line_width,
+                                cell_area,
+                                cell_area.y.saturating_add(line_idx as u16),
+                                spec.alignment,
+                                apply_styling,
+                                base_style,
+                                effects,
+                                scope,
+                                column_effect_base,
+                                row_effect_base,
+                                frame,
+                            );
+                            line_idx += 1;
+                        }
                     }
                 }
-                out_lines
             }
-            Truncate::Ellipsis => cell_text
-                .lines()
-                .iter()
-                .map(|line| {
+            Truncate::Ellipsis => {
+                for (line_idx, line) in cell_text
+                    .lines()
+                    .iter()
+                    .take(rendered_height as usize)
+                    .enumerate()
+                {
+                    let line_y = cell_area.y.saturating_add(line_idx as u16);
                     let line_width = line
                         .spans()
                         .iter()
                         .map(|s| ftui_core::text_width::display_width(&s.content))
                         .sum::<usize>();
                     if line_width <= max_w {
-                        line.clone()
+                        render_cell_spans(
+                            line.spans(),
+                            line_width,
+                            cell_area,
+                            line_y,
+                            spec.alignment,
+                            apply_styling,
+                            base_style,
+                            effects,
+                            scope,
+                            column_effect_base,
+                            row_effect_base,
+                            frame,
+                        );
                     } else if max_w <= ellipsis_width {
                         let s = if is_ascii_theme {
                             &ellipsis_str[..max_w.min(ellipsis_str.len())]
@@ -1365,32 +1516,52 @@ fn render_row(
                         } else {
                             ""
                         };
-                        Line::from_spans([Span::raw(s.to_string())])
+                        let spans = [Span::raw(s)];
+                        render_cell_spans(
+                            &spans,
+                            ftui_core::text_width::display_width(s),
+                            cell_area,
+                            line_y,
+                            spec.alignment,
+                            apply_styling,
+                            base_style,
+                            effects,
+                            scope,
+                            column_effect_base,
+                            row_effect_base,
+                            frame,
+                        );
                     } else {
                         let budget = max_w - ellipsis_width;
-                        let mut truncated_spans = Vec::new();
+                        let mut truncated_spans: ftui_layout::smallvec::SmallVec<[Span<'_>; 4]> =
+                            ftui_layout::smallvec::SmallVec::new();
                         let mut used = 0usize;
                         let mut hit_limit = false;
                         for span in line.spans() {
-                            let mut span_text = String::new();
-                            for g in unicode_segmentation::UnicodeSegmentation::graphemes(
-                                span.content.as_ref(),
-                                true,
-                            ) {
+                            let content: &str = span.content.as_ref();
+                            let mut end_byte = 0usize;
+                            for (byte_idx, g) in
+                                unicode_segmentation::UnicodeSegmentation::grapheme_indices(
+                                    content, true,
+                                )
+                            {
                                 let gw = ftui_core::text_width::grapheme_width(g);
                                 if gw == 0 {
-                                    span_text.push_str(g);
+                                    end_byte = byte_idx + g.len();
                                     continue;
                                 }
                                 if used + gw > budget {
                                     hit_limit = true;
                                     break;
                                 }
-                                span_text.push_str(g);
+                                end_byte = byte_idx + g.len();
                                 used += gw;
                             }
-                            if !span_text.is_empty() {
-                                let mut s = Span::styled(span_text, span.style.unwrap_or_default());
+                            if end_byte > 0 {
+                                let mut s = Span::styled(
+                                    &content[..end_byte],
+                                    span.style.unwrap_or_default(),
+                                );
                                 s.link = span.link.clone();
                                 truncated_spans.push(s);
                             }
@@ -1402,69 +1573,112 @@ fn render_row(
                             .last()
                             .and_then(|s| s.style)
                             .unwrap_or(base_style);
-                        truncated_spans.push(Span::styled(ellipsis_str.to_string(), last_style));
-                        Line::from_spans(truncated_spans)
+                        truncated_spans.push(Span::styled(ellipsis_str, last_style));
+                        render_cell_spans(
+                            &truncated_spans,
+                            used + ellipsis_width,
+                            cell_area,
+                            line_y,
+                            spec.alignment,
+                            apply_styling,
+                            base_style,
+                            effects,
+                            scope,
+                            column_effect_base,
+                            row_effect_base,
+                            frame,
+                        );
                     }
-                })
-                .collect(),
-            Truncate::Clip => cell_text.lines().to_vec(),
-        };
-
-        for (line_idx, line) in lines_to_render
-            .into_iter()
-            .take(rendered_height as usize)
-            .enumerate()
-        {
-            let line_width = line
-                .spans()
-                .iter()
-                .map(|s| ftui_core::text_width::display_width(&s.content))
-                .sum::<usize>();
-
-            let left_offset = match spec.alignment {
-                Alignment::Left => 0,
-                Alignment::Center => (cell_area.width as usize).saturating_sub(line_width) / 2,
-                Alignment::Right => (cell_area.width as usize).saturating_sub(line_width),
-            };
-
-            let mut x = cell_area.x.saturating_add(left_offset as u16);
-            let line_y = cell_area.y.saturating_add(line_idx as u16);
-
-            for span in line.spans() {
-                let mut span_style = if apply_styling {
-                    match span.style {
-                        Some(s) => s.merge(&base_style),
-                        None => base_style,
-                    }
-                } else {
-                    Style::default()
-                };
-
-                if let (Some((resolver, phase)), Some(scope)) = (effects, scope) {
-                    if span.style.is_none() {
-                        if let Some(base_effect) = column_effect_base.or(row_effect_base) {
-                            span_style = base_effect;
-                        } else {
-                            span_style = resolver.resolve(span_style, scope, phase);
-                        }
-                    } else {
-                        span_style = resolver.resolve(span_style, scope, phase);
-                    }
-                }
-
-                x = crate::draw_text_span_with_link(
-                    frame,
-                    x,
-                    line_y,
-                    &span.content,
-                    span_style,
-                    cell_area.right(),
-                    span.link.as_deref(),
-                );
-                if x >= cell_area.right() {
-                    break;
                 }
             }
+            Truncate::Clip => {
+                for (line_idx, line) in cell_text
+                    .lines()
+                    .iter()
+                    .take(rendered_height as usize)
+                    .enumerate()
+                {
+                    let line_width = line
+                        .spans()
+                        .iter()
+                        .map(|s| ftui_core::text_width::display_width(&s.content))
+                        .sum::<usize>();
+                    render_cell_spans(
+                        line.spans(),
+                        line_width,
+                        cell_area,
+                        cell_area.y.saturating_add(line_idx as u16),
+                        spec.alignment,
+                        apply_styling,
+                        base_style,
+                        effects,
+                        scope,
+                        column_effect_base,
+                        row_effect_base,
+                        frame,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_cell_spans(
+    spans: &[Span<'_>],
+    line_width: usize,
+    cell_area: Rect,
+    line_y: u16,
+    alignment: Alignment,
+    apply_styling: bool,
+    base_style: Style,
+    effects: Option<(&TableEffectResolver<'_>, f32)>,
+    scope: Option<TableEffectScope>,
+    column_effect_base: Option<Style>,
+    row_effect_base: Option<Style>,
+    frame: &mut Frame,
+) {
+    let left_offset = match alignment {
+        Alignment::Left => 0,
+        Alignment::Center => (cell_area.width as usize).saturating_sub(line_width) / 2,
+        Alignment::Right => (cell_area.width as usize).saturating_sub(line_width),
+    };
+
+    let mut x = cell_area.x.saturating_add(left_offset as u16);
+
+    for span in spans {
+        let mut span_style = if apply_styling {
+            match span.style {
+                Some(s) => s.merge(&base_style),
+                None => base_style,
+            }
+        } else {
+            Style::default()
+        };
+
+        if let (Some((resolver, phase)), Some(scope)) = (effects, scope) {
+            if span.style.is_none() {
+                if let Some(base_effect) = column_effect_base.or(row_effect_base) {
+                    span_style = base_effect;
+                } else {
+                    span_style = resolver.resolve(span_style, scope, phase);
+                }
+            } else {
+                span_style = resolver.resolve(span_style, scope, phase);
+            }
+        }
+
+        x = crate::draw_text_span_with_link(
+            frame,
+            x,
+            line_y,
+            &span.content,
+            span_style,
+            cell_area.right(),
+            span.link.as_deref(),
+        );
+        if x >= cell_area.right() {
+            break;
         }
     }
 }
@@ -1525,11 +1739,13 @@ impl MeasurableWidget for Table<'_> {
             return SizeConstraints::ZERO;
         }
 
-        let row_widths = Self::compute_intrinsic_widths(&self.rows, None, col_count);
+        let cell_padding = self.effective_cell_padding();
+        let pad_extra = cell_padding.saturating_mul(2);
+        let row_widths = Self::compute_intrinsic_widths(&self.rows, None, col_count, cell_padding);
 
         // Total width = sum of max(row_width, header_width) + column spacing
         let separator_width = if col_count > 1 {
-            ((col_count - 1) as u16).saturating_mul(self.column_spacing)
+            ((col_count - 1) as u16).saturating_mul(self.effective_column_spacing())
         } else {
             0
         };
@@ -1540,7 +1756,7 @@ impl MeasurableWidget for Table<'_> {
                 .header
                 .as_ref()
                 .and_then(|h| h.cells.get(i))
-                .map(|c| c.width().min(u16::MAX as usize) as u16)
+                .map(|c| (c.width().min(u16::MAX as usize) as u16).saturating_add(pad_extra))
                 .unwrap_or(0);
             summed_col_width = summed_col_width.saturating_add(r_w.max(h_w));
         }
@@ -3874,5 +4090,75 @@ mod tests {
         assert_eq!(table.table_theme().row_selected, default_theme.row_selected);
         assert_eq!(table.table_theme().row_hover, default_theme.row_hover);
         assert_eq!(table.table_theme().divider, default_theme.divider);
+    }
+
+    #[test]
+    fn theme_column_gap_controls_column_spacing_unless_overridden() {
+        let rows = [Row::new(["AA", "BB"])];
+        let widths = [Constraint::Fixed(2), Constraint::Fixed(2)];
+        let theme = TableTheme::modern().with_column_gap(3);
+
+        let table_from_theme = Table::new(rows.clone(), widths).theme(theme.clone());
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        Widget::render(&table_from_theme, Rect::new(0, 0, 10, 1), &mut frame);
+        assert_eq!(raw_row_text(&frame.buffer, 0), "AA│  BB   ");
+        assert_eq!(
+            table_from_theme.measure(Size::new(10, 1)).preferred.width,
+            7
+        );
+
+        let table_overridden = Table::new(rows, widths).theme(theme).column_spacing(1);
+        let mut frame2 = Frame::new(10, 1, &mut pool);
+        Widget::render(&table_overridden, Rect::new(0, 0, 10, 1), &mut frame2);
+        assert_eq!(raw_row_text(&frame2.buffer, 0), "AA│BB     ");
+        assert_eq!(
+            table_overridden.measure(Size::new(10, 1)).preferred.width,
+            5
+        );
+    }
+
+    #[test]
+    fn theme_padding_insets_cells_and_expands_intrinsic_widths() {
+        let rows = [Row::new(["ID", "Name"])];
+        let widths = [Constraint::FitContent, Constraint::FitContent];
+        let theme = TableTheme::modern().with_padding(2).with_column_gap(1);
+
+        let table = Table::new(rows, widths)
+            .theme(theme)
+            .use_theme_padding(true);
+
+        // Column 0: "ID" (2) + 2*2 pad = 6; gap = 1; Column 1: "Name" (4) + 2*2 pad = 8; total = 15
+        assert_eq!(table.measure(Size::new(20, 1)).preferred.width, 15);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(15, 1, &mut pool);
+        Widget::render(&table, Rect::new(0, 0, 15, 1), &mut frame);
+        assert_eq!(raw_row_text(&frame.buffer, 0), "  ID  │  Name  ");
+    }
+
+    #[test]
+    fn table_uses_arena_when_present() {
+        let rows = [
+            Row::new(["worker-00", "running", "40 us"]),
+            Row::new(["worker-01", "idle", "47 us"]),
+        ];
+        let widths = [
+            Constraint::Fixed(12),
+            Constraint::Fixed(10),
+            Constraint::Fill,
+        ];
+        let table = Table::new(rows, widths).header(Row::new(["Worker", "State", "Latency"]));
+        let mut pool = GraphemePool::new();
+        let arena = ftui_core::arena::FrameArena::new(0);
+        assert_eq!(arena.allocated_bytes(), 0);
+        let mut frame = Frame::new(40, 6, &mut pool);
+        frame.set_arena(&arena);
+        let mut state = TableState::default();
+        StatefulWidget::render(&table, Rect::new(0, 0, 40, 6), &mut frame, &mut state);
+        assert!(
+            arena.allocated_bytes() > 0,
+            "expected Table::render to allocate scratch rects/indices from FrameArena"
+        );
     }
 }

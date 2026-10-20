@@ -36,6 +36,68 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[must_use]
+pub fn default_project_dir() -> PathBuf {
+    for var in ["DOCTOR_FRANKENTUI_PROJECT_DIR", "FTUI_PROJECT_DIR"] {
+        if let Some(val) = std::env::var_os(var)
+            && !val.is_empty()
+        {
+            return PathBuf::from(val);
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut cursor: Option<&Path> = Some(cwd.as_path());
+        while let Some(dir) = cursor {
+            if dir.join("Cargo.toml").is_file() && dir.join("crates").is_dir() {
+                return dir.to_path_buf();
+            }
+            cursor = dir.parent();
+        }
+    }
+    if let Some(workspace_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        && workspace_root.exists()
+    {
+        return workspace_root.to_path_buf();
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+#[must_use]
+pub fn default_demo_showcase_binary(project_dir: &Path) -> PathBuf {
+    let exe_name = format!("ftui-demo-showcase{}", std::env::consts::EXE_SUFFIX);
+    for var in ["DOCTOR_FRANKENTUI_BINARY", "FTUI_DEMO_SHOWCASE_BIN"] {
+        if let Some(val) = std::env::var_os(var)
+            && !val.is_empty()
+        {
+            return PathBuf::from(val);
+        }
+    }
+    if let Some(target_dir) = std::env::var_os("CARGO_TARGET_DIR")
+        && !target_dir.is_empty()
+    {
+        return PathBuf::from(target_dir).join("debug").join(&exe_name);
+    }
+    if let Ok(current_exe) = std::env::current_exe()
+        && let Some(parent) = current_exe.parent()
+    {
+        let sibling = parent.join(&exe_name);
+        if sibling.exists() {
+            return sibling;
+        }
+        if parent.file_name() == Some(OsStr::new("deps"))
+            && let Some(debug_dir) = parent.parent()
+        {
+            let debug_sibling = debug_dir.join(&exe_name);
+            if debug_sibling.exists() {
+                return debug_sibling;
+            }
+        }
+    }
+    project_dir.join("target").join("debug").join(exe_name)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputModeOverride {
     Human,
@@ -563,14 +625,15 @@ mod tests {
     use crate::error::DoctorError;
 
     use super::{
-        OutputIntegration, append_line, bool_to_u8, command_exists,
-        copy_tree_snapshot_materialized, duration_literal, ensure_dir, ensure_executable,
-        ensure_exists, ensure_safe_path_component, exit_status_code, join_validated_child_path,
+        OutputIntegration, append_line, bool_to_u8, command_exists, duration_literal, ensure_dir,
+        ensure_executable, ensure_exists, ensure_safe_path_component, join_validated_child_path,
         normalize_http_path, output_for, parse_duration_value, relative_to, require_command,
         rust_comment_text, shell_single_quote, tape_escape, tmux_attach_command_literal,
         write_string,
     };
 
+    #[cfg(unix)]
+    use super::{copy_tree_snapshot_materialized, exit_status_code};
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
 

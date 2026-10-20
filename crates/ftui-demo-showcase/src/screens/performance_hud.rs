@@ -1563,6 +1563,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: 15,
             y: 20,
+            pixel: None,
             modifiers: Modifiers::empty(),
         });
         hud.handle_mouse(&click);
@@ -1573,6 +1574,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: 15,
             y: 21,
+            pixel: None,
             modifiers: Modifiers::empty(),
         });
         hud.handle_mouse(&click);
@@ -1588,6 +1590,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: 15,
             y: 32,
+            pixel: None,
             modifiers: Modifiers::empty(),
         });
         hud.handle_mouse(&click);
@@ -1603,6 +1606,7 @@ mod tests {
             kind: MouseEventKind::ScrollUp,
             x: 10,
             y: 10,
+            pixel: None,
             modifiers: Modifiers::empty(),
         });
         hud.handle_mouse(&scroll_up);
@@ -1612,6 +1616,7 @@ mod tests {
             kind: MouseEventKind::ScrollDown,
             x: 10,
             y: 10,
+            pixel: None,
             modifiers: Modifiers::empty(),
         });
         hud.handle_mouse(&scroll_down);
@@ -1627,6 +1632,7 @@ mod tests {
             kind: MouseEventKind::ScrollUp,
             x: 10,
             y: 5,
+            pixel: None,
             modifiers: Modifiers::empty(),
         });
         hud.handle_mouse(&scroll_up);
@@ -1636,6 +1642,7 @@ mod tests {
             kind: MouseEventKind::ScrollDown,
             x: 10,
             y: 5,
+            pixel: None,
             modifiers: Modifiers::empty(),
         });
         hud.handle_mouse(&scroll_down);

@@ -1459,4 +1459,236 @@ mod tests {
         assert_eq!(frame.buffer.get(1, 0).unwrap().content.as_char(), Some('D'));
         assert_eq!(frame.buffer.get(2, 0).unwrap().content.as_char(), Some('E'));
     }
+
+    fn collect_a11y_from_render<F>(width: u16, height: u16, render: F) -> ftui_a11y::tree::A11yTree
+    where
+        F: FnOnce(&mut Frame),
+    {
+        let mut pool = GraphemePool::new();
+        let mut builder = ftui_a11y::tree::A11yTreeBuilder::new();
+        {
+            let mut frame = Frame::new(width, height, &mut pool);
+            frame.set_a11y(&mut builder);
+            render(&mut frame);
+            frame.finish_a11y();
+        }
+        builder.build()
+    }
+
+    #[test]
+    fn block_render_pushes_a11y_nodes() {
+        use crate::block::Block;
+        use crate::borders::Borders;
+
+        let block = Block::new().borders(Borders::ALL).title("Panel");
+        let area = Rect::new(0, 0, 20, 6);
+        let expected = ftui_a11y::Accessible::accessibility_nodes(&block, area);
+        let tree = collect_a11y_from_render(20, 6, |frame| {
+            block.render(area, frame);
+        });
+        assert_eq!(tree.node_count(), expected.len());
+        let root = tree.node(expected[0].id).expect("block node present");
+        assert_eq!(root.role, ftui_a11y::node::A11yRole::Group);
+        assert_eq!(root.name.as_deref(), Some("Panel"));
+    }
+
+    #[test]
+    fn tabs_render_pushes_a11y_nodes() {
+        use crate::tabs::{Tab, Tabs, TabsState};
+
+        let tabs = Tabs::new(vec![Tab::new("General"), Tab::new("Advanced")]);
+        let area = Rect::new(0, 0, 30, 1);
+        let expected = ftui_a11y::Accessible::accessibility_nodes(&tabs, area);
+        let tree = collect_a11y_from_render(30, 1, |frame| {
+            let mut state = TabsState::default();
+            StatefulWidget::render(&tabs, area, frame, &mut state);
+        });
+        assert_eq!(tree.node_count(), expected.len());
+        for node in &expected {
+            assert!(tree.node(node.id).is_some(), "missing tab node {}", node.id);
+        }
+    }
+
+    #[test]
+    fn progress_render_pushes_a11y_nodes() {
+        use crate::progress::ProgressBar;
+
+        let bar = ProgressBar::new().ratio(0.6).label("60%");
+        let area = Rect::new(0, 0, 20, 1);
+        let expected = ftui_a11y::Accessible::accessibility_nodes(&bar, area);
+        let tree = collect_a11y_from_render(20, 1, |frame| {
+            bar.render(area, frame);
+        });
+        assert_eq!(tree.node_count(), expected.len());
+        let node = tree.node(expected[0].id).expect("progress node present");
+        assert_eq!(node.role, ftui_a11y::node::A11yRole::ProgressBar);
+        assert_eq!(node.state.value_text.as_deref(), Some("60%"));
+    }
+
+    #[test]
+    fn input_render_pushes_a11y_nodes() {
+        use crate::input::TextInput;
+
+        let input = TextInput::new()
+            .with_value("alice")
+            .with_placeholder("Username")
+            .with_focused(true);
+        let area = Rect::new(0, 0, 20, 1);
+        let expected = ftui_a11y::Accessible::accessibility_nodes(&input, area);
+        let tree = collect_a11y_from_render(20, 1, |frame| {
+            input.render(area, frame);
+        });
+        assert_eq!(tree.node_count(), expected.len());
+        let node = tree.node(expected[0].id).expect("input node present");
+        assert_eq!(node.role, ftui_a11y::node::A11yRole::TextInput);
+        assert!(node.state.focused);
+        assert_eq!(tree.focused_id(), Some(expected[0].id));
+    }
+
+    #[test]
+    fn list_render_pushes_a11y_nodes() {
+        use crate::list::{List, ListItem, ListState};
+
+        let list = List::new([ListItem::new("First"), ListItem::new("Second")]);
+        let area = Rect::new(0, 0, 20, 4);
+        let expected = ftui_a11y::Accessible::accessibility_nodes(&list, area);
+        let tree = collect_a11y_from_render(20, 4, |frame| {
+            let mut state = ListState::default();
+            state.select(Some(1));
+            StatefulWidget::render(&list, area, frame, &mut state);
+        });
+        assert_eq!(tree.node_count(), expected.len());
+        let list_node = tree.node(expected[0].id).expect("list node present");
+        assert_eq!(list_node.role, ftui_a11y::node::A11yRole::List);
+        let second_child = tree
+            .node(list_node.children[1])
+            .expect("second list item node present");
+        assert_eq!(second_child.name.as_deref(), Some("Second"));
+        assert!(second_child.state.selected);
+    }
+
+    #[test]
+    fn table_render_pushes_a11y_nodes() {
+        use crate::table::{Row, Table, TableState};
+        use ftui_layout::Constraint;
+
+        let table = Table::new(
+            [Row::new(["a", "1"]), Row::new(["b", "2"])],
+            [Constraint::Fixed(8), Constraint::Fixed(8)],
+        );
+        let area = Rect::new(0, 0, 20, 4);
+        let expected = ftui_a11y::Accessible::accessibility_nodes(&table, area);
+        let tree = collect_a11y_from_render(20, 4, |frame| {
+            let mut state = TableState::default();
+            state.select(Some(0));
+            StatefulWidget::render(&table, area, frame, &mut state);
+        });
+        assert_eq!(tree.node_count(), expected.len());
+        let table_node = tree.node(expected[0].id).expect("table node present");
+        assert_eq!(table_node.role, ftui_a11y::node::A11yRole::Table);
+    }
+
+    #[test]
+    fn spinner_render_pushes_a11y_nodes() {
+        use crate::spinner::{Spinner, SpinnerState};
+
+        let spinner = Spinner::new().label("Loading");
+        let area = Rect::new(0, 0, 20, 1);
+        let expected = ftui_a11y::Accessible::accessibility_nodes(&spinner, area);
+        let tree = collect_a11y_from_render(20, 1, |frame| {
+            let mut state = SpinnerState::default();
+            StatefulWidget::render(&spinner, area, frame, &mut state);
+        });
+        assert_eq!(tree.node_count(), expected.len());
+        let node = tree.node(expected[0].id).expect("spinner node present");
+        assert_eq!(node.name, expected[0].name);
+        assert!(node.state.busy);
+    }
+
+    #[test]
+    fn scrollbar_render_pushes_a11y_nodes() {
+        use crate::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        let area = Rect::new(0, 0, 1, 10);
+        let expected = ftui_a11y::Accessible::accessibility_nodes(&sb, area);
+        let tree = collect_a11y_from_render(1, 10, |frame| {
+            let mut state = ScrollbarState::new(100, 20, 10);
+            StatefulWidget::render(&sb, area, frame, &mut state);
+        });
+        assert_eq!(tree.node_count(), expected.len());
+        let node = tree.node(expected[0].id).expect("scrollbar node present");
+        assert_eq!(node.role, ftui_a11y::node::A11yRole::ScrollBar);
+    }
+
+    #[test]
+    fn paragraph_render_pushes_a11y_nodes() {
+        use crate::paragraph::Paragraph;
+
+        let p = Paragraph::new("Hello world");
+        let area = Rect::new(0, 0, 20, 2);
+        let expected = ftui_a11y::Accessible::accessibility_nodes(&p, area);
+        let tree = collect_a11y_from_render(20, 2, |frame| {
+            p.render(area, frame);
+        });
+        assert_eq!(tree.node_count(), expected.len());
+        let node = tree.node(expected[0].id).expect("paragraph node present");
+        assert_eq!(node.role, ftui_a11y::node::A11yRole::Label);
+        assert_eq!(node.name.as_deref(), Some("Hello world"));
+    }
+
+    #[test]
+    fn block_render_with_children_nests_child_nodes() {
+        use crate::block::Block;
+        use crate::borders::Borders;
+        use crate::input::TextInput;
+        use crate::paragraph::Paragraph;
+
+        let block = Block::new().borders(Borders::ALL).title("Outer");
+        let outer_area = Rect::new(0, 0, 30, 8);
+        let inner_area = block.inner(outer_area);
+        let p_area = Rect::new(inner_area.x, inner_area.y, inner_area.width, 1);
+        let i_area = Rect::new(inner_area.x, inner_area.y + 1, inner_area.width, 1);
+
+        let tree = collect_a11y_from_render(30, 8, |frame| {
+            block.render_with_children(outer_area, frame, |inner, frame| {
+                assert_eq!(inner, inner_area);
+                Paragraph::new("Prompt").render(p_area, frame);
+                TextInput::new().with_value("abc").render(i_area, frame);
+            });
+        });
+
+        let block_id = a11y_node_id(outer_area);
+        let p_id = a11y_node_id(p_area);
+        let i_id = a11y_node_id(i_area);
+        let block_node = tree.node(block_id).expect("block node");
+        assert_eq!(block_node.children, vec![p_id, i_id]);
+        assert_eq!(
+            tree.node(p_id).expect("paragraph node").parent,
+            Some(block_id)
+        );
+        assert_eq!(tree.node(i_id).expect("input node").parent, Some(block_id));
+    }
+
+    #[test]
+    fn render_without_builder_allocates_nothing() {
+        use crate::block::Block;
+        use crate::borders::Borders;
+        use crate::input::TextInput;
+        use crate::paragraph::Paragraph;
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 8, &mut pool);
+        assert!(!frame.a11y_enabled());
+
+        let block = Block::new().borders(Borders::ALL).title("Outer");
+        block.render_with_children(Rect::new(0, 0, 30, 8), &mut frame, |inner, frame| {
+            Paragraph::new("Prompt").render(Rect::new(inner.x, inner.y, inner.width, 1), frame);
+            TextInput::new()
+                .with_value("abc")
+                .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), frame);
+        });
+        frame.finish_a11y();
+        assert!(frame.take_a11y_order().is_empty());
+    }
 }

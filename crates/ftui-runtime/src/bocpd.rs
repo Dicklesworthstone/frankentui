@@ -903,18 +903,55 @@ impl BocpdDetector {
         self.previous_regime = BocpdRegime::Steady;
     }
 
+    /// Seed the initial event timestamp without recording a synthetic
+    /// inter-arrival observation.
+    pub fn seed_event_time(&mut self, now: Instant) {
+        self.last_event_time = Some(now);
+    }
+
     /// Compute recommended coalesce delay based on current regime.
     ///
     /// Interpolates between steady_delay and burst_delay based on p_burst.
     pub fn recommended_delay(&self, steady_delay_ms: u64, burst_delay_ms: u64) -> u64 {
-        if self.p_burst < self.config.steady_threshold {
+        self.recommended_delay_for_posterior(self.p_burst, steady_delay_ms, burst_delay_ms)
+    }
+
+    /// Compute recommended coalesce delay accounting for right-censored idle
+    /// silence (`idle_ms`) elapsed since the most recent event.
+    ///
+    /// Once `idle_ms` exceeds `mu_burst_ms`, the survival probability of the
+    /// burst regime decays exponentially as `exp(-(idle_ms - mu_burst_ms) / mu_burst_ms)`.
+    pub fn recommended_delay_after_idle(
+        &self,
+        steady_delay_ms: u64,
+        burst_delay_ms: u64,
+        idle_ms: f64,
+    ) -> u64 {
+        let effective_p_burst = if idle_ms > self.config.mu_burst_ms {
+            let excess = idle_ms - self.config.mu_burst_ms;
+            let denom = self.config.mu_burst_ms.max(f64::EPSILON);
+            (self.p_burst * (-excess / denom).exp()).clamp(0.0, 1.0)
+        } else {
+            self.p_burst
+        };
+        self.recommended_delay_for_posterior(effective_p_burst, steady_delay_ms, burst_delay_ms)
+    }
+
+    #[inline]
+    fn recommended_delay_for_posterior(
+        &self,
+        p_burst: f64,
+        steady_delay_ms: u64,
+        burst_delay_ms: u64,
+    ) -> u64 {
+        if p_burst < self.config.steady_threshold {
             steady_delay_ms
-        } else if self.p_burst > self.config.burst_threshold {
+        } else if p_burst > self.config.burst_threshold {
             burst_delay_ms
         } else {
             // Linear interpolation in transitional region
             let denom = (self.config.burst_threshold - self.config.steady_threshold).max(1e-6);
-            let t = ((self.p_burst - self.config.steady_threshold) / denom).clamp(0.0, 1.0);
+            let t = ((p_burst - self.config.steady_threshold) / denom).clamp(0.0, 1.0);
             let delay = steady_delay_ms as f64 * (1.0 - t) + burst_delay_ms as f64 * t;
             delay.round() as u64
         }
@@ -1994,4 +2031,49 @@ mod tests {
         // two regimes swap meaning and every reason code inverts silently.
         assert!(config.mu_burst_ms < config.mu_steady_ms);
     }
+
+    #[test]
+    fn seed_event_time_preserves_prior_on_initial_event() {
+        let mut det = BocpdDetector::with_defaults();
+        let base = Instant::now();
+        let initial_p = det.p_burst();
+        assert!((initial_p - 0.2).abs() < 1e-6);
+
+        det.seed_event_time(base);
+        assert!(
+            (det.p_burst() - initial_p).abs() < 1e-6,
+            "seed_event_time must not inject a synthetic mu_steady observation"
+        );
+        assert_eq!(det.observation_count(), 0);
+
+        // Next real inter-arrival interval (27ms) starts from the 0.2 prior
+        // and enters the transitional band instead of being buried at 0.001.
+        let regime = det.observe_event(base + Duration::from_millis(27));
+        assert_eq!(regime, BocpdRegime::Transitional);
+        assert!(det.p_burst() >= 0.3);
+    }
+
+    #[test]
+    fn recommended_delay_after_idle_decays_burst_posterior_under_silence() {
+        let mut det = BocpdDetector::with_defaults();
+        let base = Instant::now();
+        det.seed_event_time(base);
+        for i in 1..=6 {
+            det.observe_event(base + Duration::from_millis(i * 10));
+        }
+        assert_eq!(det.regime(), BocpdRegime::Burst);
+        assert_eq!(det.recommended_delay(16, 40), 40);
+
+        // At idle_ms <= mu_burst_ms (20ms), no survival decay is applied.
+        assert_eq!(det.recommended_delay_after_idle(16, 40, 15.0), 40);
+        // After an extended open-ended silence (> mu_burst_ms), right-censored
+        // survival likelihood decays the effective delay from 40ms down toward
+        // steady_delay_ms (16ms).
+        let decayed = det.recommended_delay_after_idle(16, 40, 35.0);
+        assert!(
+            decayed < 40 && decayed >= 16,
+            "expected decayed delay in [16, 40), got {decayed}"
+        );
+    }
 }
+

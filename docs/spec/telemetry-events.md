@@ -637,6 +637,155 @@ Example:
 {"schema_version":"ftui-evidence-v1","event":"width_cache_stats","hits":120,"misses":15,"len":15,"capacity":4096,"enabled":true,"thread":"main"}
 ```
 
+#### Event: `summary`
+
+Written by `ResizeCoalescer::flush_summary_to_evidence_sink` on shutdown when an evidence sink is attached. Summarizes the session's resize coalescing decisions and deterministic log checksum.
+
+Required fields:
+- `schema_version`, `run_id`, `event_idx`, `screen_mode`, `cols`, `rows`
+- `decisions`, `applies`, `forced_applies`, `coalesces`, `skips` (u64)
+- `regime` (`steady` | `burst`)
+- `last_w`, `last_h` (u16)
+- `checksum` (16-hex-character FNV-1a digest of decision logs)
+
+#### Event: `cycle_time_percentiles`
+
+Written alongside `summary` on shutdown when cycle-time samples were recorded by the resize coalescer.
+
+Required fields:
+- `p50_ms`, `p95_ms`, `p99_ms`, `mean_ms` (f64)
+- `count` (usize)
+
+#### Event: `certificate_decision`
+
+Written by the diff strategy selector when a degradation/skip certificate is evaluated for a frame.
+
+Required fields:
+- `run_id` (string), `event_idx` (u64)
+- `strategy` (`Full` | `DirtyRows` | `FullRedraw`)
+- `certificate` (object: `level`, `causes`, `narrowed_rows`, `fell_back`)
+
+#### Event: `budget_decision`
+
+Written per frame by `Program::emit_budget_evidence` when the evidence sink is enabled. Captures PID controller output, e-process wealth, conformal risk prediction, and runtime load-governor state.
+
+Required fields:
+- `frame_idx` (u64), `decision`, `decision_controller`, `decision_controller_reason`
+- `degradation_before`, `degradation_after`
+- `frame_time_us`, `budget_us`, `pid_output`, `pid_p`, `pid_i`, `pid_d`, `e_value`, `eprocess_lambda`
+- `frames_observed`, `frames_since_change`, `in_warmup`
+- `runtime_mode`, `runtime_mode_before`, `pressure_class`, `work_disposition`, `governor_reason`, `governor_transition`, `strict_semantics_preserved`
+- `queue_in_flight`, `queue_max_depth`, `queue_dropped_delta`, `resize_coalescing_active`, `resize_detector`
+- `recovery_intervals_observed`, `recovery_intervals_required`, `deferred_work_total`, `coalesced_work_total`, `dropped_work_total`
+- Conformal bucket fields when enabled (`bucket_key`, `n_b`, `alpha`, `q_b`, `y_hat`, `upper_us`, `risk`, `fallback_level`, `window_size`, `reset_count`)
+
+#### Event: `guardrail_snapshot`
+
+Written by `Program::render_frame` whenever a memory or effect-queue guardrail alert fires on a frame.
+
+Required fields:
+- `schema_version` (`"ftui-evidence-v1"`)
+- `snapshot` (object: `memory_bytes`, `memory_peak`, `memory_frac`, `mem_soft_violations`, `mem_hard_violations`, `mem_emergency_violations`, `queue_depth`, `queue_peak`, `queue_drops`, `queue_backpressure`, `frames_checked`, `frames_alerted`)
+
+#### Event: `fairness_config`
+
+Written once at startup when `InputFairnessGuard` configuration is logged to the evidence sink.
+
+Required fields:
+- `enabled` (bool), `input_priority_threshold_ms` (u64), `dominance_threshold` (u32), `fairness_threshold` (f64)
+
+#### Event: `fairness_decision`
+
+Written by `Program::emit_fairness_evidence` when evaluating whether resize processing should yield to pending input.
+
+Required fields:
+- `frame_idx` (u64), `decision` (`allow` | `yield`), `reason`
+- `pending_input_latency_ms` (u64 or `null`), `jain_index` (f64)
+- `resize_dominance_count`, `dominance_threshold` (u32), `fairness_threshold` (f64), `input_priority_threshold_ms` (u64)
+
+#### Event: `voi_decision`
+
+Written by the value-of-information sampler (`VoiSampler::decide`) during inline-auto height remeasurement.
+
+Required fields:
+- `idx` (u64), `should_sample`, `forced`, `blocked` (bool)
+- `voi_gain`, `score`, `cost`, `log_bayes_factor`, `posterior_mean`, `posterior_variance`, `e_value`, `e_threshold`, `boundary_score` (f64)
+- `events_since_sample` (u64), `time_since_sample_ms` (f64), `reason` (string)
+
+#### Event: `voi_observe`
+
+Written by `VoiSampler::observe` after an inline-auto height measurement sample is taken.
+
+Required fields:
+- `idx`, `sample_idx` (u64), `violated` (bool)
+- `posterior_mean`, `posterior_variance`, `alpha`, `beta`, `e_value`, `e_threshold` (f64)
+
+#### Event: `voi_sample`
+
+Written by `Program` when evaluating a Value-of-Information height remeasurement sample (`source = "virtualized_list"` or `"inline_auto"`).
+
+Required fields:
+- `source` (`"virtualized_list"` | `"inline_auto"`)
+- `widget_id` (u64), `index` (usize)
+- `alpha`, `beta`, `voi`, `sample_cost` (f64)
+- `decision` (`"sample"` | `"skip"`)
+
+#### Event: `widget_refresh`
+
+Written per frame by `Program::update_widget_refresh_plan` when widget scheduling signals are evaluated against the frame budget.
+
+Required fields:
+- `frame_idx` (u64), `budget_us` (f64), `degradation` (string)
+- `essentials_cost_us`, `selected_cost_us`, `selected_value` (f64)
+- `selected_count`, `skipped_count`, `starved_selected`, `starved_skipped` (usize)
+- `over_budget` (bool), `selected` (array of selected widget records)
+
+#### Event: `effect_queue_select`
+
+Written by `EffectQueue` when selecting the next job under Smith's-rule / aging priority scheduling.
+
+Required fields:
+- `current_time` (f64), `selected_job_id` (u64 or `null`), `queue_length` (usize)
+- `mean_wait_time`, `max_wait_time` (f64)
+- `reason`, `tie_break_reason` (string), `jobs` (array of candidate job diagnostics)
+
+#### Event: `task_executor_backend`
+
+Written once when `TaskExecutor` initializes its execution backend.
+
+Required fields:
+- `backend` (`spawned` | `asupersync`)
+
+#### Event: `task_executor_complete`
+
+Written when a background task completes on the task executor.
+
+Required fields:
+- `backend` (string), `duration_us` (u64)
+
+#### Event: `task_executor_panic`
+
+Written when a background task closure panics and is recovered by the task executor.
+
+Required fields:
+- `backend` (string), `panic_msg` (string)
+
+#### Event: `task_executor_backpressure`
+
+Written when the bounded task executor queue rejects or drops a submitted task due to capacity limits.
+
+Required fields:
+- `backend` (string), `action` (`drop`), `queue_length`, `max_queue_size` (usize), `total_rejected` (u64)
+
+#### Event: `shadow_frame`
+
+Written after each presented frame when `ProgramConfig::rollout_policy` is `RolloutPolicy::Shadow`.
+
+Required fields:
+- `frame` (u64, 0-based presented frame counter), `checksum` (16-hex-digit FNV-1a buffer checksum from `ftui_render::buffer::buffer_checksum`)
+- `lane` (`legacy` | `structured` | `asupersync`), `requested_lane` (`legacy` | `structured` | `asupersync`), `rollout_policy` (`shadow`), `task_backend` (`spawned` | `queued` | `asupersync`)
+- `cols`, `rows` (u16), `ts_ns` (u128)
+
 ---
 
 ## 10) Implementation Notes

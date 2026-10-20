@@ -20,6 +20,7 @@
 //! assert_eq!(lines.len(), 2);
 //! ```
 
+use ftui_core::arena::{BumpString, BumpVec, FrameArena};
 use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -363,6 +364,253 @@ fn finalize_line(line: &str, options: &WrapOptions) -> String {
         line.trim_end_matches(is_breaking_whitespace).to_string()
     } else {
         line.to_string()
+    }
+}
+
+/// Arena-backed convenience wrapper around [`wrap_with_options_in`].
+///
+/// Allocates the returned line slice and any wrapped line strings in `arena`,
+/// avoiding global heap allocations on the per-frame render path (`bd-g00-root-epic-ewths.31.3`).
+#[must_use]
+pub fn wrap_text_in<'a>(
+    arena: &'a FrameArena,
+    text: &'a str,
+    width: usize,
+    mode: WrapMode,
+) -> &'a [&'a str] {
+    let preserve = mode == WrapMode::Char;
+    wrap_with_options_in(
+        arena,
+        text,
+        &WrapOptions::new(width).mode(mode).preserve_indent(preserve),
+    )
+}
+
+/// Arena-backed counterpart to [`wrap_with_options`].
+///
+/// Produces identical wrapped lines to [`wrap_with_options`] while allocating
+/// scratch buffers and output slices in `arena`.
+#[must_use]
+pub fn wrap_with_options_in<'a>(
+    arena: &'a FrameArena,
+    text: &'a str,
+    options: &WrapOptions,
+) -> &'a [&'a str] {
+    if options.width == 0 {
+        return split_lines_unwrapped_in(arena, text, options);
+    }
+
+    match options.mode {
+        WrapMode::None => split_lines_unwrapped_in(arena, text, options),
+        WrapMode::Char => wrap_chars_in(arena, text, options),
+        WrapMode::Word => wrap_words_in(arena, text, options, false),
+        WrapMode::WordChar => wrap_words_in(arena, text, options, true),
+        WrapMode::Optimal => wrap_text_optimal_in(arena, text, options.width),
+    }
+}
+
+fn split_lines_unwrapped_in<'a>(
+    arena: &'a FrameArena,
+    text: &'a str,
+    options: &WrapOptions,
+) -> &'a [&'a str] {
+    let mut lines = arena.new_vec::<&'a str>();
+    for raw in text.split('\n') {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let trimmed = if options.trim_trailing {
+            line.trim_end_matches(is_breaking_whitespace)
+        } else {
+            line
+        };
+        lines.push(trimmed);
+    }
+    lines.into_bump_slice()
+}
+
+fn wrap_chars_in<'a>(arena: &'a FrameArena, text: &'a str, options: &WrapOptions) -> &'a [&'a str] {
+    let mut lines = arena.new_vec::<&'a str>();
+    let mut current_line = arena.new_string();
+    let mut current_width = 0;
+
+    for grapheme in text.graphemes(true) {
+        if grapheme == "\n" || grapheme == "\r\n" {
+            lines.push(finalize_line_in(arena, &current_line, options));
+            current_line.clear();
+            current_width = 0;
+            continue;
+        }
+
+        let grapheme_width = crate::wrap::grapheme_width(grapheme);
+
+        if current_width + grapheme_width > options.width && !current_line.is_empty() {
+            lines.push(finalize_line_in(arena, &current_line, options));
+            current_line.clear();
+            current_width = 0;
+        }
+
+        current_line.push_str(grapheme);
+        current_width += grapheme_width;
+    }
+
+    lines.push(finalize_line_in(arena, &current_line, options));
+    lines.into_bump_slice()
+}
+
+fn wrap_words_in<'a>(
+    arena: &'a FrameArena,
+    text: &'a str,
+    options: &WrapOptions,
+    char_fallback: bool,
+) -> &'a [&'a str] {
+    let mut lines = arena.new_vec::<&'a str>();
+    let mut current_line = arena.new_string();
+
+    for raw_paragraph in text.split('\n') {
+        let paragraph = raw_paragraph.strip_suffix('\r').unwrap_or(raw_paragraph);
+        current_line.clear();
+        let mut current_width = 0;
+        let len_before = lines.len();
+
+        wrap_paragraph_in(
+            arena,
+            paragraph,
+            options,
+            char_fallback,
+            &mut lines,
+            &mut current_line,
+            &mut current_width,
+        );
+
+        if !current_line.is_empty() || lines.len() == len_before {
+            lines.push(finalize_line_in(arena, &current_line, options));
+        }
+    }
+
+    lines.into_bump_slice()
+}
+
+fn wrap_paragraph_in<'a>(
+    arena: &'a FrameArena,
+    text: &'a str,
+    options: &WrapOptions,
+    char_fallback: bool,
+    lines: &mut BumpVec<'a, &'a str>,
+    current_line: &mut BumpString<'a>,
+    current_width: &mut usize,
+) {
+    let words = split_words_in(arena, text);
+    for word in words {
+        let is_whitespace_only = word.chars().all(is_breaking_whitespace);
+
+        if *current_width == 0 && is_whitespace_only && !options.preserve_indent {
+            continue;
+        }
+
+        let word_width = display_width(word);
+
+        if *current_width + word_width <= options.width {
+            current_line.push_str(word);
+            *current_width += word_width;
+            continue;
+        }
+
+        if !current_line.is_empty() {
+            if current_line.chars().all(is_breaking_whitespace) {
+                current_line.clear();
+                *current_width = 0;
+            } else {
+                lines.push(finalize_line_in(arena, current_line, options));
+                current_line.clear();
+                *current_width = 0;
+            }
+
+            if is_whitespace_only && !options.preserve_indent {
+                continue;
+            }
+        }
+
+        if word_width > options.width {
+            if char_fallback {
+                wrap_long_word_in(arena, word, options, lines, current_line, current_width);
+            } else {
+                lines.push(finalize_line_in(arena, word, options));
+            }
+        } else {
+            if !word.is_empty() {
+                current_line.push_str(word);
+            }
+            *current_width = word_width;
+        }
+    }
+}
+
+fn wrap_long_word_in<'a>(
+    arena: &'a FrameArena,
+    word: &'a str,
+    options: &WrapOptions,
+    lines: &mut BumpVec<'a, &'a str>,
+    current_line: &mut BumpString<'a>,
+    current_width: &mut usize,
+) {
+    for grapheme in word.graphemes(true) {
+        let grapheme_width = crate::wrap::grapheme_width(grapheme);
+
+        if *current_width == 0
+            && grapheme.chars().all(is_breaking_whitespace)
+            && !options.preserve_indent
+        {
+            continue;
+        }
+
+        if *current_width + grapheme_width > options.width && !current_line.is_empty() {
+            lines.push(finalize_line_in(arena, current_line, options));
+            current_line.clear();
+            *current_width = 0;
+
+            if grapheme.chars().all(is_breaking_whitespace) && !options.preserve_indent {
+                continue;
+            }
+        }
+
+        current_line.push_str(grapheme);
+        *current_width += grapheme_width;
+    }
+}
+
+fn split_words_in<'a>(arena: &'a FrameArena, text: &'a str) -> BumpVec<'a, &'a str> {
+    let mut words = arena.new_vec::<&'a str>();
+    let mut current_start = 0;
+    let mut current_end = 0;
+    let mut in_whitespace = false;
+    let mut byte_offset = 0;
+
+    for grapheme in text.graphemes(true) {
+        let is_ws = grapheme.chars().all(is_breaking_whitespace);
+
+        if is_ws != in_whitespace && current_end > current_start {
+            words.push(&text[current_start..current_end]);
+            current_start = byte_offset;
+        } else if current_end == current_start {
+            current_start = byte_offset;
+        }
+
+        current_end = byte_offset + grapheme.len();
+        in_whitespace = is_ws;
+        byte_offset += grapheme.len();
+    }
+
+    if current_end > current_start {
+        words.push(&text[current_start..current_end]);
+    }
+
+    words
+}
+
+fn finalize_line_in<'a>(arena: &'a FrameArena, line: &str, options: &WrapOptions) -> &'a str {
+    if options.trim_trailing {
+        arena.alloc_str(line.trim_end_matches(is_breaking_whitespace))
+    } else {
+        arena.alloc_str(line)
     }
 }
 
@@ -942,6 +1190,174 @@ pub fn wrap_text_optimal(text: &str, width: usize) -> Vec<String> {
         result.extend(kp.lines);
     }
     result
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KpWordSlice<'a> {
+    content: &'a str,
+    space: &'a str,
+    content_width: usize,
+    space_width: usize,
+}
+
+fn kp_tokenize_in<'a>(arena: &'a FrameArena, text: &'a str) -> BumpVec<'a, KpWordSlice<'a>> {
+    let mut words = arena.new_vec::<KpWordSlice<'a>>();
+    let mut content_start = 0;
+    let mut content_end = 0;
+    let mut current_content_width = 0;
+    let mut byte_offset = 0;
+
+    for seg in text.split_word_bounds() {
+        let is_space = seg.chars().all(is_breaking_whitespace);
+        let width = display_width(seg);
+
+        if is_space {
+            if content_end > content_start {
+                let content = &text[content_start..content_end];
+                words.push(KpWordSlice {
+                    content,
+                    space: seg,
+                    content_width: current_content_width,
+                    space_width: width,
+                });
+                content_start = byte_offset + seg.len();
+                content_end = content_start;
+                current_content_width = 0;
+            } else if let Some(last) = words.last_mut() {
+                let start = byte_offset - last.space.len();
+                let end = byte_offset + seg.len();
+                last.space = &text[start..end];
+                last.space_width += width;
+                content_start = byte_offset + seg.len();
+                content_end = content_start;
+            } else {
+                content_start = byte_offset + seg.len();
+                content_end = content_start;
+            }
+        } else {
+            if content_start == content_end {
+                content_start = byte_offset;
+            }
+            content_end = byte_offset + seg.len();
+            current_content_width += width;
+        }
+
+        byte_offset += seg.len();
+    }
+
+    if content_end > content_start {
+        let content = &text[content_start..content_end];
+        words.push(KpWordSlice {
+            content,
+            space: "",
+            content_width: current_content_width,
+            space_width: 0,
+        });
+    }
+
+    words
+}
+
+fn wrap_optimal_paragraph_in<'a>(
+    arena: &'a FrameArena,
+    text: &'a str,
+    width: usize,
+    lines: &mut BumpVec<'a, &'a str>,
+) {
+    if width == 0 || text.is_empty() {
+        lines.push(text);
+        return;
+    }
+
+    let words = kp_tokenize_in(arena, text);
+    if words.is_empty() {
+        lines.push("");
+        return;
+    }
+
+    let n = words.len();
+    let mut cost = arena.new_vec_with_capacity::<u64>(n + 1);
+    let mut from = arena.new_vec_with_capacity::<usize>(n + 1);
+    cost.resize(n + 1, BADNESS_INF);
+    from.resize(n + 1, 0);
+    cost[0] = 0;
+
+    for j in 1..=n {
+        let mut line_width: usize = 0;
+        let earliest = j.saturating_sub(KP_MAX_LOOKAHEAD);
+        for i in (earliest..j).rev() {
+            line_width += words[i].content_width;
+            if i < j - 1 {
+                line_width += words[i].space_width;
+            }
+
+            if line_width > width && i < j - 1 {
+                break;
+            }
+
+            let slack = width as i64 - line_width as i64;
+            let is_last = j == n;
+            let badness = if line_width > width {
+                PENALTY_FORCE_BREAK
+            } else {
+                knuth_plass_badness(slack, width, is_last)
+            };
+
+            let candidate = cost[i].saturating_add(badness);
+            if candidate < cost[j] || (candidate == cost[j] && i > from[j]) {
+                cost[j] = candidate;
+                from[j] = i;
+            }
+        }
+    }
+
+    let mut breaks = arena.new_vec::<usize>();
+    let mut pos = n;
+    while pos > 0 {
+        breaks.push(from[pos]);
+        pos = from[pos];
+    }
+    breaks.reverse();
+
+    let break_count = breaks.len();
+    let mut line = arena.new_string();
+    for (idx, &start) in breaks.iter().enumerate() {
+        let end = if idx + 1 < break_count {
+            breaks[idx + 1]
+        } else {
+            n
+        };
+
+        line.clear();
+        for (i, word) in words.iter().take(end).skip(start).enumerate() {
+            line.push_str(word.content);
+            if i < (end - start) - 1 {
+                line.push_str(word.space);
+            }
+        }
+
+        let trimmed = line.trim_end_matches(is_breaking_whitespace);
+        lines.push(arena.alloc_str(trimmed));
+    }
+}
+
+/// Arena-backed counterpart to [`wrap_text_optimal`].
+#[must_use]
+pub fn wrap_text_optimal_in<'a>(
+    arena: &'a FrameArena,
+    text: &'a str,
+    width: usize,
+) -> &'a [&'a str] {
+    let mut result = arena.new_vec::<&'a str>();
+    for raw_paragraph in text.split('\n') {
+        let paragraph = raw_paragraph.strip_suffix('\r').unwrap_or(raw_paragraph);
+        if paragraph.is_empty() {
+            result.push("");
+            continue;
+        }
+        wrap_optimal_paragraph_in(arena, paragraph, width, &mut result);
+    }
+    result.into_bump_slice()
 }
 
 // =============================================================================
@@ -2981,5 +3397,50 @@ mod proptests {
     fn badness_zero_width_nonzero_slack() {
         let obj = ParagraphObjective::default();
         assert!(obj.badness(5, 0).is_none());
+    }
+
+    mod arena_wrap_proptests {
+        use super::*;
+
+        fn arb_wrap_mode() -> impl Strategy<Value = WrapMode> {
+            prop_oneof![
+                Just(WrapMode::None),
+                Just(WrapMode::Word),
+                Just(WrapMode::Char),
+                Just(WrapMode::WordChar),
+                Just(WrapMode::Optimal),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            #[test]
+            fn wrap_in_equals_wrap_owned(
+                text in "[a-zA-Z0-9 \t\n\r\u{00A0}é漢字🎉]{0,160}",
+                width in 0usize..=60,
+                mode in arb_wrap_mode(),
+                preserve_indent in any::<bool>(),
+                trim_trailing in any::<bool>(),
+            ) {
+                let mut arena = FrameArena::new(16 * 1024);
+                let opts = WrapOptions::new(width)
+                    .mode(mode)
+                    .preserve_indent(preserve_indent)
+                    .trim_trailing(trim_trailing);
+
+                let owned = wrap_with_options(&text, &opts);
+                let in_arena = wrap_with_options_in(&arena, &text, &opts);
+                let owned_slices: Vec<&str> = owned.iter().map(String::as_str).collect();
+                prop_assert_eq!(in_arena, owned_slices.as_slice());
+
+                arena.reset();
+                let owned_default = wrap_text(&text, width, mode);
+                let in_arena_default = wrap_text_in(&arena, &text, width, mode);
+                let owned_default_slices: Vec<&str> =
+                    owned_default.iter().map(String::as_str).collect();
+                prop_assert_eq!(in_arena_default, owned_default_slices.as_slice());
+            }
+        }
     }
 }

@@ -281,7 +281,7 @@ fn translate_node(
 ) -> WidgetNode {
     let widget_type = infer_widget_type(node, ir);
     let layout = infer_layout(id, node, ir, layout_ctx, diagnostics);
-    let props = extract_props(node, widget_type);
+    let props = extract_props(id, node, widget_type, diagnostics);
     let condition = translate_conditions(node);
     let children: Vec<String> = node.children.iter().map(widget_id).collect();
 
@@ -387,7 +387,7 @@ fn infer_layout(
 ) -> LayoutDecl {
     // First try IR style intent.
     if let Some(layout_intent) = ir.style_intent.layouts.get(id) {
-        return layout_from_intent(layout_intent, node);
+        return layout_from_intent(id, layout_intent, node, diagnostics);
     }
 
     // Then try inferred layout from intent inference.
@@ -424,7 +424,12 @@ fn infer_layout(
     }
 }
 
-fn layout_from_intent(intent: &crate::migration_ir::LayoutIntent, node: &ViewNode) -> LayoutDecl {
+fn layout_from_intent(
+    id: &IrNodeId,
+    intent: &crate::migration_ir::LayoutIntent,
+    node: &ViewNode,
+    diagnostics: &mut Vec<ViewDiagnostic>,
+) -> LayoutDecl {
     let kind = match intent.kind {
         LayoutKind::Flex => LayoutDeclKind::Flex,
         LayoutKind::Grid => LayoutDeclKind::Grid,
@@ -445,11 +450,20 @@ fn layout_from_intent(intent: &crate::migration_ir::LayoutIntent, node: &ViewNod
         .children
         .iter()
         .map(|child_id| {
-            let constraint = intent
-                .sizing
-                .as_deref()
-                .map(translate_sizing)
-                .unwrap_or_else(|| "Fill".to_string());
+            let constraint = match intent.sizing.as_deref() {
+                Some(raw) => match translate_sizing_checked(raw) {
+                    Ok(translated) => translated,
+                    Err(reason) => {
+                        diagnostics.push(ViewDiagnostic {
+                            level: ViewDiagLevel::Error,
+                            message: reason,
+                            related_ids: vec![id.clone(), child_id.clone()],
+                        });
+                        "FitContent".to_string()
+                    }
+                },
+                None => "Fill".to_string(),
+            };
             ConstraintDecl {
                 child_id: widget_id(child_id),
                 constraint,
@@ -539,33 +553,83 @@ fn translate_alignment(align: &str) -> String {
     }
 }
 
-fn translate_sizing(sizing: &str) -> String {
-    match sizing.to_lowercase().as_str() {
-        "fixed" => "Fixed(0)".to_string(), // Placeholder, needs actual size.
-        "auto" | "fit-content" | "content" => "FitContent".to_string(),
-        "fill" | "stretch" | "1fr" => "Fill".to_string(),
+fn parse_positive_fixed_dimension(raw: &str) -> Option<u16> {
+    let trimmed = raw.trim();
+    let candidate = trimmed
+        .strip_prefix("fixed:")
+        .or_else(|| {
+            trimmed
+                .strip_prefix("fixed(")
+                .and_then(|s| s.strip_suffix(')'))
+        })
+        .or_else(|| trimmed.strip_suffix("px"))
+        .or_else(|| trimmed.strip_suffix("ch"))
+        .unwrap_or(trimmed)
+        .trim();
+    let value = candidate.parse::<u16>().ok()?;
+    (value > 0).then_some(value)
+}
+
+fn translate_sizing_checked(sizing: &str) -> Result<String, String> {
+    let lower = sizing.trim().to_lowercase();
+    match lower.as_str() {
+        "auto" | "fit-content" | "content" => Ok("FitContent".to_string()),
+        "fill" | "stretch" | "1fr" => Ok("Fill".to_string()),
         s if s.ends_with('%') => {
             let pct = s.trim_end_matches('%').parse::<f32>().unwrap_or(100.0);
-            format!("Percentage({pct})")
+            Ok(format!("Percentage({pct})"))
         }
-        _ => "Fill".to_string(),
+        s if s == "fixed"
+            || s.starts_with("fixed:")
+            || s.starts_with("fixed(")
+            || s.ends_with("px")
+            || s.ends_with("ch")
+            || s.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            if let Some(cells) = parse_positive_fixed_dimension(&lower) {
+                Ok(format!("Fixed({cells})"))
+            } else {
+                Err(format!(
+                    "Unsupported fixed sizing '{sizing}' without a positive cell dimension; falling back to FitContent"
+                ))
+            }
+        }
+        _ => Ok("Fill".to_string()),
     }
+}
+
+#[cfg(test)]
+fn translate_sizing(sizing: &str) -> String {
+    translate_sizing_checked(sizing).unwrap_or_else(|_| "FitContent".to_string())
 }
 
 // ── Prop Extraction ────────────────────────────────────────────────────
 
-fn extract_props(node: &ViewNode, widget_type: WidgetType) -> Vec<WidgetProp> {
+fn extract_props(
+    id: &IrNodeId,
+    node: &ViewNode,
+    widget_type: WidgetType,
+    diagnostics: &mut Vec<ViewDiagnostic>,
+) -> Vec<WidgetProp> {
     let mut props = Vec::new();
 
     // Common props from IR.
     for prop in &node.props {
-        props.push(WidgetProp {
-            name: prop.name.clone(),
-            value: prop
-                .default_value
-                .clone()
-                .unwrap_or_else(|| "/* TODO */".to_string()),
-        });
+        if let Some(default_value) = &prop.default_value {
+            props.push(WidgetProp {
+                name: prop.name.clone(),
+                value: default_value.clone(),
+            });
+        } else {
+            diagnostics.push(ViewDiagnostic {
+                level: ViewDiagLevel::Error,
+                message: format!(
+                    "Unsupported prop '{}' on node '{}' has no static default value",
+                    prop.name, node.name
+                ),
+                related_ids: vec![id.clone()],
+            });
+        }
     }
 
     // Widget-type-specific defaults.

@@ -516,16 +516,24 @@ anytime-valid safety guarantees.
 
 ### VOI (Expected Variance Reduction)
 Let `Var[p]` be the Beta posterior variance. The expected variance after
-one additional sample is:
+one additional sample simplifies in closed form to:
 
 ```
 E[Var | one sample] =
   p̂ · Var[Beta(α+1,β)] + (1−p̂) · Var[Beta(α,β+1)]
 VOI = Var[p] − E[Var | one sample]
+    = Var[p] / (α + β + 1)
+    = α·β / ((α + β)² · (α + β + 1)²)
+    ≤ 1 / (4 · (α + β + 1)²)
 ```
 
 ### E-Process Boundary Proximity
-- Track wealth `W_t` using the same Bernoulli stream for anytime-valid control.
+- Track wealth `W_t` using the same Bernoulli stream for sequential monitoring:
+  `W_t = clamp(W_{t−1} · max(1 + λ·(X_t − μ_0), EPS), E_MIN, E_MAX)`.
+- For `0 ≤ λ < 1 / μ_0` and while `W_t` remains unclamped in `(E_MIN, E_MAX)` with
+  `1 − λ·μ_0 > EPS`, `W_t` is a true conditional supermartingale under `H_0: E[X_t] ≤ μ_0`
+  (so Ville's inequality bounds `P(∃t: W_t ≥ 1/α) ≤ α`); at the `E_MIN` / `E_MAX` clamp
+  boundaries it acts as a bounded heuristic proximity signal.
 - Increase sampling when `log W_t` is near the threshold `log(1/α)`.
 
 ### Decision Rule (Explainable)

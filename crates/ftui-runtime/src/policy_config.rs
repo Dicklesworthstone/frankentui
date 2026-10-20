@@ -444,6 +444,7 @@ impl PolicyConfig {
             sigma_ema_decay: self.eprocess_budget.sigma_ema_decay,
             sigma_floor_ms: self.eprocess_budget.sigma_floor_ms,
             warmup_frames: self.eprocess_budget.warmup_frames,
+            ..EProcessConfig::default()
         }
     }
 

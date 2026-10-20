@@ -435,4 +435,245 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn lane_boundary_cases() {
+        const LENGTHS: &[usize] = &[0, 1, 3, 4, 5, 63, 64, 65, 127, 128, 129];
+
+        for &len in LENGTHS {
+            let base_u128: Vec<u128> = (0..len)
+                .map(|i| ((i as u128 + 1) << 64) | (i as u128 + 17))
+                .collect();
+            assert_eq!(
+                first_mismatch_u128(&base_u128, &base_u128),
+                first_mismatch_u128_scalar(&base_u128, &base_u128),
+                "identical u128 len {len}"
+            );
+            assert_eq!(
+                rows_equal_u128(&base_u128, &base_u128),
+                rows_equal_u128_scalar(&base_u128, &base_u128),
+                "rows_equal identical len {len}"
+            );
+
+            let mut candidate_indices = vec![0, len.saturating_sub(1)];
+            for boundary in [
+                CELLS_PER_CHUNK - 1,
+                CELLS_PER_CHUNK,
+                2 * CELLS_PER_CHUNK - 1,
+                2 * CELLS_PER_CHUNK,
+                BYTES_PER_CHUNK - 1,
+                BYTES_PER_CHUNK,
+                2 * BYTES_PER_CHUNK - 1,
+                2 * BYTES_PER_CHUNK,
+            ] {
+                if boundary < len {
+                    candidate_indices.push(boundary);
+                }
+            }
+            candidate_indices.sort_unstable();
+            candidate_indices.dedup();
+
+            if len > 0 {
+                for &idx in &candidate_indices {
+                    for delta in [1_u128, 1_u128 << 64, (1_u128 << 64) | 1] {
+                        let mut mutated = base_u128.clone();
+                        mutated[idx] ^= delta;
+                        assert_eq!(
+                            first_mismatch_u128(&base_u128, &mutated),
+                            Some(idx),
+                            "u128 len {len} idx {idx} delta {delta:#x}"
+                        );
+                        assert_eq!(
+                            first_mismatch_u128(&base_u128, &mutated),
+                            first_mismatch_u128_scalar(&base_u128, &mutated),
+                            "u128 scalar parity len {len} idx {idx}"
+                        );
+                        assert!(!rows_equal_u128(&base_u128, &mutated));
+                        assert_eq!(
+                            rows_equal_u128(&base_u128, &mutated),
+                            rows_equal_u128_scalar(&base_u128, &mutated)
+                        );
+                    }
+                }
+            }
+
+            let base_bytes: Vec<u8> = (0..len).map(|i| b'!' + (i % 90) as u8).collect();
+            assert_eq!(
+                all_ascii(&base_bytes),
+                all_ascii_scalar(&base_bytes),
+                "all_ascii clean len {len}"
+            );
+            assert_eq!(
+                ascii_width(&base_bytes),
+                ascii_width_scalar(&base_bytes),
+                "ascii_width clean len {len}"
+            );
+
+            if len > 0 {
+                for &idx in &candidate_indices {
+                    for bad in [0x00_u8, 0x1f, 0x7f, 0x80, 0xff] {
+                        let mut mutated = base_bytes.clone();
+                        mutated[idx] = bad;
+                        assert_eq!(
+                            all_ascii(&mutated),
+                            all_ascii_scalar(&mutated),
+                            "all_ascii len {len} idx {idx} bad {bad:#04x}"
+                        );
+                        assert_eq!(
+                            ascii_width(&mutated),
+                            ascii_width_scalar(&mutated),
+                            "ascii_width len {len} idx {idx} bad {bad:#04x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mismatched_lengths_return_shorter_len_or_first_diff() {
+        // Documented contract for `first_mismatch_u128`:
+        // Only the common prefix `0..a.len().min(b.len())` is inspected.
+        // - If `a` and `b` agree across the entire shorter prefix, returns `None`.
+        // - If `a` and `b` differ at `idx < a.len().min(b.len())`, returns `Some(idx)`.
+        // Documented contract for `rows_equal_u128`:
+        // - Always returns `false` when `a.len() != b.len()`, even if the common prefix matches.
+        let long: Vec<u128> = (0..130)
+            .map(|i| ((i as u128 + 1) << 64) | (i as u128 + 1))
+            .collect();
+        for short_len in [0_usize, 1, 3, 4, 5, 63, 64, 65, 128] {
+            let short = &long[..short_len];
+            assert_eq!(first_mismatch_u128(&long, short), None);
+            assert_eq!(
+                first_mismatch_u128(&long, short),
+                first_mismatch_u128_scalar(&long, short)
+            );
+            assert_eq!(first_mismatch_u128(short, &long), None);
+            assert_eq!(
+                first_mismatch_u128(short, &long),
+                first_mismatch_u128_scalar(short, &long)
+            );
+            assert!(!rows_equal_u128(&long, short));
+            assert_eq!(
+                rows_equal_u128(&long, short),
+                rows_equal_u128_scalar(&long, short)
+            );
+
+            if short_len > 0 {
+                for diff_idx in [0, short_len / 2, short_len - 1] {
+                    let mut short_diff = short.to_vec();
+                    short_diff[diff_idx] ^= 1_u128 << 64;
+                    assert_eq!(first_mismatch_u128(&long, &short_diff), Some(diff_idx));
+                    assert_eq!(
+                        first_mismatch_u128(&long, &short_diff),
+                        first_mismatch_u128_scalar(&long, &short_diff)
+                    );
+                    assert_eq!(first_mismatch_u128(&short_diff, &long), Some(diff_idx));
+                    assert_eq!(
+                        first_mismatch_u128(&short_diff, &long),
+                        first_mismatch_u128_scalar(&short_diff, &long)
+                    );
+                }
+            }
+        }
+    }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn first_mismatch_simd_equals_scalar(
+                a in proptest::collection::vec(any::<u128>(), 0..=300),
+                mismatch_pos in proptest::option::of(0usize..=300),
+                delta in 1u128..=u128::MAX,
+                extra_tail in proptest::collection::vec(any::<u128>(), 0..=16),
+                trim_b in any::<bool>(),
+            ) {
+                let mut b = a.clone();
+                if let Some(pos) = mismatch_pos
+                    && !b.is_empty()
+                {
+                    let idx = pos % b.len();
+                    b[idx] ^= delta;
+                }
+                if trim_b && !extra_tail.is_empty() {
+                    b.extend_from_slice(&extra_tail);
+                }
+                let simd = first_mismatch_u128(&a, &b);
+                let scalar = first_mismatch_u128_scalar(&a, &b);
+                prop_assert_eq!(
+                    simd,
+                    scalar,
+                    "first_mismatch mismatch for a.len()={}, b.len()={}, simd={:?}, scalar={:?}",
+                    a.len(),
+                    b.len(),
+                    simd,
+                    scalar
+                );
+            }
+
+            #[test]
+            fn rows_equal_simd_equals_scalar(
+                a in proptest::collection::vec(any::<u128>(), 0..=300),
+                mutate in any::<bool>(),
+                pos in 0usize..=300,
+                delta in 1u128..=u128::MAX,
+                len_diff in 0usize..=8,
+            ) {
+                let mut b = a.clone();
+                if mutate && !b.is_empty() {
+                    let idx = pos % b.len();
+                    b[idx] ^= delta;
+                }
+                if len_diff > 0 {
+                    b.resize(b.len() + len_diff, 0);
+                }
+                let simd = rows_equal_u128(&a, &b);
+                let scalar = rows_equal_u128_scalar(&a, &b);
+                prop_assert_eq!(
+                    simd,
+                    scalar,
+                    "rows_equal mismatch for a.len()={}, b.len()={}",
+                    a.len(),
+                    b.len()
+                );
+            }
+
+            #[test]
+            fn all_ascii_simd_equals_scalar(
+                len in 0usize..=70_000,
+                seed in any::<u8>(),
+                injections in proptest::collection::vec((0usize..=70_000, any::<u8>()), 0..=8),
+            ) {
+                // Start with printable ASCII so multi-chunk runs exercise the loop body,
+                // then inject arbitrary bytes (control or high-bit) at random positions.
+                let base_byte = 0x20 + (seed % 0x5f);
+                let mut bytes = vec![base_byte; len];
+                if len > 0 {
+                    for &(pos, byte) in &injections {
+                        bytes[pos % len] = byte;
+                    }
+                }
+                let simd_ascii = all_ascii(&bytes);
+                let scalar_ascii = all_ascii_scalar(&bytes);
+                prop_assert_eq!(
+                    simd_ascii,
+                    scalar_ascii,
+                    "all_ascii mismatch at len={}",
+                    len
+                );
+
+                let simd_width = ascii_width(&bytes);
+                let scalar_width = ascii_width_scalar(&bytes);
+                prop_assert_eq!(
+                    simd_width,
+                    scalar_width,
+                    "ascii_width mismatch at len={}",
+                    len
+                );
+            }
+        }
+    }
 }

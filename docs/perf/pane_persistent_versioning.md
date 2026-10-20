@@ -135,12 +135,47 @@ build hosts, but the **ratios are stable**.
 | Sharing | n/a | 69.7% | 69.2% |
 | Scrub (64 jumps) | ~0.4–0.7 s | **~1.5–2.9 ms (≈255×)** | same |
 
+### Live `PaneExecutionEngine` wrapper benchmarks (`--live`, 240×80 viewport, 100% feasible solve)
+
+The initial spike tables above measure the standalone `PaneVersionStore` against
+`PaneInteractionTimeline`. When wired through the live [`PaneExecutionEngine`]
+wrapper (which maintains canonical `PaneTree` + `PaneInteractionTimeline` parity,
+enforces `PaneRetentionPolicy`, and solves layout + renders preview rects on a
+`240×80` viewport), `benches/pane_persistent_bench.rs -- --live` also benchmarks:
+
+- **`balanced_resize_storm`** (63 and 255 leaves built via breadth-first
+  alternating `Horizontal`/`Vertical` splits, depth 6 and 8, `solve_success=512,
+  solve_error=0`),
+- **`skewed_feasible_resize_storm`** (255 leaves built as a depth-254 chain
+  biasing splits 3:1 `Horizontal:Vertical` so minimum dimensions `192×64` fit
+  inside `240×80`, `solve_success=512, solve_error=0`),
+- **`balanced_mixed_session`** (64 leaves, 256 viewport-validated mixed
+  operations across all six families, `solve_success=256, solve_error=0`).
+
+Representative `retained_edits=64` wrapper timings (`engine_apply` p50 / p95 / p99):
+
+| Scenario | Checkpointed | Persistent | Conservative | Adaptive |
+|----------|-------------:|-----------:|-------------:|---------:|
+| `balanced_resize_storm` (63 leaves) | **160 / 218 / 243 µs** | 265 / 307 / 339 µs | 183 / 252 / 270 µs | 266 / 326 / 380 µs |
+| `balanced_resize_storm` (255 leaves) | **773 / 961 / 1,057 µs** | 1,139 / 1,249 / 1,473 µs | 943 / 1,143 / 1,232 µs | 1,139 / 1,237 / 1,502 µs |
+| `skewed_feasible_resize_storm` (255 leaves) | **777 / 986 / 1,081 µs** | 2,238 / 2,557 / 3,143 µs | 963 / 1,165 / 1,249 µs | 2,202 / 2,321 / 2,466 µs |
+| `balanced_mixed_session` (64 leaves) | **209 / 277 / 298 µs** | 812 / 985 / 1,291 µs | 237 / 350 / 393 µs | **209 / 277 / 341 µs** |
+
+Why `Checkpointed` wins end-to-end inside `PaneExecutionEngine`: the live engine
+maintains canonical `PaneTree` and `PaneInteractionTimeline` state alongside the
+optional `PaneVersionStore` and flattens `VersionedPaneTree -> PaneTree` on
+navigation so all downstream callers (`solve_layout`, snapshot export, invariant
+validation) operate on the canonical `PaneTree`. In the `balanced_mixed_session`
+workload, `Adaptive` automatically detects non-local structural operations and
+falls back to `Checkpointed`, matching `Checkpointed` latency (`209 µs` p50 vs
+`812 µs` for forced `Persistent`).
+
 ## Complexity
 
 | | Checkpointed timeline | Persistent version store |
 |--|----------------------|--------------------------|
 | Apply | `O(nodes)` clone + validate, periodic `O(nodes)` snapshot | **`O(depth)`** new nodes (path-copy) |
-| Undo / redo (one step) | `O(nodes)` restore + `O(replay_depth)` replay | **`O(1)`** cursor move |
+| Undo / redo (one step) | `O(nodes)` restore + `O(replay_depth)` replay | **`O(1)`** cursor move (`O(nodes)` flatten when materializing canonical `PaneTree`) |
 | Seek to version *k* | `O(distance × per-step)` (no seek API) | **`O(1)`** |
 | Memory (V versions, N nodes) | `N + (V/interval)·N` snapshots + compact op log | `N + Σ O(depth)` shared nodes (bounded by window) |
 
@@ -161,50 +196,43 @@ But undo history is **always bounded** in practice. Capping the store at a
 - preserves **~72%** structural sharing (consecutive versions still share),
 - and keeps navigation **`O(1)`** within the window.
 
-So the recommended shape is strictly better than the checkpointed timeline on
-*both* speed and memory. The pruning posture (drop oldest version, advance the
-floor) mirrors the timeline's existing entry-limit behavior and is the subject of
-[bd-25wj7.2].
+So the standalone bounded store beats the standalone checkpointed timeline on
+both speed and memory, while inside the dual-tracked `PaneExecutionEngine`
+wrapper, `Checkpointed` avoids dual-substrate maintenance overhead.
 
 ## Debugging ergonomics & rollback posture
 
 - **Rollback is trivial and always available.** `to_pane_tree()` flattens any
   version to the validated canonical structure; the execution-policy selector
-  ([bd-1k7ek.6]) can fall back to the checkpointed timeline at any time with no
-  data migration. The prototype lives in its own module and is not wired into any
-  production path, so reverting the spike is a one-line module removal.
+  ([`PaneExecutionEngine`]) can switch between `Persistent`, `Checkpointed`,
+  `Conservative`, and `Adaptive` at any cursor position (including mid-history
+  with a live redo tail) and rejects invalid/baseline migrations atomically.
 - **Inspection cost.** Persistent nodes are parent-free, so "who is my parent?"
   requires a flatten (or a top-down walk). Tooling that introspects parents
   (invariant reports, repair) already operates on `PaneTreeSnapshot`, so it keeps
   working unchanged via `to_snapshot()`. Direct interactive debugging of a raw
   `Arc<PersistentNode>` is slightly less convenient than the flat map — an
   acceptable cost given the always-available canonical view.
-- **Determinism is preserved.** Version hashes are byte-identical to the canonical
-  baseline, so evidence logs, golden artifacts, and replay oracles are unaffected.
+- **Determinism is preserved.** Version hashes, solved layout rects, `Frame`
+  buffer cells, and `Presenter` ANSI outputs are byte-identical across all four
+  live policies under equal retention budgets (verified by
+  `pane_full_showcase_render_and_ansi_present_parity_across_policies_and_rollback`
+  in `ftui-demo-showcase`).
 
-## Recommendation
+## Recommendation & Live Adoption Decision (`bd-g00-root-epic-ewths.44`)
 
-**Conditional GO — promote a bounded-window persistent version store as the
-undo/redo substrate, behind the execution-policy selector.**
-
-Adoption path (already modeled as dependents of this bead):
-
-1. **[bd-25wj7.2] bounded retention/pruning** — *prerequisite*. Land the window
-   policy that caps versions (and checkpoints/caches) so memory stays in the
-   "better than checkpointed" regime.
-2. **[bd-1k7ek.6] execution-policy selector** — choose `baseline` /
-   `checkpointed` / `persistent` per context, with the persistent path defaulting
-   on for interactive sessions and the checkpointed path retained as the
-   audited fallback.
-3. **[bd-25wj7.3] structural sharing in the hot path** — the path-copy machinery
-   here is the foundation; promote it with a positional index for `O(depth)`
-   location.
-4. **[bd-1pvzq.3 / bd-1pvzq.4] golden-oracle + determinism matrix** — fold the
-   differential equivalence harness from this spike into the perf gates so the
-   persistent path is continuously certified against the canonical baseline.
-
-Do **not** adopt the unbounded form, and do **not** rip out the checkpointed
-timeline — it remains the certified oracle and the audited fallback lane.
+1. **Keep `Checkpointed` as the default strategy in `PaneExecutionEngine::new`**
+   because the live wrapper maintains canonical `PaneTree` + `PaneInteractionTimeline`
+   in all history modes and `Checkpointed` achieves the lowest end-to-end apply/undo
+   latency across both 63-leaf and 255-leaf feasible layouts (`balanced_resize_storm`,
+   `skewed_feasible_resize_storm`, and `balanced_mixed_session`).
+2. **Expose `Persistent`, `Conservative`, and `Adaptive` via `PaneExecutionEngine::set_policy`**
+   (and interactive `'e'` policy cycling in `LayoutLab`), guarded by bounded
+   retention (`PaneRetentionPolicy`) and runtime assumption monitoring
+   (`LocalityFraction`, `LatencyEnvelope`, `RetentionPressure`).
+3. **Retain `Checkpointed` as the certified oracle and automatic fallback target**
+   whenever `Adaptive` or `Persistent` observes non-local structural churn,
+   latency envelope violations, or retention pressure.
 
 ## Prototype limitations (tracked, not normalized away)
 
@@ -217,6 +245,7 @@ timeline — it remains the certified oracle and the audited fallback lane.
   not a silent gap.
 
 [`PaneInteractionTimeline`]: ../../crates/ftui-layout/src/pane.rs
+[`PaneExecutionEngine`]: ../../crates/ftui-layout/src/pane_execution.rs
 [bd-1k7ek.6]: https://example.invalid/bd-1k7ek.6
 [bd-25wj7.2]: https://example.invalid/bd-25wj7.2
 [bd-25wj7.3]: https://example.invalid/bd-25wj7.3

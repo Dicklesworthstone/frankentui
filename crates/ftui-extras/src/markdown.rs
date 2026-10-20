@@ -2012,7 +2012,12 @@ impl<'t> RenderState<'t> {
         }
 
         let max_width = usize::from(max_width);
-        let border_width = widths.len().saturating_mul(3).saturating_add(1);
+        let pad = usize::from(self.theme.table_theme.padding);
+        let per_col_overhead = 1usize.saturating_add(pad.saturating_mul(2));
+        let border_width = widths
+            .len()
+            .saturating_mul(per_col_overhead)
+            .saturating_add(1);
         if max_width <= border_width {
             widths.fill(1);
             return;
@@ -2084,10 +2089,11 @@ impl<'t> RenderState<'t> {
         right: char,
         style: Style,
     ) -> Line {
+        let pad_both = usize::from(self.theme.table_theme.padding).saturating_mul(2);
         let mut line = String::new();
         line.push(left);
         for (idx, width) in widths.iter().enumerate() {
-            line.push_str(&"─".repeat(width.saturating_add(2)));
+            line.push_str(&"─".repeat(width.saturating_add(pad_both)));
             if idx + 1 < widths.len() {
                 line.push(mid);
             }
@@ -2097,6 +2103,7 @@ impl<'t> RenderState<'t> {
     }
 
     fn table_row_line(&self, row: &TableRow, context: &TableRowContext<'_>) -> Line {
+        let pad = usize::from(self.theme.table_theme.padding);
         let mut spans = Vec::new();
         spans.push(Span::styled("│", context.border_style));
 
@@ -2125,8 +2132,8 @@ impl<'t> RenderState<'t> {
                 _ => (0, extra),
             };
 
-            let left_pad = 1 + left_extra;
-            let right_pad = 1 + right_extra;
+            let left_pad = pad.saturating_add(left_extra);
+            let right_pad = pad.saturating_add(right_extra);
 
             spans.push(Span::styled(" ".repeat(left_pad), cell_style));
             spans.extend(cell_spans);
@@ -3945,5 +3952,28 @@ The time complexity is **O(2^n)** which can be improved with memoization."#;
         let plain_response = "The API returned status 200 and the data looks correct.";
         let text = auto_render(plain_response, &theme);
         assert_eq!(text.height(), 1); // Single line, rendered as plain text
+    }
+
+    #[test]
+    fn markdown_table_respects_table_theme_padding() {
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |";
+
+        let mut theme_pad0 = MarkdownTheme::default();
+        theme_pad0.table_theme = theme_pad0.table_theme.with_padding(0);
+        let text_pad0 = MarkdownRenderer::new(theme_pad0).render(md);
+        let content_pad0 = plain(&text_pad0);
+        let lines_pad0: Vec<&str> = content_pad0.lines().collect();
+        assert_eq!(lines_pad0[0], "┌─┬─┐");
+        assert_eq!(lines_pad0[1], "│A│B│");
+        assert_eq!(lines_pad0[3], "│1│2│");
+
+        let mut theme_pad2 = MarkdownTheme::default();
+        theme_pad2.table_theme = theme_pad2.table_theme.with_padding(2);
+        let text_pad2 = MarkdownRenderer::new(theme_pad2).render(md);
+        let content_pad2 = plain(&text_pad2);
+        let lines_pad2: Vec<&str> = content_pad2.lines().collect();
+        assert_eq!(lines_pad2[0], "┌─────┬─────┐");
+        assert_eq!(lines_pad2[1], "│  A  │  B  │");
+        assert_eq!(lines_pad2[3], "│  1  │  2  │");
     }
 }

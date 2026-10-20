@@ -5467,11 +5467,9 @@ impl Dashboard {
             .render(rows[0], frame);
 
         if !fx_area.is_empty() {
-            let mut constraints = Vec::new();
-            for _ in 0..effect_slots {
-                constraints.push(Constraint::Ratio(1, effect_slots as u32));
-            }
-            let slots = Flex::vertical().constraints(constraints).split(fx_area);
+            let slots = Flex::vertical()
+                .constraints((0..effect_slots).map(|_| Constraint::Ratio(1, effect_slots as u32)))
+                .split(fx_area);
             for (idx, slot) in slots.iter().enumerate() {
                 if slot.is_empty() {
                     continue;
@@ -5557,16 +5555,18 @@ impl Dashboard {
         let max_items = inner.height.saturating_sub(header_rows) as usize;
         let max_scroll = self.simulated_data.alerts.len().saturating_sub(max_items);
         let scroll = self.activity_scroll.min(max_scroll);
-        let alerts: Vec<_> = self
+        let mut rendered_any = false;
+
+        for (i, alert) in self
             .simulated_data
             .alerts
             .iter()
             .rev()
             .skip(scroll)
             .take(max_items)
-            .collect();
-
-        for (i, alert) in alerts.iter().enumerate() {
+            .enumerate()
+        {
+            rendered_any = true;
             let y = inner.y + header_rows + i as u16;
             if y >= inner.bottom() {
                 break;
@@ -5645,7 +5645,7 @@ impl Dashboard {
                 6.min(inner.width.saturating_sub(badge_width + 1)),
                 1,
             );
-            Paragraph::new(time_str.clone())
+            Paragraph::new(time_str)
                 .style(theme::muted())
                 .render(time_area, frame);
 
@@ -5681,7 +5681,7 @@ impl Dashboard {
         }
 
         // If no alerts yet, show placeholder
-        if alerts.is_empty() {
+        if !rendered_any {
             let styled = StyledText::new("All systems nominal")
                 .effect(TextEffect::AnimatedGradient {
                     gradient: ColorGradient::ocean(),

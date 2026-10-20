@@ -1017,6 +1017,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: presets.x + 1,
             y: presets.y + 2,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         builder.update(&event);
@@ -1038,6 +1039,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: tree.x + 1,
             y: tree.y + 3,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         builder.update(&event);
@@ -1058,6 +1060,7 @@ mod tests {
             kind: MouseEventKind::ScrollDown,
             x: presets.x + 1,
             y: presets.y + 1,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         builder.update(&event);
@@ -1078,6 +1081,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Right),
             x: presets.x + 1,
             y: presets.y + 1,
+            pixel: None,
             modifiers: Modifiers::NONE,
         });
         builder.update(&event);

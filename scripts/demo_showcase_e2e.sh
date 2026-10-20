@@ -2657,6 +2657,126 @@ PY
             fi
         fi
 
+        # Conformal predictor telemetry validation (bd-g00-root-epic-ewths.15.2)
+        conformal_ok=false
+        if $explain_report_ok; then
+            echo ""
+            echo "--- conformal predictor telemetry validation ---"
+            conformal_res=$(python3 - "$EXPLAIN_REPORT" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    events = [json.loads(line) for line in f if line.strip()]
+bd_events = [e for e in events if e.get("event") == "budget_decision"]
+if not bd_events:
+    print("FAIL expected >= 1 budget_decision events, found 0")
+    sys.exit(1)
+
+hist = {0: 0, 1: 0, 2: 0, 3: 0}
+warmup_rows = 0
+calibrated_rows = 0
+
+for idx, ev in enumerate(bd_events):
+    fl = ev.get("fallback_level")
+    status = ev.get("conformal_status")
+    if fl not in hist:
+        print(f"FAIL row {idx} invalid fallback_level={fl!r}")
+        sys.exit(1)
+    if not isinstance(status, str) or not status:
+        print(f"FAIL row {idx} invalid conformal_status={status!r}")
+        sys.exit(1)
+    hist[fl] += 1
+    if status == "calibrated":
+        calibrated_rows += 1
+    else:
+        warmup_rows += 1
+        # During warm-up / uncalibrated state, conformal must never be the cause
+        # of a degradation decision (only the controller may degrade).
+        if ev.get("decision") == "degrade" and ev.get("decision_controller") != "degrade":
+            print(
+                f"FAIL row {idx} uncalibrated conformal triggered degrade: "
+                f"status={status} decision={ev.get('decision')} controller={ev.get('decision_controller')}"
+            )
+            sys.exit(1)
+
+# After ConformalConfig::default().min_samples (20) frames in the showcase run,
+# calibrated predictions (fallback_level in {0, 1, 2}) must be reached.
+if len(bd_events) > 20 and calibrated_rows == 0:
+    print(f"FAIL expected calibrated_rows > 0 after 20 frames (total={len(bd_events)}, hist={hist})")
+    sys.exit(1)
+if len(bd_events) > 20 and (hist[0] + hist[1] + hist[2]) == 0:
+    print(f"FAIL expected fallback_level < 3 after 20 frames (hist={hist})")
+    sys.exit(1)
+
+dist_str = f"level0={hist[0]},level1={hist[1]},level2={hist[2]},level3={hist[3]}"
+print(f"OK total={len(bd_events)} warmup={warmup_rows} calibrated={calibrated_rows} {dist_str}")
+PY
+)
+            if [ $? -eq 0 ]; then
+                conformal_ok=true
+                echo "conformal telemetry: $conformal_res"
+                jsonl_assert "conformal_fallback_distribution" "pass" "$conformal_res"
+                jsonl_assert "conformal_warmup_harmless" "pass" "$conformal_res"
+            else
+                echo "conformal telemetry: FAILED ($conformal_res)"
+                jsonl_assert "conformal_fallback_distribution" "fail" "$conformal_res"
+                jsonl_assert "conformal_warmup_harmless" "fail" "$conformal_res"
+            fi
+        fi
+
+        # VOI remeasure telemetry validation (bd-g00-root-epic-ewths.14.5)
+        voi_ok=false
+        VOI_REPORT="$LOG_DIR/18_voi_evidence_${TIMESTAMP}.jsonl"
+        VSEARCH_SCREEN_ID="$(e2e_demo_screen "$DEMO_BIN" virtualized_search)"
+        voi_cmd="exec env FTUI_DEMO_EVIDENCE_JSONL=\"$VOI_REPORT\" FTUI_DEMO_SCREEN_MODE=inline-auto FTUI_DEMO_EXIT_AFTER_MS=1800 FTUI_DEMO_SCREEN=\"$VSEARCH_SCREEN_ID\" \"$DEMO_BIN\""
+        echo ""
+        echo "--- VOI sample telemetry validation (virtualized_search + inline_auto) ---"
+        if PTY_SEND="jjj" PTY_SEND_DELAY_MS=200 run_in_pty "$voi_cmd" 8 > "$LOG_DIR/18_voi_run.log" 2>&1 && [ -s "$VOI_REPORT" ]; then
+            if python3 "$LIB_DIR/validate_jsonl.py" "$VOI_REPORT" \
+                --schema "$LIB_DIR/e2e_evidence_schema.json" --strict; then
+                voi_res=$(python3 - "$VOI_REPORT" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    events = [json.loads(line) for line in f if line.strip()]
+voi_events = [e for e in events if e.get("event") == "voi_sample"]
+vlist_events = [e for e in voi_events if e.get("source") == "virtualized_list"]
+inline_events = [e for e in voi_events if e.get("source") == "inline_auto"]
+required_fields = {"source", "widget_id", "index", "alpha", "beta", "voi", "sample_cost", "decision"}
+missing = [e for e in voi_events if not required_fields.issubset(e.keys())]
+if not vlist_events:
+    print(f"FAIL expected >= 1 virtualized_list voi_sample, found 0 (total={len(voi_events)})")
+    sys.exit(1)
+if not inline_events:
+    print(f"FAIL expected >= 1 inline_auto voi_sample, found 0 (total={len(voi_events)})")
+    sys.exit(1)
+if missing:
+    print(f"FAIL {len(missing)} voi_sample rows missing required fields")
+    sys.exit(1)
+print(f"OK total={len(voi_events)} virtualized_list={len(vlist_events)} inline_auto={len(inline_events)}")
+PY
+)
+                if [ $? -eq 0 ]; then
+                    voi_ok=true
+                    echo "voi_sample telemetry: $voi_res"
+                    jsonl_assert "voi_sample_present_virtualized_list" "pass" "$voi_res"
+                    jsonl_assert "voi_sample_present_inline_auto" "pass" "$voi_res"
+                    jsonl_assert "voi_sample_fields" "pass" "$voi_res"
+                else
+                    echo "voi_sample telemetry: FAILED ($voi_res)"
+                    jsonl_assert "voi_sample_present_virtualized_list" "fail" "$voi_res"
+                    jsonl_assert "voi_sample_present_inline_auto" "fail" "$voi_res"
+                    jsonl_assert "voi_sample_fields" "fail" "$voi_res"
+                fi
+            else
+                echo "voi_sample schema: FAILED"
+                jsonl_assert "voi_sample_fields" "fail" "schema validation failed"
+            fi
+        else
+            echo "voi_sample run failed or produced empty report: $VOI_REPORT"
+            jsonl_assert "voi_sample_present_virtualized_list" "fail" "missing report"
+            jsonl_assert "voi_sample_present_inline_auto" "fail" "missing report"
+            jsonl_assert "voi_sample_fields" "fail" "missing report"
+        fi
+
         explain_exit_ok=true
         if [ "$explain_exit" -ne 0 ]; then
             explain_exit_ok=false
@@ -2668,6 +2788,8 @@ PY
         if ! $explain_parse_ok; then explain_success=false; fi
         if ! $explain_schema_ok; then explain_success=false; fi
         if ! $width_cache_ok; then explain_success=false; fi
+        if ! $conformal_ok; then explain_success=false; fi
+        if ! $voi_ok; then explain_success=false; fi
 
         echo "Outcome: $explain_outcome"
         echo "Summary JSONL: $EXPLAIN_JSONL"

@@ -15,6 +15,7 @@ fuzz/artifacts/
 
 # Proptest regression files (generated)
 **/proptest-regressions/
+*.proptest-regressions
 fuzz/corpus/
 
 # Build artifacts

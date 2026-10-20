@@ -10,11 +10,13 @@ struct Config {
     cols: u16,
     rows: u16,
     quirks: QuirkSet,
+    scrollback: bool,
+    max_scrollback: usize,
 }
 
 fn print_usage() {
     eprintln!(
-        "Usage: pty_canonicalize --input <file> --output <file> --cols <n> --rows <n> [--profile <name>] [--quirk <name>]\n\
+        "Usage: pty_canonicalize --input <file> --output <file> --cols <n> --rows <n> [--scrollback] [--max-scrollback <n>] [--profile <name>] [--quirk <name>]\n\
          \n\
          Profiles:\n\
            none | tmux_nested | screen | windows_console\n\
@@ -52,6 +54,8 @@ fn parse_args() -> Result<Config, String> {
     let mut cols: Option<u16> = None;
     let mut rows: Option<u16> = None;
     let mut quirks = QuirkSet::empty();
+    let mut scrollback = false;
+    let mut max_scrollback: Option<usize> = None;
     let mut positional: Vec<String> = Vec::new();
 
     while let Some(arg) = args.next() {
@@ -86,6 +90,19 @@ fn parse_args() -> Result<Config, String> {
                     value
                         .parse::<u16>()
                         .map_err(|_| "invalid --rows value".to_string())?,
+                );
+            }
+            "--scrollback" => {
+                scrollback = true;
+            }
+            "--max-scrollback" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--max-scrollback requires a value".to_string())?;
+                max_scrollback = Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| "invalid --max-scrollback value".to_string())?,
                 );
             }
             "--profile" => {
@@ -132,13 +149,42 @@ fn parse_args() -> Result<Config, String> {
         return Err("cols/rows must be > 0".to_string());
     }
 
+    let max_scrollback = max_scrollback.unwrap_or(if scrollback { 20_000 } else { 1_000 });
+
     Ok(Config {
         input,
         output,
         cols,
         rows,
         quirks,
+        scrollback,
+        max_scrollback,
     })
+}
+
+fn render_canonical(
+    bytes: &[u8],
+    cols: u16,
+    rows: u16,
+    quirks: QuirkSet,
+    include_scrollback: bool,
+    max_scrollback: usize,
+) -> String {
+    let mut vt = VirtualTerminal::with_quirks(cols, rows, quirks);
+    vt.set_max_scrollback(max_scrollback);
+    vt.feed(bytes);
+    if include_scrollback && vt.scrollback_len() > 0 {
+        let mut lines = Vec::with_capacity(vt.scrollback_len() + usize::from(rows));
+        for idx in 0..vt.scrollback_len() {
+            if let Some(line) = vt.scrollback_line(idx) {
+                lines.push(line);
+            }
+        }
+        lines.push(vt.screen_text());
+        lines.join("\n")
+    } else {
+        vt.screen_text()
+    }
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
@@ -147,9 +193,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     })?;
 
     let bytes = fs::read(&cfg.input)?;
-    let mut vt = VirtualTerminal::with_quirks(cfg.cols, cfg.rows, cfg.quirks);
-    vt.feed(&bytes);
-    let text = vt.screen_text();
+    let text = render_canonical(
+        &bytes,
+        cfg.cols,
+        cfg.rows,
+        cfg.quirks,
+        cfg.scrollback,
+        cfg.max_scrollback,
+    );
     fs::write(&cfg.output, text)?;
     Ok(())
 }
@@ -158,5 +209,24 @@ fn main() {
     if let Err(err) = run() {
         eprintln!("pty_canonicalize error: {err}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scrollback_mode_includes_scrolled_lines_before_screen_text() {
+        let stream = b"L001\r\nL002\r\nL003\r\nL004\r\nL005\r\n";
+        let screen_only = render_canonical(stream, 20, 3, QuirkSet::empty(), false, 100);
+        assert!(!screen_only.contains("L001"));
+        let with_scrollback = render_canonical(stream, 20, 3, QuirkSet::empty(), true, 100);
+        for tok in ["L001", "L002", "L003", "L004", "L005"] {
+            assert!(
+                with_scrollback.contains(tok),
+                "expected {tok} in scrollback output: {with_scrollback:?}"
+            );
+        }
     }
 }

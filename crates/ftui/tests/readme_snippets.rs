@@ -738,15 +738,50 @@ fn readme_frame_arena_snippet() {
     assert_in_readme(&["frame_arena_alloc", "frame_arena_reset"]);
 }
 
-/// Every version `README.md` or `docs/getting-started.md` quotes for a
-/// workspace crate must be this workspace's version.
+#[test]
+fn readme_keybinding_snippet() {
+    use ftui::core::event::{KeyCode, KeyEvent};
+    use std::time::Instant;
+
+    // README-SNIPPET: keybinding_system
+    let mut map = KeyMap::new();
+    let editor = map.context("editor");
+    map.bind(Chord::parse("g g").unwrap(), "scroll_to_top");
+    map.bind_in(
+        Chord::parse("Ctrl+x Ctrl+s").unwrap(),
+        "save",
+        Priority::Mode,
+        Some(editor),
+    );
+    // README-SNIPPET-END: keybinding_system
+
+    let mut disp = KeyDispatcher::new(map);
+    let t0 = Instant::now();
+    let g = KeyEvent::new(KeyCode::Char('g'));
+    assert!(matches!(
+        disp.feed(&g, t0).as_slice(),
+        [Dispatch::Pending { .. }]
+    ));
+    assert!(matches!(
+        disp.feed(&g, t0 + Duration::from_millis(120)).as_slice(),
+        [Dispatch::Action {
+            action: "scroll_to_top",
+            ..
+        }]
+    ));
+    assert_in_readme(&["keybinding_system"]);
+}
+
+/// Every version `README.md`, `docs/getting-started.md`, or `docs/telemetry.md`
+/// quotes (or names via `target X.Y.Z`) for a workspace crate must be this
+/// workspace's version.
 ///
 /// This exists because the drift is real and recent: a 0.8.0 -> 0.9.0 bump
 /// updated all 20 manifests and four of the five README version references,
 /// leaving `ftui-runtime = { version = "0.8" }` in the experimental-modules
-/// snippet and `ftui = "=0.7.0"` in `docs/getting-started.md`. A reader copying
-/// that line pins a version that no longer matches the crate they are reading
-/// about, and nothing failed.
+/// snippet and `0.7.0` pins in `docs/getting-started.md` and `docs/telemetry.md`.
+/// A reader copying that line pins a version that no longer matches the crate
+/// they are reading about, and nothing failed.
 ///
 /// Both forms are accepted, since the docs legitimately use each:
 /// a full `0.9.0` pin and a `0.9` minor-series requirement.
@@ -754,24 +789,31 @@ fn readme_frame_arena_snippet() {
 fn readme_versions_match_the_workspace() {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     const GETTING_STARTED: &str = include_str!("../../../docs/getting-started.md");
+    const TELEMETRY: &str = include_str!("../../../docs/telemetry.md");
     let (major_minor, _) = VERSION
         .rsplit_once('.')
         .expect("crate version should be major.minor.patch");
 
+    let is_version_token = |token: &str| {
+        token
+            .split('.')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+            && token.contains('.')
+    };
+
     for (doc_name, doc_text, min_expected) in [
         ("README.md", README, 2_usize),
-        ("docs/getting-started.md", GETTING_STARTED, 5_usize),
+        ("docs/getting-started.md", GETTING_STARTED, 7_usize),
+        ("docs/telemetry.md", TELEMETRY, 6_usize),
     ] {
         let mut checked = 0;
         for (line_no, line) in doc_text.lines().enumerate() {
-            // `ftui... = "=0.9.0"` / `version = "0.9.0"` / `version = "0.9"`
+            // 1. Quoted pins: `ftui... = "=0.9.0"` / `version = "0.9.0"` / `version = "0.9"`
             for quoted in line.split('"').skip(1).step_by(2) {
                 let candidate = quoted.trim_start_matches('=');
-                let looks_like_version = candidate
-                    .split('.')
-                    .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
-                    && candidate.contains('.');
-                if !looks_like_version || !line.contains("ftui") {
+                if !is_version_token(candidate)
+                    || !(line.contains("ftui") || line.contains("replace `version"))
+                {
                     continue;
                 }
                 assert!(
@@ -783,6 +825,25 @@ fn readme_versions_match_the_workspace() {
                 );
                 checked += 1;
             }
+
+            // 2. Unquoted prose target lines: `These examples target 0.9.0.`
+            if let Some((_, after_target)) = line.split_once("target ") {
+                let raw_token = after_target
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_end_matches(['.', ':', ',', ';']);
+                if is_version_token(raw_token) {
+                    assert!(
+                        raw_token == VERSION || raw_token == major_minor,
+                        "{doc_name}:{} targets {raw_token:?} in prose, but this \
+                         workspace is {VERSION}. Line: {}",
+                        line_no + 1,
+                        line.trim()
+                    );
+                    checked += 1;
+                }
+            }
         }
 
         // A silent zero would mean the scan stopped matching the document's shape
@@ -790,6 +851,58 @@ fn readme_versions_match_the_workspace() {
         assert!(
             checked >= min_expected,
             "expected to find at least {min_expected} version pins in {doc_name}, found {checked}"
+        );
+    }
+}
+
+#[test]
+fn readme_benchmark_suite_matches_paired_jsonl() {
+    const PAIRED_JSONL: &str =
+        include_str!("../../../docs/perf/certified_vs_dirty_scan_2026-10-14.jsonl");
+
+    // The old fictitious benchmark IDs and 1000x-off throughputs must not return.
+    assert!(!README.contains("diff/identical_100x50"));
+    assert!(!README.contains("diff/sparse_5pct_100x50"));
+    assert!(!README.contains("diff/dense_100x50"));
+
+    // Every 120x40 row quoted in README's Benchmark Suite must match the retained JSONL.
+    assert!(
+        PAIRED_JSONL.contains(r#""size":"120x40","pattern":"spinner_tick""#)
+            && PAIRED_JSONL.contains(r#""certified_ns":{"p50":90.7"#)
+    );
+    assert!(
+        PAIRED_JSONL.contains(r#""size":"120x40","pattern":"overmarked_chrome""#)
+            && PAIRED_JSONL.contains(r#""certified_ns":{"p50":251.4"#)
+    );
+    assert!(
+        PAIRED_JSONL.contains(r#""size":"120x40","pattern":"scattered_5pct""#)
+            && PAIRED_JSONL.contains(r#""certified_ns":{"p50":1978.5"#)
+            && PAIRED_JSONL.contains(r#""full_ns":{"p50":7507.8"#)
+    );
+    assert!(
+        PAIRED_JSONL.contains(r#""size":"120x40","pattern":"dense_50pct""#)
+            && PAIRED_JSONL.contains(r#""full_ns":{"p50":8219.1"#)
+    );
+    assert!(
+        PAIRED_JSONL.contains(r#""size":"120x40","pattern":"full_100pct""#)
+            && PAIRED_JSONL.contains(r#""full_ns":{"p50":12134.5"#)
+    );
+
+    for expected in [
+        "<!-- perf:begin -->",
+        "<!-- perf:end -->",
+        "docs/perf/baseline_2026-10-19.md",
+        "docs/perf/regression_report_2026-10-19.jsonl",
+        "diff_paths_paired (certified, spinner_tick 120x40)      p50: [90.7 ns]   throughput: [52.9 Gcells/s]",
+        "diff_paths_paired (certified, overmarked_chrome 120x40) p50: [251.4 ns]  throughput: [19.1 Gcells/s]",
+        "diff_paths_paired (certified, scattered_5pct 120x40)    p50: [1.98 µs]   throughput: [2.43 Gcells/s]",
+        "diff/sparse_5pct/compute/120x40  (full scan)            p50: [7.51 µs]   throughput: [639 Mcells/s]",
+        "diff/heavy_50pct/compute/120x40  (full scan)            p50: [8.22 µs]   throughput: [584 Mcells/s]",
+        "diff/full_100pct/compute/120x40  (full scan)            p50: [12.1 µs]   throughput: [396 Mcells/s]",
+    ] {
+        assert!(
+            README.contains(expected),
+            "README Benchmark Suite missing expected line: {expected}"
         );
     }
 }

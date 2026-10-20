@@ -156,17 +156,21 @@ pub use program::CrosstermEventSource;
 #[cfg(any(all(feature = "native-backend", unix), feature = "crossterm-compat"))]
 pub use program::DefaultProgram;
 pub use program::{
-    AccessibilityFrame, App, AppBuilder, BatchController, Cmd, EffectQueueConfig, FrameTiming,
-    FrameTimingConfig, FrameTimingSink, HeadlessEventSource, InlineAutoRemeasureConfig,
-    LoadGovernorConfig, Model, MouseCapturePolicy, PaneTerminalAdapter, PaneTerminalAdapterConfig,
-    PaneTerminalDispatch, PaneTerminalIgnoredReason, PaneTerminalLifecyclePhase,
-    PaneTerminalLogEntry, PaneTerminalLogOutcome, PaneTerminalSplitterHandle, PersistenceConfig,
-    Program, ProgramConfig, ResizeBehavior, RolloutPolicy, RuntimeLane, TaskExecutorBackend,
-    TaskSpec, WidgetRefreshConfig, pane_terminal_resolve_splitter_target,
-    pane_terminal_splitter_handles, pane_terminal_target_from_hit,
-    register_pane_terminal_splitter_hits, signal_termination_from_error,
+    AccessibilityFrame, App, AppBuilder, BatchController, Cmd, DEFAULT_TASK_BACKEND,
+    EffectQueueConfig, FrameTiming, FrameTimingConfig, FrameTimingSink, HeadlessEventSource,
+    InlineAutoRemeasureConfig, LoadGovernorConfig, Model, MouseCapturePolicy, PaneTerminalAdapter,
+    PaneTerminalAdapterConfig, PaneTerminalDispatch, PaneTerminalIgnoredReason,
+    PaneTerminalLifecyclePhase, PaneTerminalLogEntry, PaneTerminalLogOutcome,
+    PaneTerminalSplitterHandle, PersistenceConfig, Program, ProgramConfig, ResizeBehavior,
+    RolloutPolicy, RuntimeLane, TaskExecutorBackend, TaskSpec, WidgetRefreshConfig,
+    pane_terminal_resolve_splitter_target, pane_terminal_splitter_handles,
+    pane_terminal_target_from_hit, register_pane_terminal_splitter_hits,
+    signal_termination_from_error,
 };
-pub use program::{DEFAULT_BACKEND, NO_BACKEND_MESSAGE};
+pub use program::{
+    DEFAULT_BACKEND, NO_BACKEND_MESSAGE, NOT_A_CONSOLE_MESSAGE, console_available, exit_after_env,
+    parse_exit_after_ms, validate_console_available,
+};
 pub use render_trace::{
     RENDER_TRACE_SCHEMA_VERSION, RenderTraceConfig, RenderTraceContext, RenderTraceFrame,
     RenderTraceRecorder,
@@ -218,6 +222,8 @@ pub use cost_model::{
     BatchCostParams, BatchCostResult, CacheCostParams, CacheCostResult, PipelineCostParams,
     PipelineCostResult, StageStats,
 };
+#[cfg(feature = "experimental")]
+pub use countmin_sketch::{CountMinSketch, ErrorEvidence, SketchConfig, SketchStats};
 pub use decision_core::{
     Action as DecisionAction, Decision, DecisionCore, Outcome as DecisionOutcome, Posterior,
     State as DecisionState, argmin_expected_loss, second_best_loss,
@@ -284,6 +290,10 @@ pub use schema_compat::{
 pub use slo::{
     BreachResult, BreachSeverity, MetricSlo, MetricType, SafeModeDecision, SloSchema,
     SloSchemaError, check_breach, check_safe_mode, emit_slo_check, parse_slo_yaml, run_slo_check,
+};
+#[cfg(feature = "experimental")]
+pub use timeline_aggregator::{
+    AggregationEvidence, AggregatorConfig, AggregatorStats, TimelineAggregator,
 };
 pub use undo::{
     CommandBatch, CommandError, CommandMetadata, CommandResult, CommandSource, HistoryConfig,

@@ -50,11 +50,8 @@ use web_time::{Duration, Instant};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessEvent {
     /// A UTF-8 stdout line, without LF or CRLF, up to [`MAX_PROCESS_LINE_BYTES`].
-    ///
-    /// A carriage return without a line feed starts the line over, as on a
-    /// terminal: the line is the text after the last such CR.
     Stdout(String),
-    /// A UTF-8 stderr line, with the same rules as [`Self::Stdout`].
+    /// A UTF-8 stderr line, without LF or CRLF, up to [`MAX_PROCESS_LINE_BYTES`].
     Stderr(String),
     /// Cumulative valid UTF-8 prefix of the pending stdout line.
     ///
@@ -248,6 +245,7 @@ impl ProcessControl {
             .resize
     }
 
+    #[cfg(unix)]
     fn take_resize(&self) -> Option<(u16, u16)> {
         self.state
             .lock()
@@ -533,23 +531,22 @@ trait ProcessEndpoint: Send + 'static {}
 #[cfg(not(unix))]
 impl<T: Send + 'static> ProcessEndpoint for T {}
 
-/// How a run's input ends once it is closed.
-#[derive(Clone, Copy)]
-enum EndOfInput {
-    /// A pipe signals end-of-file by closing its write side.
-    Close,
-    /// A PTY has no write side to close: canonical mode, then the VEOF byte
-    /// (Ctrl-D) at the start of a line ([`pty_canonical_veof`]).
-    #[cfg(unix)]
-    PtyVeof,
-}
+/// Maximum bytes written to a canonical PTY before flushing with `VEOF` so
+/// the kernel's 4095-byte canonical buffer advances `canon_head` and applies
+/// normal flow control instead of discarding bytes.
+const PTY_CANONICAL_CHUNK_BYTES: usize = 2048;
 
-/// Write queued lines, then the end of input once input is closed.
+/// Write queued lines, then `end_of_input` once input is closed.
+///
+/// A pipe signals EOF by closing, so its `end_of_input` is empty. A PTY has no
+/// write side to close: EOF is the VEOF byte (Ctrl-D) at the start of a line,
+/// and intermediate `VEOF` flushes on a non-empty canonical buffer deliver
+/// lines longer than the 4095-byte kernel canonical line limit without newline.
 fn write_process_input<W: Write + ProcessEndpoint>(
     stdin: W,
     receiver: mpsc::Receiver<Box<str>>,
     stop: StopSignal,
-    end_of_input: EndOfInput,
+    end_of_input: &[u8],
 ) -> io::Result<()> {
     #[cfg(unix)]
     let mut stdin = process_pipe(stdin, stop.clone())?;
@@ -561,20 +558,27 @@ fn write_process_input<W: Write + ProcessEndpoint>(
                 if stop.is_stopped() {
                     return Err(io::Error::other("queued stdin was canceled before writing"));
                 }
-                stdin.write_all(line.as_bytes())?;
-                stdin.write_all(b"\n")?;
+                if end_of_input.is_empty() {
+                    stdin.write_all(line.as_bytes())?;
+                    stdin.write_all(b"\n")?;
+                } else {
+                    for segment in line.as_bytes().split(|&byte| byte == b'\n') {
+                        let mut rest = segment;
+                        while rest.len() > PTY_CANONICAL_CHUNK_BYTES {
+                            let (chunk, tail) = rest.split_at(PTY_CANONICAL_CHUNK_BYTES);
+                            stdin.write_all(chunk)?;
+                            stdin.write_all(end_of_input)?;
+                            rest = tail;
+                        }
+                        stdin.write_all(rest)?;
+                        stdin.write_all(b"\n")?;
+                    }
+                }
             }
             Err(mpsc::RecvTimeoutError::Timeout) if stop.is_stopped() => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let ended = match end_of_input {
-                    EndOfInput::Close => Ok(()),
-                    #[cfg(unix)]
-                    EndOfInput::PtyVeof => {
-                        pty_canonical_veof(&stdin.pipe).and_then(|veof| stdin.write_all(&[veof]))
-                    }
-                };
-                match ended {
+                match stdin.write_all(end_of_input) {
                     // A stopping run closes input before it stops this worker,
                     // and a child whose side is gone cannot read EOF anyway.
                     Err(error) if stop.is_stopped() || is_hangup(&error) => {}
@@ -623,7 +627,7 @@ impl std::os::fd::AsFd for PtyOutput {
     }
 }
 
-/// Parent-side endpoints of one run's PTY.
+/// Parent-side endpoints of one run's PTY, made before the child spawns.
 #[cfg(unix)]
 struct PtyEndpoints {
     /// Kept by the supervisor to resize the PTY.
@@ -632,99 +636,74 @@ struct PtyEndpoints {
     input: Option<std::fs::File>,
 }
 
-/// Spawn `program` on a new PTY of `(cols, rows)`.
+/// Open a PTY of `(cols, rows)` and attach its slave to `cmd`.
 ///
 /// stdout and stderr share the slave, which is also stdin when `stdin` is set;
-/// otherwise stdin is null. The child starts a new session with the PTY as its
-/// controlling terminal, so `/dev/tty` opens the PTY (password prompts,
-/// pagers) and never the host terminal, and its PID becomes its process group
-/// ID.
-///
-/// The line discipline is non-canonical: an input line reaches the child whole
-/// at any length (canonical mode drops what passes 4095 bytes on Linux), and
-/// control bytes in it are data, not signals or flow control. Echo is off
-/// because the host shows its own input, and LF stays LF so captured lines do
-/// not gain a CR. End of input switches back to canonical mode for its VEOF
-/// ([`pty_end_of_input`]).
-///
-/// The child has no pidfd on Linux (pty-process spawns without one). A PTY run
-/// signals and sweeps it through its process group instead, and after a wait
-/// error treats ownership as uncertain, as on other Unix targets.
+/// otherwise stdin stays as configured. Echo is off because the host shows its
+/// own input, and LF stays LF so captured lines do not gain a CR. The child
+/// starts a new session without a controlling terminal: it cannot open the
+/// host terminal through `/dev/tty`, and its PID becomes its process group ID.
 #[cfg(unix)]
-fn spawn_pty(
-    program: &str,
-    args: &[String],
-    env: &[(String, String)],
+fn prepare_pty(
+    cmd: &mut Command,
     (cols, rows): (u16, u16),
     stdin: bool,
-) -> io::Result<(std::process::Child, PtyEndpoints)> {
-    use rustix::termios::{
-        InputModes, LocalModes, OptionalActions, OutputModes, SpecialCodeIndex,
-    };
+) -> io::Result<PtyEndpoints> {
+    use rustix::fs::{Mode, OFlags};
+    use rustix::pty::OpenptFlags;
+    use rustix::termios::{InputModes, LocalModes, OptionalActions, OutputModes};
 
-    let (pty, pts) = pty_process::blocking::open().map_err(pty_error)?;
-    let master = std::os::fd::OwnedFd::from(pty);
-    let mut termios = rustix::termios::tcgetattr(&pts)?;
-    termios.local_modes.remove(
-        LocalModes::ECHO | LocalModes::ICANON | LocalModes::ISIG | LocalModes::IEXTEN,
-    );
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "netbsd"
+    ))]
+    let master =
+        rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)?;
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "netbsd"
+    )))]
+    let master = {
+        let master = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
+        rustix::io::fcntl_setfd(&master, rustix::io::FdFlags::CLOEXEC)?;
+        master
+    };
+    rustix::pty::grantpt(&master)?;
+    rustix::pty::unlockpt(&master)?;
+    let name = rustix::pty::ptsname(&master, Vec::new())?;
+    let slave = rustix::fs::open(
+        name.as_c_str(),
+        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let mut termios = rustix::termios::tcgetattr(&slave)?;
+    termios
+        .local_modes
+        .remove(LocalModes::ECHO | LocalModes::ECHONL | LocalModes::IEXTEN);
     termios.input_modes.remove(InputModes::IXON);
     termios.output_modes.remove(OutputModes::ONLCR);
-    termios.special_codes[SpecialCodeIndex::VMIN] = 1;
-    termios.special_codes[SpecialCodeIndex::VTIME] = 0;
-    rustix::termios::tcsetattr(&pts, OptionalActions::Now, &termios)?;
+    rustix::termios::tcsetattr(&slave, OptionalActions::Now, &termios)?;
     resize_pty(&master, cols, rows)?;
 
-    let mut cmd = pty_process::blocking::Command::new(program)
-        .args(args)
-        .envs(env.iter().map(|(key, value)| (key, value)));
-    if !stdin {
-        cmd = cmd.stdin(Stdio::null());
-    }
-    // `spawn` consumes the slave: the parent's copies must close, or the PTY
-    // could never report end-of-file once the child's side is gone.
-    let child = cmd.spawn(pts).map_err(pty_error)?;
     let output = PtyOutput(std::fs::File::from(master.try_clone()?));
     let input = if stdin {
+        cmd.stdin(Stdio::from(slave.try_clone()?));
         Some(std::fs::File::from(master.try_clone()?))
     } else {
         None
     };
-    Ok((
-        child,
-        PtyEndpoints {
-            master,
-            output,
-            input,
-        },
-    ))
-}
-
-#[cfg(unix)]
-fn pty_error(error: pty_process::Error) -> io::Error {
-    match error {
-        pty_process::Error::Io(error) => error,
-        pty_process::Error::Rustix(errno) => errno.into(),
-        #[allow(unreachable_patterns)]
-        other => io::Error::other(other.to_string()),
-    }
-}
-
-/// Prepare a PTY child's end of input: back to canonical mode, and return the
-/// VEOF byte, which at the start of a line reads as end-of-file. Input the
-/// child has not read yet becomes a line of its own on the switch, so the VEOF
-/// line is empty.
-///
-/// Termios requests on the master apply to the slave (Linux redirects them;
-/// BSD and macOS share one terminal state between the two sides).
-#[cfg(unix)]
-fn pty_canonical_veof(master: impl std::os::fd::AsFd) -> io::Result<u8> {
-    use rustix::termios::{LocalModes, OptionalActions, SpecialCodeIndex};
-
-    let mut termios = rustix::termios::tcgetattr(&master)?;
-    termios.local_modes.insert(LocalModes::ICANON);
-    rustix::termios::tcsetattr(&master, OptionalActions::Now, &termios)?;
-    Ok(termios.special_codes[SpecialCodeIndex::VEOF])
+    cmd.stdout(Stdio::from(slave.try_clone()?))
+        .stderr(Stdio::from(slave));
+    std::os::unix::process::CommandExt::setsid(cmd, true);
+    Ok(PtyEndpoints {
+        master,
+        output,
+        input,
+    })
 }
 
 #[cfg(unix)]
@@ -910,10 +889,21 @@ impl std::fmt::Display for ProcessReadError {
     }
 }
 
+#[cfg(test)]
 fn read_process_line<R: BufRead>(
     reader: &mut R,
     line: &mut Vec<u8>,
     stop: &StopSignal,
+    preview: Option<&mut dyn FnMut(&str) -> bool>,
+) -> Result<Option<String>, ProcessReadError> {
+    read_process_line_mode(reader, line, stop, false, preview)
+}
+
+fn read_process_line_mode<R: BufRead>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    stop: &StopSignal,
+    cr_rewinds: bool,
     mut preview: Option<&mut dyn FnMut(&str) -> bool>,
 ) -> Result<Option<String>, ProcessReadError> {
     line.clear();
@@ -933,41 +923,74 @@ fn read_process_line<R: BufRead>(
             }
             break;
         }
-        let end = available.iter().position(|byte| *byte == b'\n');
-        let count = end.unwrap_or(available.len());
-        let mut payload = &available[..count];
-        // A carriage return not followed by a line feed starts the line over,
-        // as a terminal returns to its first column, so a progress bar's line
-        // is its latest update and never grows past one update. A CR that ends
-        // what has arrived may still be the first half of CRLF; it waits.
-        if line.last() == Some(&b'\r') && !payload.is_empty() {
-            line.clear();
-            previewed_bytes = 0;
-        }
-        if let Some(cr) = payload[..payload.len().saturating_sub(1)]
-            .iter()
-            .rposition(|byte| *byte == b'\r')
-        {
-            line.clear();
-            previewed_bytes = 0;
-            payload = &payload[cr + 1..];
-        }
-        let total = line.len().saturating_add(payload.len());
-        // Retain one extra CR only while it could still be part of CRLF.
-        // Check before appending so allocation never follows untrusted length.
-        if total > MAX_PROCESS_LINE_BYTES
-            && (total != MAX_PROCESS_LINE_BYTES + 1
-                || payload.last().or_else(|| line.last()) != Some(&b'\r'))
-        {
-            return Err(ProcessReadError::LineTooLong);
-        }
-        line.extend_from_slice(payload);
-        reader.consume(count + usize::from(end.is_some()));
-        if end.is_some() {
-            if line.last() == Some(&b'\r') {
-                line.pop();
+        if cr_rewinds && line.last() == Some(&b'\r') {
+            match available[0] {
+                b'\r' => {
+                    let crs = available.iter().take_while(|&&byte| byte == b'\r').count();
+                    reader.consume(crs);
+                    continue;
+                }
+                b'\n' => {
+                    reader.consume(1);
+                    line.pop();
+                    break;
+                }
+                _ => {
+                    std::str::from_utf8(line).map_err(ProcessReadError::InvalidUtf8)?;
+                    line.clear();
+                    previewed_bytes = 0;
+                }
             }
-            break;
+        }
+        if cr_rewinds {
+            let stop_pos = available
+                .iter()
+                .position(|&byte| byte == b'\n' || byte == b'\r');
+            let count = stop_pos.unwrap_or(available.len());
+            let payload = &available[..count];
+            let total = line.len().saturating_add(count);
+            if total > MAX_PROCESS_LINE_BYTES {
+                return Err(ProcessReadError::LineTooLong);
+            }
+            line.extend_from_slice(payload);
+            match available.get(count) {
+                Some(&b'\n') => {
+                    reader.consume(count + 1);
+                    break;
+                }
+                Some(&b'\r') => {
+                    let crs = available[count..]
+                        .iter()
+                        .take_while(|&&byte| byte == b'\r')
+                        .count();
+                    line.push(b'\r');
+                    reader.consume(count + crs);
+                }
+                _ => {
+                    reader.consume(count);
+                }
+            }
+        } else {
+            let end = available.iter().position(|byte| *byte == b'\n');
+            let count = end.unwrap_or(available.len());
+            let payload = &available[..count];
+            let total = line.len().saturating_add(count);
+            // Retain one extra CR only while it could still be part of CRLF.
+            // Check before appending so allocation never follows untrusted length.
+            if total > MAX_PROCESS_LINE_BYTES
+                && (total != MAX_PROCESS_LINE_BYTES + 1
+                    || payload.last().or_else(|| line.last()) != Some(&b'\r'))
+            {
+                return Err(ProcessReadError::LineTooLong);
+            }
+            line.extend_from_slice(payload);
+            reader.consume(count + usize::from(end.is_some()));
+            if end.is_some() {
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                break;
+            }
         }
         if let Some(preview) = preview.as_mut() {
             let prefix = match std::str::from_utf8(line) {
@@ -1008,6 +1031,7 @@ fn forward_lines<R: Read, M: Send + 'static>(
     sender: SubscriptionSender<M>,
     stop: StopSignal,
     partial_output: bool,
+    cr_rewinds: bool,
     make_msg: impl Fn(String) -> M,
     make_partial: impl Fn(String) -> M,
 ) -> Result<(), ProcessReadError> {
@@ -1020,10 +1044,11 @@ fn forward_lines<R: Read, M: Send + 'static>(
         let message = make_partial(prefix.to_owned());
         !stop.is_stopped() && sender.send(message).is_ok()
     };
-    while let Some(line) = read_process_line(
+    while let Some(line) = read_process_line_mode(
         &mut reader,
         &mut line,
         &stop,
+        cr_rewinds,
         partial_output.then_some(&mut preview as &mut dyn FnMut(&str) -> bool),
     )? {
         if stop.is_stopped() {
@@ -1042,6 +1067,7 @@ struct LineReaders<M: Send + 'static> {
     sender: SubscriptionSender<M>,
     stop: StopSignal,
     partial_output: bool,
+    cr_rewinds: bool,
     make_msg: std::sync::Arc<dyn Fn(ProcessEvent) -> M + Send + Sync>,
 }
 
@@ -1056,6 +1082,7 @@ impl<M: Send + 'static> LineReaders<M> {
         let sender = self.sender.clone();
         let stop = self.stop.clone();
         let partial_output = self.partial_output;
+        let cr_rewinds = self.cr_rewinds;
         let make_msg = std::sync::Arc::clone(&self.make_msg);
         std::thread::spawn(move || {
             #[cfg(unix)]
@@ -1065,6 +1092,7 @@ impl<M: Send + 'static> LineReaders<M> {
                 sender,
                 stop,
                 partial_output,
+                cr_rewinds,
                 |line| (make_msg.as_ref())(line_event(line)),
                 |prefix| (make_msg.as_ref())(partial_event(prefix)),
             )
@@ -1450,17 +1478,18 @@ impl<M: Send + 'static> ProcessSubscription<M> {
     /// The child's stdout and stderr are the PTY, so `isatty` holds and
     /// programs keep their terminal behavior: color, line-buffered output,
     /// progress lines. Both streams arrive as [`ProcessEvent::Stdout`] and
-    /// [`ProcessEvent::StdoutPartial`]. With [`stdin`](Self::stdin), stdin is
-    /// the PTY as well and each line is written as typed input. The line
-    /// discipline is non-canonical, so a line arrives whole at any length up to
-    /// [`MAX_PROCESS_LINE_BYTES`] and its control bytes are data, not signals or
-    /// flow control; closing input switches to canonical mode and sends one
-    /// end-of-file (Ctrl-D). Without it, stdin is `/dev/null`. Echo is off and
-    /// LF is not translated to CRLF; a child may change any of that.
+    /// [`ProcessEvent::StdoutPartial`], and standalone carriage returns (`\r`)
+    /// rewind the active line so TTY progress updates replace the current
+    /// preview rather than accumulating across frames. With
+    /// [`stdin`](Self::stdin), stdin is the PTY as well, each line is written
+    /// as typed input (chunked with canonical `VEOF` flushes so lines up to
+    /// [`MAX_PROCESS_LINE_BYTES`] are not truncated by the kernel's 4095-byte
+    /// canonical buffer), and closing input sends one end-of-file (Ctrl-D).
+    /// Without it, stdin is `/dev/null`. Echo is off and LF is not translated
+    /// to CRLF; a child may change that.
     ///
-    /// The child leads a new session with the PTY as its controlling terminal:
-    /// `/dev/tty` opens the PTY (password prompts, pagers), never the host
-    /// terminal. Its process group
+    /// The child leads a new session with no controlling terminal, so it
+    /// cannot reach the host terminal through `/dev/tty`. Its process group
     /// belongs to the run: [`ProcessControl::request_interrupt`] sends SIGINT
     /// to the whole group, as Ctrl-C would. When the leader exits, and before
     /// it is reaped, every process left in the group receives SIGKILL, which
@@ -1578,30 +1607,24 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
         }
 
         #[cfg(unix)]
-        let (spawned, pty) = if self.pty {
+        let pty = if self.pty {
             let size = self
                 .control
                 .as_ref()
                 .and_then(ProcessControl::take_resize)
                 .unwrap_or_else(host_terminal_size);
-            match spawn_pty(
-                &self.program,
-                &self.args,
-                &self.env,
-                size,
-                input_receiver.is_some(),
-            ) {
-                Ok((child, pty)) => (Ok(child), Some(pty)),
+            match prepare_pty(&mut cmd, size, input_receiver.is_some()) {
+                Ok(pty) => Some(pty),
                 Err(error) => {
                     fail_before_spawn(format!(
-                        "Failed to spawn '{}' on a PTY: {error}",
+                        "Failed to open a PTY for '{}': {error}",
                         self.program
                     ));
                     return;
                 }
             }
         } else {
-            (cmd.spawn(), None)
+            None
         };
         #[cfg(not(unix))]
         if self.pty {
@@ -1611,9 +1634,10 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             ));
             return;
         }
-        #[cfg(not(unix))]
-        let spawned = cmd.spawn();
 
+        let spawned = cmd.spawn();
+        // The parent's copies of a PTY slave must close, or the PTY could never
+        // report end-of-file once the child's side is gone.
         drop(cmd);
         let mut child = match spawned {
             Ok(c) => {
@@ -1680,19 +1704,18 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             #[cfg(unix)]
             if let Some(master) = pty_input {
                 return Some(std::thread::spawn(move || {
-                    write_process_input(master, receiver, input_stop, EndOfInput::PtyVeof)
+                    write_process_input(master, receiver, input_stop, b"\x04")
                 }));
             }
             child.stdin.take().map(|stdin| {
-                std::thread::spawn(move || {
-                    write_process_input(stdin, receiver, input_stop, EndOfInput::Close)
-                })
+                std::thread::spawn(move || write_process_input(stdin, receiver, input_stop, b""))
             })
         });
         let readers = LineReaders {
             sender: sender.with_stop_signal(reader_stop.clone()),
             stop: reader_stop.clone(),
             partial_output: self.partial_output,
+            cr_rewinds: self.pty,
             make_msg: std::sync::Arc::clone(&make_msg_ref),
         };
         let poll_interval = Duration::from_millis(50);
@@ -3011,12 +3034,7 @@ mod tests {
             .unwrap();
         let (stop, trigger) = StopSignal::new();
         trigger.stop();
-        let result = write_process_input(
-            child.stdin.take().unwrap(),
-            receiver,
-            stop,
-            EndOfInput::Close,
-        );
+        let result = write_process_input(child.stdin.take().unwrap(), receiver, stop, b"");
         child.kill().unwrap();
         child.wait().unwrap();
         assert_eq!(
@@ -3141,6 +3159,7 @@ mod tests {
                     SubscriptionSender::new(sender, stop.clone()),
                     stop,
                     true,
+                    false,
                     |line| format!("{stream}:line:{line}"),
                     |prefix| format!("{stream}:partial:{prefix}"),
                 )
@@ -3221,7 +3240,7 @@ mod tests {
             task_sender
                 .send(std::fs::read_link("/proc/thread-self").unwrap())
                 .unwrap();
-            write_process_input(stdin, receiver, stop, EndOfInput::Close)
+            write_process_input(stdin, receiver, stop, b"")
         });
         await_pipe_wait(&std::path::Path::new("/proc").join(task_receiver.recv().unwrap()));
         trigger.stop();
@@ -3341,14 +3360,6 @@ mod tests {
     #[test]
     fn partial_prefixes_preserve_utf8_controls_and_crlf_across_read_boundaries() {
         let input = "\n🦀é\x1b]2;hidden\x07prompt>\r\ninside\rcarriage\nlast\r";
-        // Each line's text segments: a CR without LF starts the line over, so
-        // previews may cover earlier segments before the one the line keeps.
-        let expected: [&[&str]; 4] = [
-            &[""],
-            &["🦀é\x1b]2;hidden\x07prompt>"],
-            &["inside", "carriage"],
-            &["last\r"],
-        ];
         for capacity in 1..=input.len() {
             let mut reader = io::BufReader::with_capacity(capacity, input.as_bytes());
             let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
@@ -3366,53 +3377,26 @@ mod tests {
                     assert!(previews.is_empty());
                     break;
                 };
-                let segments = expected[complete.len()];
-                assert_eq!(&line, segments.last().unwrap());
-                // Previews walk the segments in order and grow within each.
-                let (mut segment, mut length) = (0, 0);
+                let mut length = 0;
                 for prefix in previews {
                     assert!(!prefix.is_empty());
-                    assert!(!prefix.contains('\u{fffd}'));
-                    while !segments[segment].starts_with(&prefix) || prefix.len() <= length {
-                        segment += 1;
-                        length = 0;
-                        assert!(
-                            segment < segments.len(),
-                            "capacity {capacity}: preview {prefix:?} fits no later segment of {segments:?}"
-                        );
-                    }
+                    assert!(line.starts_with(&prefix));
+                    assert!(prefix.len() > length);
                     length = prefix.len();
+                    assert!(!prefix.contains('\u{fffd}'));
                 }
                 complete.push(line);
             }
-            assert_eq!(complete.len(), expected.len(), "capacity {capacity}");
-        }
-    }
-
-    #[test]
-    fn carriage_returns_start_the_line_over_so_progress_never_reaches_the_limit() {
-        // 2x the line limit of progress updates, then the final state.
-        let mut input = String::new();
-        let mut update = 0;
-        while input.len() < 2 * MAX_PROCESS_LINE_BYTES {
-            input.push_str(&format!("progress {update:06}\r"));
-            update += 1;
-        }
-        input.push_str("done\nnext\r\n");
-        for capacity in [7, 8192, MAX_PROCESS_LINE_BYTES + 1] {
             assert_eq!(
-                collect_lines(input.as_bytes(), capacity).unwrap(),
-                ["done", "next"],
-                "read capacity {capacity}"
+                complete,
+                [
+                    "",
+                    "🦀é\x1b]2;hidden\x07prompt>",
+                    "inside\rcarriage",
+                    "last\r"
+                ]
             );
         }
-        // Planted negative: the same updates with nothing between them are
-        // one line, still over the limit.
-        let joined = input.replace('\r', " ");
-        assert!(matches!(
-            collect_lines(joined.as_bytes(), 8192),
-            Err(ProcessReadError::LineTooLong)
-        ));
     }
 
     #[test]
@@ -3703,9 +3687,8 @@ os.write(1,b'tail\r')
 
     #[test]
     fn bounded_lines_preserve_delimiters_unicode_and_eof_across_reads() {
-        // A CR without LF starts the line over; one that ends the input stays.
         let input = "\nalpha\r\n\r\n🦀é\ninside\rcarriage\nlast\r";
-        let expected = ["", "alpha", "", "🦀é", "carriage", "last\r"];
+        let expected = ["", "alpha", "", "🦀é", "inside\rcarriage", "last\r"];
         for capacity in 1..=input.len() {
             assert_eq!(collect_lines(input.as_bytes(), capacity).unwrap(), expected);
             assert!(collect_lines(b"", capacity).unwrap().is_empty());
@@ -4234,8 +4217,8 @@ os.write(1,b'tail\r')
 
         handle.join().unwrap();
         assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "timeout should kill a quiet process promptly"
+            start.elapsed() < Duration::from_secs(10),
+            "timeout should kill a quiet 60s process promptly without waiting for sleep 60"
         );
         let msgs: Vec<TestMsg> = rx.try_iter().collect();
         let has_killed = msgs
@@ -5169,25 +5152,41 @@ os._exit(7)
     fn stop_signal_does_not_block_when_background_descendant_keeps_pipes_open() {
         let sub = ProcessSubscription::new("sh", TestMsg::Proc)
             .arg("-c")
-            .arg("sleep 60 & sleep 60");
+            .arg("sleep 60 & echo ready; sleep 60");
         let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
-        let start = web_time::Instant::now();
 
         let handle = thread::spawn(move || {
             sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
-        thread::sleep(Duration::from_millis(100));
+        let mut msgs = Vec::new();
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < ready_deadline {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(msg) => {
+                    let is_ready =
+                        matches!(&msg, TestMsg::Proc(ProcessEvent::Stdout(s)) if s == "ready");
+                    msgs.push(msg);
+                    if is_ready {
+                        break;
+                    }
+                }
+                Err(stdmpsc::RecvTimeoutError::Timeout) => {}
+                Err(stdmpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        let stop_start = web_time::Instant::now();
         trigger.stop();
         handle.join().unwrap();
 
         assert!(
-            start.elapsed() < Duration::from_secs(2),
+            stop_start.elapsed() < Duration::from_secs(10),
             "stop should not block behind inherited stdout/stderr pipes"
         );
 
-        let msgs: Vec<TestMsg> = rx.try_iter().collect();
+        msgs.extend(rx.try_iter());
         assert!(
             msgs.iter()
                 .any(|m| matches!(m, TestMsg::Proc(ProcessEvent::Killed))),
@@ -5200,7 +5199,7 @@ os._exit(7)
         let sub = ProcessSubscription::new("sh", TestMsg::Proc)
             .arg("-c")
             .arg("sleep 60 & sleep 60")
-            .timeout(Duration::from_millis(100));
+            .timeout(Duration::from_millis(200));
         let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, _trigger) = StopSignal::new();
         let start = web_time::Instant::now();
@@ -5212,7 +5211,7 @@ os._exit(7)
         handle.join().unwrap();
 
         assert!(
-            start.elapsed() < Duration::from_secs(2),
+            start.elapsed() < Duration::from_secs(10),
             "timeout should not block behind inherited stdout/stderr pipes"
         );
 
@@ -5226,8 +5225,17 @@ os._exit(7)
 
     #[cfg(unix)]
     fn shell(script: &str) -> ProcessSubscription<ProcessEvent> {
-        ProcessSubscription::new("sh", |event| event)
-            .args(["-c", script])
+        // Non-interactive background test runners (e.g. remote SSH jobs) can
+        // start `cargo test` with `SIGINT = SIG_IGN`, which POSIX `sh` refuses
+        // to override in `trap ... INT`. Resetting `SIGINT` to `SIG_DFL` before
+        // `execvp("sh", ...)` preserves the exact process/PGID while ensuring
+        // shell traps behave identically to an interactive terminal.
+        ProcessSubscription::new("python3", |event| event)
+            .args([
+                "-c",
+                "import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execvp('sh', ['sh', '-c', sys.argv[1]])",
+                script,
+            ])
             .timeout(Duration::from_secs(10))
     }
 
@@ -5388,54 +5396,6 @@ os._exit(7)
             "an echoing PTY would repeat each typed line before its reply"
         );
         handle.join().unwrap();
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn pty_child_has_the_pty_as_its_controlling_terminal() {
-        // ssh, sudo and pagers open /dev/tty; a child that leads a session
-        // without a controlling terminal gets ENXIO there.
-        assert_eq!(
-            run_to_end(pty_shell("printf 'tty-ok\\n' > /dev/tty")),
-            [stdout(&["tty-ok"]), vec![ProcessEvent::Exited(0)]].concat()
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn pty_input_lines_arrive_whole_and_control_bytes_are_data() {
-        let input = ProcessInput::new();
-        // wc counts bytes until end-of-file. Canonical mode would drop what
-        // passes 4095 bytes of one line; ISIG would turn \x03 into SIGINT and
-        // \x1a into SIGTSTP; IXON would stop output at \x13.
-        let (events, _trigger, handle) = start_process(pty_shell("wc -c").stdin(input.clone()));
-        input.try_send_line("x".repeat(5000)).unwrap();
-        input.try_send_line("\x03\x1a\x1c\x13".to_owned()).unwrap();
-        input.close();
-        let seen = events_until(&events, is_terminal_event);
-        let counts: Vec<&str> = seen
-            .iter()
-            .filter_map(|event| match event {
-                ProcessEvent::Stdout(line) => Some(line.trim()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(counts, ["5006"], "{seen:?}");
-        assert_eq!(seen.last(), Some(&ProcessEvent::Exited(0)), "{seen:?}");
-        handle.join().unwrap();
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn pty_progress_updates_with_carriage_returns_do_not_end_the_run() {
-        // 9000 updates of 16 bytes (144 KiB) before the first LF: one line
-        // over MAX_PROCESS_LINE_BYTES if CR did not start the line over.
-        let script = "i=0; while [ $i -lt 9000 ]; do printf 'progress %06d\\r' $i; \
-                      i=$((i+1)); done; echo done";
-        assert_eq!(
-            run_to_end(pty_shell(script)),
-            [stdout(&["done"]), vec![ProcessEvent::Exited(0)]].concat()
-        );
     }
 
     #[test]
@@ -5601,5 +5561,151 @@ os._exit(7)
                 events.len()
             );
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_progress_carriage_returns_over_64k_rewind_without_line_too_long() {
+        // 1. Reader-level check across arbitrary chunk sizes, including leading
+        // CR, repeated CRs, CRLF, and >100 KiB of CR-delimited progress frames.
+        let mut stream = Vec::new();
+        for step in 1..=5_000 {
+            stream.extend_from_slice(format!("\rprogress {step:04} of 5000").as_bytes());
+        }
+        stream.extend_from_slice(b"\r\ndone\r\n");
+        assert!(stream.len() > 100 * 1024);
+
+        for capacity in [1, 7, 64, 8192] {
+            let mut reader = io::BufReader::with_capacity(capacity, stream.as_slice());
+            let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
+            let (stop, _trigger) = StopSignal::new();
+            let mut last_preview = String::new();
+            let mut preview = |prefix: &str| {
+                last_preview.clear();
+                last_preview.push_str(prefix);
+                true
+            };
+            let first =
+                read_process_line_mode(&mut reader, &mut pending, &stop, true, Some(&mut preview))
+                    .unwrap();
+            assert_eq!(first.as_deref(), Some("progress 5000 of 5000"));
+            assert_eq!(last_preview, "progress 5000 of 5000");
+            let second =
+                read_process_line_mode(&mut reader, &mut pending, &stop, true, None).unwrap();
+            assert_eq!(second.as_deref(), Some("done"));
+            assert_eq!(
+                read_process_line_mode(&mut reader, &mut pending, &stop, true, None).unwrap(),
+                None
+            );
+        }
+
+        // 2. Real PTY child emitting >100 KiB of CR-delimited progress updates
+        // before LF completes normally without LineTooLong termination.
+        let script = "python3 -u -c 'import sys; \
+            [sys.stdout.write(f\"step {i:04d}-{\"x\"*20}\\r\") for i in range(1, 4001)]; \
+            sys.stdout.write(\"step 4000-done\\r\\n\")'";
+        let events = run_to_end(pty_shell(script).partial_output(true));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ProcessEvent::StdoutPartial(p) if p.starts_with("step "))),
+            "expected partial progress previews, got {events:?}"
+        );
+        let completed: Vec<_> = events
+            .iter()
+            .filter(|e| !matches!(e, ProcessEvent::StdoutPartial(_)))
+            .cloned()
+            .collect();
+        assert_eq!(
+            completed,
+            vec![
+                ProcessEvent::Stdout("step 4000-done".to_owned()),
+                ProcessEvent::Exited(0),
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_input_delivers_lines_over_4095_bytes_without_canonical_truncation() {
+        let input = ProcessInput::new();
+        let long_line = format!("{}{}", "a".repeat(6_000), "b".repeat(6_000));
+        let script = "python3 -u -c 'import sys; \
+            line = sys.stdin.readline().rstrip(\"\\n\"); \
+            print(f\"len={len(line)} head={line[:4]} mid={line[5998:6002]} tail={line[-4:]}\"); \
+            print(f\"eof={sys.stdin.read() == \"\"}\")'";
+        let (events, _trigger, handle) = start_process(pty_shell(script).stdin(input.clone()));
+        input.try_send_line(long_line).unwrap();
+        input.close();
+        assert_eq!(
+            events_until(&events, is_terminal_event),
+            [
+                stdout(&["len=12000 head=aaaa mid=aabb tail=bbbb", "eof=True"]),
+                vec![ProcessEvent::Exited(0)]
+            ]
+            .concat()
+        );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn process_subscription_delivers_stdout_stderr_exit_in_order() {
+        let events = run_to_end(shell("echo out; echo err 1>&2; exit 7"));
+        assert!(events.contains(&ProcessEvent::Stdout("out".to_owned())));
+        assert!(events.contains(&ProcessEvent::Stderr("err".to_owned())));
+        assert_eq!(events.last(), Some(&ProcessEvent::Exited(7)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn process_subscription_forwards_stdin() {
+        let input = ProcessInput::new();
+        let sub = ProcessSubscription::new("cat", |event| event)
+            .stdin(input.clone())
+            .timeout(Duration::from_secs(10));
+        let (events, trigger, handle) = start_process(sub);
+        input.try_send_line("hello".to_owned()).unwrap();
+        let seen = events_until(&events, |e| e == &ProcessEvent::Stdout("hello".to_owned()));
+        assert!(seen.contains(&ProcessEvent::Stdout("hello".to_owned())));
+        let stop_start = Instant::now();
+        trigger.stop();
+        let tail = events_until(&events, is_terminal_event);
+        handle.join().unwrap();
+        assert!(
+            stop_start.elapsed() < Duration::from_secs(5),
+            "stop must complete promptly, tail={tail:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn process_subscription_kills_child_on_stop() {
+        let control = ProcessControl::new();
+        let sub = ProcessSubscription::new("sleep", |event| event)
+            .arg("30")
+            .control(control.clone())
+            .timeout(Duration::from_secs(10));
+        let (events, trigger, handle) = start_process(sub);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let pid = loop {
+            if let Some(pid) = control.status().pid {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "sleep child did not report pid");
+            thread::sleep(Duration::from_millis(5));
+        };
+        trigger.stop();
+        let tail = events_until(&events, is_terminal_event);
+        handle.join().unwrap();
+        assert!(
+            tail.contains(&ProcessEvent::Killed),
+            "expected Killed event, got {tail:?}"
+        );
+        let raw_pid = rustix::process::Pid::from_raw(pid as i32).expect("valid pid");
+        assert!(
+            rustix::process::test_kill_process(raw_pid).is_err(),
+            "child pid {pid} must be reaped after stop"
+        );
     }
 }

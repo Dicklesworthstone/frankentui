@@ -801,7 +801,7 @@ fn event_to_json(event: &Event) -> String {
                 source
             )
         }
-        Event::Tick => r#"{"kind":"tick"}"#.to_string(),
+        Event::TerminalResponse(_) | Event::Tick => r#"{"kind":"tick"}"#.to_string(),
     }
 }
 
@@ -1486,6 +1486,7 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
                 kind: mouse_kind,
                 x,
                 y,
+                pixel: None,
                 modifiers,
             }))
         }
@@ -1517,6 +1518,7 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
                 kind,
                 x,
                 y,
+                pixel: None,
                 modifiers,
             }))
         }
@@ -2713,6 +2715,7 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             x: 5,
             y: 0,
+            pixel: None,
             modifiers: Modifiers::empty(),
         });
         rec.push_event(1_000_000, mouse).expect("mouse admission");
@@ -2988,12 +2991,14 @@ mod tests {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 x: 10,
                 y: 5,
+                pixel: None,
                 modifiers: Modifiers::empty(),
             }),
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::ScrollDown,
                 x: 0,
                 y: 0,
+                pixel: None,
                 modifiers: Modifiers::CTRL,
             }),
             Event::Paste(PasteEvent::bracketed("hello world")),
@@ -3393,6 +3398,7 @@ mod tests {
                 kind: MouseEventKind::Drag(MouseButton::Right),
                 x: 7,
                 y: 9,
+                pixel: None,
                 modifiers: Modifiers::SHIFT | Modifiers::ALT,
             })
         );
@@ -3405,6 +3411,7 @@ mod tests {
                 kind: MouseEventKind::ScrollUp,
                 x: 4,
                 y: 6,
+                pixel: None,
                 modifiers: Modifiers::CTRL,
             })
         );

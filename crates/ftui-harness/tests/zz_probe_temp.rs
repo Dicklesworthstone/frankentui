@@ -13,6 +13,13 @@
 //!
 //! Requested deletion: `crates/ftui-harness/tests/zz_probe_temp.rs`
 
-/// Placeholder so the file compiles as a test target without running anything.
+/// Verifies basic Frame buffer bounds until owner grants permission to remove this file.
 #[test]
-fn probe_superseded_by_render_gauntlet_e2e() {}
+fn probe_superseded_by_render_gauntlet_e2e() {
+    let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+    let frame = ftui_render::frame::Frame::new(80, 24, &mut pool);
+    assert_eq!(frame.width(), 80);
+    assert_eq!(frame.height(), 24);
+    assert_eq!(frame.buffer.width(), 80);
+    assert_eq!(frame.buffer.height(), 24);
+}

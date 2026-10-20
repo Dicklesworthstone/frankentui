@@ -100,6 +100,7 @@ fn join_task_thread_bounded(handle: std::thread::JoinHandle<()>, task_name: &'st
     while !handle.is_finished() {
         if start.elapsed() >= TASK_THREAD_JOIN_TIMEOUT {
             tracing::warn!(
+                target: crate::telemetry_schema::TARGET_EFFECT,
                 task = task_name,
                 timeout_ms = TASK_THREAD_JOIN_TIMEOUT.as_millis() as u64,
                 "Timed-out worker thread did not exit within the cancellation join timeout; detaching"

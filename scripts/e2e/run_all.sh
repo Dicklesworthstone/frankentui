@@ -99,12 +99,13 @@ else
     cargo build -p ftui-harness > "$E2E_LOG_DIR/01_build.log" 2>&1
 fi
 
-E2E_HARNESS_BIN="$PROJECT_ROOT/target/debug/ftui-harness"
+TARGET_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
+E2E_HARNESS_BIN="${E2E_HARNESS_BIN:-$TARGET_DIR/debug/ftui-harness}"
 export E2E_HARNESS_BIN
 
-if [[ ! -x "$E2E_HARNESS_BIN" ]]; then
+if ! e2e_require bin "$E2E_HARNESS_BIN" "ftui-harness binary not found at $E2E_HARNESS_BIN"; then
     log_error "ftui-harness binary not found at $E2E_HARNESS_BIN"
-    exit 1
+    exit 2
 fi
 
 run_group() {
@@ -224,7 +225,11 @@ if [[ "$FAIL_COUNT" -gt 0 ]]; then
     exit 1
 fi
 
-if [[ "$TOTAL_COUNT" -gt 0 && "$SKIP_COUNT" -eq "$TOTAL_COUNT" ]]; then
+if [[ "$SKIP_COUNT" -gt 0 && "${E2E_ALLOW_SKIPS:-0}" != "1" ]]; then
+    exit 2
+fi
+
+if [[ "$TOTAL_COUNT" -eq 0 ]]; then
     exit 2
 fi
 

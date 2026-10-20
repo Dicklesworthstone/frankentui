@@ -27,13 +27,24 @@ if [[ -z "${FTUI_DEMO_BIN:-}" || ! -x "${FTUI_DEMO_BIN:-}" ]]; then
     fi
 fi
 
-if [[ -z "${FTUI_DEMO_BIN:-}" || ! -x "${FTUI_DEMO_BIN:-}" ]]; then
+rc=0
+e2e_require bin "${FTUI_DEMO_BIN:-}" "ftui-demo-showcase binary missing" || rc=$?
+if (( rc != 0 )); then
+    mkdir -p "$E2E_LOG_DIR"
     LOG_FILE="$E2E_LOG_DIR/teardown_identity_missing.log"
     for t in "${ALL_CASES[@]}"; do
-        log_test_skip "$t" "ftui-demo-showcase binary missing"
-        record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
+        if (( rc == 1 )); then
+            log_test_skip "$t" "ftui-demo-showcase binary missing"
+            record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
+        else
+            log_test_fail "$t" "ftui-demo-showcase binary missing"
+            record_result "$t" "failed" 0 "$LOG_FILE" "missing_prerequisite: ftui-demo-showcase binary missing"
+        fi
     done
-    exit 0
+    if (( rc == 1 )); then
+        exit 0
+    fi
+    exit "$rc"
 fi
 
 # Run showcase under PTY with Kitty identity and 80x24 geometry

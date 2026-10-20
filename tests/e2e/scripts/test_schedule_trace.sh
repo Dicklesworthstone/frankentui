@@ -129,7 +129,7 @@ log_info "Output dir: $TRACE_OUTPUT_DIR"
 log_info "Building ftui-runtime tests..."
 BUILD_START="$(e2e_monotonic_ms)" || exit 2
 
-if ! cargo build -p ftui-runtime --tests 2>"$TRACE_OUTPUT_DIR/build.log"; then
+if ! cargo build -p ftui-runtime --features experimental --lib --tests 2>"$TRACE_OUTPUT_DIR/build.log"; then
     log_error "Build failed! See $TRACE_OUTPUT_DIR/build.log"
     exit 2
 fi
@@ -149,11 +149,18 @@ TEST_START="$(e2e_monotonic_ms)" || exit 2
 # We use a special test that captures the trace and outputs checksum
 TEST_OUTPUT="$TRACE_OUTPUT_DIR/test_output.txt"
 
-if cargo test -p ftui-runtime schedule_trace::tests::unit_trace_hash_stable -- --nocapture 2>&1 | tee "$TEST_OUTPUT"; then
+if cargo test -p ftui-runtime --features experimental --lib schedule_trace::tests::unit_trace_hash_stable -- --nocapture > "$TEST_OUTPUT" 2>&1; then
     log_debug "Test execution completed"
 else
     log_error "Test execution failed"
+    cat "$TEST_OUTPUT" >&2 || true
     exit 2
+fi
+
+if ! grep -Eq 'running [1-9][0-9]* test' "$TEST_OUTPUT"; then
+    log_fail "Zero tests ran in unit_trace_hash_stable check"
+    cat "$TEST_OUTPUT" >&2 || true
+    exit 1
 fi
 
 TEST_END="$(e2e_monotonic_ms)" || exit 2
@@ -222,15 +229,9 @@ fn main() {
 }
 RUST
 
-# Note: We can't easily run this standalone, so we'll use the test checksums directly
-# For now, extract a known checksum from the test run
-
 # =============================================================================
 # Checksum comparison
 # =============================================================================
-
-# For this E2E test, we verify the unit tests pass and that checksums are stable
-# The actual golden checksum is verified by the Rust tests themselves
 
 log_info "Verifying trace stability..."
 
@@ -245,6 +246,13 @@ RUN2_FILTERED="$TRACE_OUTPUT_DIR/run2.filtered"
 # below "passes" (bd-g00-root-epic-ewths.6.38).
 cargo test -p ftui-runtime --features experimental --lib schedule_trace::tests::unit_trace_hash_stable -- --nocapture > "$RUN1_OUTPUT" 2>&1 || true
 cargo test -p ftui-runtime --features experimental --lib schedule_trace::tests::unit_trace_hash_stable -- --nocapture > "$RUN2_OUTPUT" 2>&1 || true
+
+for run_out in "$RUN1_OUTPUT" "$RUN2_OUTPUT"; do
+    if ! grep -Eq 'running [1-9][0-9]* test' "$run_out"; then
+        log_fail "Zero tests ran in schedule_trace stability run ($run_out)"
+        exit 1
+    fi
+done
 
 if command -v rg >/dev/null 2>&1; then
     rg '^test schedule_trace::tests::unit_trace_hash_stable' "$RUN1_OUTPUT" > "$RUN1_FILTERED" || true
@@ -261,8 +269,19 @@ for run_filtered in "$RUN1_FILTERED" "$RUN2_FILTERED"; do
     fi
 done
 
+CHECKSUM_RUN1="$(grep -Eo 'CHECKSUM=[0-9a-f]{16}' "$RUN1_OUTPUT" | head -n1 | cut -d= -f2 || true)"
+CHECKSUM_RUN2="$(grep -Eo 'CHECKSUM=[0-9a-f]{16}' "$RUN2_OUTPUT" | head -n1 | cut -d= -f2 || true)"
+if [[ -z "$CHECKSUM_RUN1" || -z "$CHECKSUM_RUN2" ]]; then
+    log_fail "Failed to extract 16-hex-digit CHECKSUM from unit_trace_hash_stable output"
+    exit 1
+fi
+if [[ "$CHECKSUM_RUN1" != "$CHECKSUM_RUN2" ]]; then
+    log_fail "Trace checksum mismatch across runs: $CHECKSUM_RUN1 != $CHECKSUM_RUN2"
+    exit 1
+fi
+
 if diff -q "$RUN1_FILTERED" "$RUN2_FILTERED" > /dev/null 2>&1; then
-    log_success "Trace checksum is stable across runs"
+    log_success "Trace checksum is stable across runs ($CHECKSUM_RUN1)"
 else
     log_fail "Trace checksum differs between runs!"
     diff -u "$RUN1_FILTERED" "$RUN2_FILTERED" || true
@@ -275,19 +294,26 @@ fi
 
 log_info "Verifying effect queue scheduling determinism..."
 
-if cargo test -p ftui-runtime queueing_scheduler::tests::effect_queue_trace_is_deterministic -- --nocapture > "$EFFECT_RUN1_RAW" 2>&1; then
+if cargo test -p ftui-runtime --lib queueing_scheduler::tests::effect_queue_trace_is_deterministic -- --nocapture > "$EFFECT_RUN1_RAW" 2>&1; then
     log_debug "Effect queue run 1 completed"
 else
     log_error "Effect queue run 1 failed"
     exit 2
 fi
 
-if cargo test -p ftui-runtime queueing_scheduler::tests::effect_queue_trace_is_deterministic -- --nocapture > "$EFFECT_RUN2_RAW" 2>&1; then
+if cargo test -p ftui-runtime --lib queueing_scheduler::tests::effect_queue_trace_is_deterministic -- --nocapture > "$EFFECT_RUN2_RAW" 2>&1; then
     log_debug "Effect queue run 2 completed"
 else
     log_error "Effect queue run 2 failed"
     exit 2
 fi
+
+for eff_raw in "$EFFECT_RUN1_RAW" "$EFFECT_RUN2_RAW"; do
+    if ! grep -Eq 'running [1-9][0-9]* test' "$eff_raw"; then
+        log_fail "Zero tests ran in effect_queue_trace_is_deterministic ($eff_raw)"
+        exit 1
+    fi
+done
 
 if command -v rg >/dev/null 2>&1; then
     rg '^\{' "$EFFECT_RUN1_RAW" > "$EFFECT_RUN1_JSONL" || true
@@ -295,6 +321,11 @@ if command -v rg >/dev/null 2>&1; then
 else
     grep -E '^\{' "$EFFECT_RUN1_RAW" > "$EFFECT_RUN1_JSONL" || true
     grep -E '^\{' "$EFFECT_RUN2_RAW" > "$EFFECT_RUN2_JSONL" || true
+fi
+
+if [[ ! -s "$EFFECT_RUN1_JSONL" || ! -s "$EFFECT_RUN2_JSONL" ]]; then
+    log_fail "Effect queue JSONL trace output is empty"
+    exit 1
 fi
 
 if diff -q "$EFFECT_RUN1_JSONL" "$EFFECT_RUN2_JSONL" > /dev/null 2>&1; then
@@ -316,7 +347,7 @@ if [[ "$UPDATE_GOLDEN" == "true" ]]; then
     echo "# Generated: $(date -Iseconds)" >> "$GOLDEN_FILE"
     echo "# Commit: $(git rev-parse HEAD 2>/dev/null || echo 'unknown')" >> "$GOLDEN_FILE"
     echo "" >> "$GOLDEN_FILE"
-    echo "CHECKSUM=stable_across_runs" >> "$GOLDEN_FILE"
+    echo "CHECKSUM=$CHECKSUM_RUN1" >> "$GOLDEN_FILE"
     log_success "Golden file updated: $GOLDEN_FILE"
 fi
 
@@ -330,7 +361,7 @@ TOTAL_MS=$((END_TS - START_TS))
 # Write results JSONL
 cat > "$TRACE_OUTPUT_DIR/results_${TIMESTAMP}.jsonl" <<EOF
 {"event":"test_complete","status":"pass","total_ms":$TOTAL_MS,"build_ms":$BUILD_MS,"test_ms":$TEST_MS}
-{"event":"checksums","stable":true}
+{"event":"checksums","stable":true,"checksum":"$CHECKSUM_RUN1"}
 {"event":"effect_queue_trace","stable":true,"run1_jsonl":"$EFFECT_RUN1_JSONL","run2_jsonl":"$EFFECT_RUN2_JSONL"}
 EOF
 

@@ -1014,6 +1014,23 @@ mod tests {
                 proptest::prop_assert!(g.check_frame(bytes, 0).leak_alert.is_none());
             }
         }
+
+        #[test]
+        fn proptest_no_leak_alert_on_stationary_series(
+            baseline in 4096usize..4 * 1024 * 1024,
+            amplitude in 0usize..1024,
+            phase in proptest::bool::ANY,
+        ) {
+            let mut g = FrameGuardrails::new(GuardrailsConfig::default());
+            for i in 0..1_000 {
+                let bytes = if (i % 2 == 0) == phase {
+                    baseline + amplitude
+                } else {
+                    baseline - amplitude
+                };
+                proptest::prop_assert!(g.check_frame(bytes, 0).leak_alert.is_none());
+            }
+        }
     }
 
     #[test]
@@ -1449,6 +1466,11 @@ mod tests {
         assert!(line.contains("\"leak_cusum_upper\":0"));
         assert!(line.contains("\"leak_mean_bytes\":1024"));
         assert!(line.contains("\"leak_alert\":false"));
+    }
+
+    #[test]
+    fn guardrail_snapshot_jsonl_has_leak_fields() {
+        guardrails_snapshot_jsonl();
     }
 
     #[test]

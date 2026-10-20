@@ -6,35 +6,45 @@ known limitations. Behavior varies by terminal emulator and by backend.
 Status note: This project is still early. The items below are the **targeted**
 v1 behavior, not a guarantee for every Windows terminal.
 
-## CI Validation Status
+## Verification Status (DSR)
 
-**Last validated:** 2026-02-03 (bd-31go)
+**Last validated:** 2026-10-19 (DSR `frankentui-windows-cross` receipt `20261019T133026-3574887` on `trj`; historical initial check 2026-02-03 under `bd-31go`)
 
-### Cross-Platform CI Matrix
+### Cross-Platform DSR Matrix
 
-| Platform | Runner | Rust Toolchain | Status |
-|----------|--------|----------------|--------|
-| Linux | `ubuntu-latest` | stable, nightly | Validated |
-| macOS | `macos-latest` | stable, nightly | Validated |
-| Windows | `windows-latest` | stable | Validated |
+| Check / Tool | Host / Target | Toolchain | Status |
+|--------------|---------------|-----------|--------|
+| `frankentui-full-gates` (`make gates`, `fmt`, `check`, `clippy -D warnings`, `rustdoc -D warnings`, `nextest`) | `trj` (`linux/amd64`) | pinned nightly (`rust-toolchain.toml`) | Validated (`20261013T174912-1105783`) |
+| `frankentui-windows-cross` (`scripts/cross_platform_e2e.sh --windows-smoke`: `--target x86_64-pc-windows-gnu` workspace `clippy -D warnings`, `ftui-runtime --features native-backend` check, `ftui-tty`/`default_backend` test link, example builds, plus cross-platform unit tests and start/stop smoke) | `trj` (`linux/amd64` -> `x86_64-pc-windows-gnu`) | pinned nightly (`rust-toolchain.toml`) | Validated (`20261019T133026-3574887`) |
+| Native Windows DSR host (`wlap`) live console execution | `wlap` (`windows/amd64`) | pinned nightly (`rust-toolchain.toml`) | Pending `wlap` Tailscale host reachability (`bd-g00-root-epic-ewths.6.6` / `.36.2`) |
 
-See `.github/workflows/ci.yml` for the full configuration.
+See `.config/dsr-quality.yaml` (`frankentui-windows-cross`) and `scripts/cross_platform_e2e.sh` for the verification configuration.
+PTY-based E2E tests do not run on Windows: this repository has no ConPTY driver (`tests/e2e/lib/pty.sh` and `ftui-pty` PTY spawning are Unix-only).
 
 ### Automated Testing
 
-- **Format/Clippy/Build**: All platforms
-- **Unit tests**: All crates (`ftui-core`, `ftui-render`, `ftui-widgets`, etc.)
-- **Platform-specific capability detection**: `#[cfg(target_os)]` tests
-  - Windows Terminal detection via `WT_SESSION`
-  - macOS iTerm2 detection via `TERM_PROGRAM`
-  - Linux terminal detection via standard env vars
-- **Snapshot tests**: Platform-independent golden snapshots
-- **E2E tests**: PTY-based tests on Linux/macOS (see `scripts/cross_platform_e2e.sh`)
+- **Cross-target Clippy & Build (`x86_64-pc-windows-gnu`)**: Full workspace `--all-targets -- -D warnings`, `ftui-runtime --features native-backend`, `ftui` examples (`minimal_inline.exe`, `agent_shell.exe`), and `default_backend` test binary compilation.
+- **Cross-platform unit tests**:
+  - Windows Terminal capability profile via `WT_SESSION` (`wt_session_profile_matches_windows_doc`)
+  - Crossterm key normalization (`crossterm_key_event_maps_to_ftui_key`)
+  - Headless simulator resize reflow (`simulator_resize_reflows_view`)
+  - `FTUI_EXIT_AFTER_MS` parsing (`exit_after_env_parses_ms_and_rejects_garbage`)
+  - Non-console error path (`with_config_reports_not_a_console_cleanly`)
+  - `ftui-tty` availability and non-Unix `Unsupported` fallback (`backend_available_matches_cfg`, `non_unix_backend_reports_unsupported`)
+  - Facade default backend selection (`default_backend_is_crossterm_on_windows`, `default_backend_is_native_on_unix`)
+- **Start/stop smoke (`scripts/cross_platform_e2e.sh --windows-smoke`)**: Runs `minimal_inline`, `ftui-demo-showcase --screen=1`, and `agent_shell` under `FTUI_EXIT_AFTER_MS=300` (recording outcome `exit_after_ms` with cursor restore `\x1b[?25h`, or `not_a_console` when stdio is redirected without a controlling terminal) into `windows-smoke.jsonl`.
 
 ### Manual Validation Required
 
 - Terminal-specific quirks (Terminal.app, iTerm2, Windows Terminal)
 - Edge cases in legacy consoles (cmd.exe, ConHost)
+
+## Backend on Windows
+
+- **Crossterm by default in v1:** The `ftui` facade selects Crossterm (`crossterm-compat`) by default on non-Unix targets (`ftui_runtime::DEFAULT_BACKEND == "crossterm"`).
+- **`ftui-tty` non-Unix shell:** On Windows, `ftui-tty` compiles as a documented shell (`ftui_tty::BACKEND_AVAILABLE == false`) and `TtyBackend::open(...)` returns `io::ErrorKind::Unsupported` (`"ftui-tty native backend is unix-only; use the crossterm-compat feature on Windows"`).
+- **Cooperative smoke-test exit (`FTUI_EXIT_AFTER_MS`):** Setting `FTUI_EXIT_AFTER_MS=<ms>` arms a deadline inside `Program::run_event_loop` (and `agent_shell`) so interactive binaries exit cleanly with code `0` and full terminal teardown after `<ms>` milliseconds.
+- **Native Windows backend deferred:** The dedicated `ftui-win32` backend remains deferred (`bd-lff4p.4.9`; see [ADR-004](adr/ADR-004-windows-v1-scope.md)).
 
 ## Supported Features (v1 target)
 
@@ -49,6 +59,7 @@ See `.github/workflows/ci.yml` for the full configuration.
 
 ## Known Limitations (v1)
 
+- **Not a console:** When stdin/stdout is redirected (no console attached), `Program::with_config` / `App::run()` over Crossterm returns `io::ErrorKind::Unsupported` (`"stdin is not a console; run inside Windows Terminal, conhost, or use the headless simulator"`).
 - DEC synchronized output (mode 2026) is not widely supported on Windows
 - OSC 8 hyperlinks: Windows Terminal only; cmd.exe and legacy ConHost do not
 - Bracketed paste: varies by terminal emulator
@@ -135,16 +146,15 @@ is stable. It is intentionally non-blocking for current Unix + web delivery.
 
 ## Cross-References
 
-- ADR-004 (Windows v1 scope) — pending
-- Terminal compatibility matrix (bd-1un) — pending
+- [ADR-004 (Windows v1 scope)](adr/ADR-004-windows-v1-scope.md) — ACCEPTED (2026-10-19)
+- [Terminal compatibility matrix](terminal-compatibility.md) (`bd-1un`)
 - Capability detection: `crates/ftui-core/src/terminal_capabilities.rs`
 
-## Validation Checklist (bd-31go)
+## Validation Checklist
 
-- [x] Linux tests passing (CI: ubuntu-latest)
-- [x] macOS tests passing (CI: macos-latest)
-- [x] Windows tests passing (CI: windows-latest)
-- [x] CI matrix configured (multi-OS, multi-Rust)
-- [x] Platform-specific capability detection tested
-- [x] Snapshot tests run across platforms
-- [x] docs/WINDOWS.md updated with validated status
+- [x] Linux tests passing (DSR `frankentui-full-gates` on `trj`)
+- [x] Windows `--target x86_64-pc-windows-gnu` workspace Clippy (`-D warnings`), test compilation, and examples passing (DSR `frankentui-windows-cross` receipt `20261019T133026-3574887`)
+- [ ] Live native Windows DSR host (`wlap`) test and start/stop execution (`bd-g00-root-epic-ewths.6.6` / `bd-g00-root-epic-ewths.36.2`)
+- [x] Platform-specific capability detection tested (`wt_session_profile_matches_windows_doc`)
+- [x] Snapshot tests and headless simulator resize reflow tested (`simulator_resize_reflows_view`)
+- [x] `docs/WINDOWS.md` updated with DSR validation status
