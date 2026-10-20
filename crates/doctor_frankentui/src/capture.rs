@@ -1254,7 +1254,11 @@ fn build_docker_mounts(cfg: &ResolvedCaptureConfig, run_dir: &Path) -> Vec<PathB
         }
     };
 
-    push_unique(run_dir.to_path_buf());
+    if cfg.run_root.exists() && run_dir.starts_with(&cfg.run_root) {
+        push_unique(cfg.run_root.clone());
+    } else {
+        push_unique(run_dir.to_path_buf());
+    }
     push_unique(cfg.project_dir.clone());
 
     if using_legacy_binary(cfg)
