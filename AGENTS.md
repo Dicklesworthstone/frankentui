@@ -75,7 +75,7 @@ they were meant to hold apply as stated here:
 We only use **Cargo** in this project, NEVER any other package manager.
 
 - **Edition:** Rust 2024 (nightly required — see `rust-toolchain.toml`)
-- **Verification toolchain:** DSR builds and checks must use exactly the channel in `rust-toolchain.toml`; change the pin there, nowhere else.
+- **Verification toolchain:** DSR builds and checks must use exactly the channel in `rust-toolchain.toml`; change the pin there, nowhere else. Enforced by `scripts/ci/toolchain_pin_contract.sh` (`toolchain-pin-check`) and `scripts/ci/parse_toolchain_pin_test.sh`.
 - **Dependency versions:** Explicit versions for stability
 - **Configuration:** Cargo.toml workspace with `workspace = true` pattern
 - **Unsafe code:** Forbidden (`#![forbid(unsafe_code)]`)

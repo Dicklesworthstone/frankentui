@@ -2302,22 +2302,35 @@ jobs:
           echo "::endgroup::"
 
   # ==========================================================================
-  # MSRV Check (Minimum Supported Rust Version)
+  # Toolchain Pin & Locked Lockfile Contract (G04.15: rust-toolchain.toml)
   # ==========================================================================
-  msrv:
-    name: MSRV Check
+  toolchain-pin-check:
+    name: Toolchain pin check
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Parse pin unit tests
+        run: bash scripts/ci/parse_toolchain_pin_test.sh
+
       - name: Install Rust toolchain
         id: rust
         uses: ./.github/actions/rust-pin
 
-      - name: Check MSRV
-        run: cargo check --workspace
+      - name: Pin file components and active toolchain contract
+        run: bash scripts/ci/toolchain_pin_contract.sh --check-git-lockfile
+
+      - name: Locked check
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Lockfile unchanged
+        run: git diff --exit-code Cargo.lock
+
+      - name: Nightly feature inventory
+        run: rg -n '#!\[feature' crates >> "$GITHUB_STEP_SUMMARY" || true
 
   # ==========================================================================
   # WASM Build Check (host-agnostic surfaces)

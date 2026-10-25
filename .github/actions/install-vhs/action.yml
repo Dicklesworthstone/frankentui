@@ -11,10 +11,10 @@ inputs:
     default: "0.10.0"
   sha256:
     description: >-
-      Expected SHA-256 of the Linux x86_64 tarball. Leave empty to skip the
-      check (not recommended); set it to pin the exact artifact.
+      Expected SHA-256 of the Linux x86_64 tarball. Pinned to the official
+      v0.10.0 release checksum.
     required: false
-    default: ""
+    default: "b552c3870aca101dcafe533cfef32dceb7b783400ad32642e728775c9f125407"
 runs:
   using: composite
   steps:
@@ -23,13 +23,16 @@ runs:
       run: |
         set -euo pipefail
         version="${{ inputs.version }}"
+        sha256="${{ inputs.sha256 }}"
+        if [ -z "$sha256" ]; then
+          echo "sha256 checksum input is required for pinned VHS install" >&2
+          exit 1
+        fi
         work="$(mktemp -d)"
         tarball="$work/vhs.tar.gz"
         curl -fsSL -o "$tarball" \
           "https://github.com/charmbracelet/vhs/releases/download/v${version}/vhs_${version}_Linux_x86_64.tar.gz"
-        if [ -n "${{ inputs.sha256 }}" ]; then
-          echo "${{ inputs.sha256 }}  $tarball" | sha256sum -c -
-        fi
+        echo "${sha256}  $tarball" | sha256sum -c -
         mkdir -p "$work/extract"
         tar -xzf "$tarball" -C "$work/extract"
         # Known layouts: "<root>/vhs" (older releases) or

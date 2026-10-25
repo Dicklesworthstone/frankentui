@@ -63,6 +63,11 @@ tools:
       # Release preflight + publish helper self-tests (bd-g00-root-epic-ewths.10.1, .6.22).
       - bash scripts/release_preflight_test.sh
       - bash scripts/ci/release_publish_test.sh
+      # Toolchain pin parser + active compiler/lockfile contract self-tests (bd-g00-root-epic-ewths.6.19, .6.20, .6.29, .6.30).
+      - bash scripts/ci/parse_toolchain_pin_test.sh
+      - bash scripts/ci/toolchain_pin_contract_test.sh
+      # Pinned capture tools (VHS 0.10.0 + ttyd 1.7.7) + doctor snapshot/bundle verification (bd-g00-root-epic-ewths.6.14).
+      - bash scripts/ci/capture_tools_test.sh
       # Static workflow + DSR doctor verification contract assertions (bd-g00-root-epic-ewths.28.4).
       - python3 -B scripts/check_workflows.py --self-test
       - python3 -B scripts/check_workflows.py
@@ -85,6 +90,7 @@ tools:
     language: rust
     required_checks:
       - make gates
+      - bash scripts/ci/toolchain_pin_contract.sh --check-git-lockfile
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') cargo fmt --all --check
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --locked
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness clippy --workspace --all-targets --locked -- -D warnings
@@ -219,6 +225,7 @@ tools:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
+      - bash scripts/ci/capture_tools_test.sh
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness test --locked -p doctor_frankentui --all-targets -- --nocapture
       - bash scripts/doctor_frankentui_core_time_budget.sh
       - bash scripts/doctor_frankentui_happy_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}/happy"

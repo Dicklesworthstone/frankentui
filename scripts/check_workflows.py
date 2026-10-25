@@ -228,6 +228,35 @@ def check_dsr_quality(dsr_text: str, workflow_label: str = ".config/dsr-quality.
     return results
 
 
+def check_ci_toolchain_pin_contract(ci_text: str) -> dict[str, str]:
+    has_pin_job = "  toolchain-pin-check:\n" in ci_text
+    has_parser_test = "scripts/ci/parse_toolchain_pin_test.sh" in ci_text
+    has_contract_script = "scripts/ci/toolchain_pin_contract.sh --check-git-lockfile" in ci_text
+    has_msrv = re.search(r"\bmsrv\b", ci_text, re.IGNORECASE) is not None
+    if has_pin_job and has_parser_test and has_contract_script and not has_msrv:
+        return {
+            "check": "ci_toolchain_pin_contract_without_msrv",
+            "workflow": ".github/workflows/ci.yml#toolchain-pin-check",
+            "status": "pass",
+            "detail": "defines toolchain-pin-check with parser+contract scripts and zero MSRV references",
+        }
+    reasons: list[str] = []
+    if not has_pin_job:
+        reasons.append("missing toolchain-pin-check job")
+    if not has_parser_test:
+        reasons.append("missing scripts/ci/parse_toolchain_pin_test.sh")
+    if not has_contract_script:
+        reasons.append("missing scripts/ci/toolchain_pin_contract.sh --check-git-lockfile")
+    if has_msrv:
+        reasons.append("contains forbidden MSRV reference")
+    return {
+        "check": "ci_toolchain_pin_contract_without_msrv",
+        "workflow": ".github/workflows/ci.yml#toolchain-pin-check",
+        "status": "fail",
+        "detail": "; ".join(reasons),
+    }
+
+
 def evaluate_all(ci_text: str, extended_text: str, dsr_text: str) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
     ci_job = extract_ci_doctor_job(ci_text)
@@ -245,6 +274,7 @@ def evaluate_all(ci_text: str, extended_text: str, dsr_text: str) -> list[dict[s
             "/tmp/doctor_frankentui_ci_extended/",
         )
     )
+    results.append(check_ci_toolchain_pin_contract(ci_text))
     results.extend(check_dsr_quality(dsr_text))
     return results
 
@@ -297,13 +327,20 @@ def run_self_test() -> int:
         r["check"] == "dsr_doctor_verification_tool_contract" and r["status"] == "fail" for r in res5
     ), "expected failure when DSR doctor verification script is removed"
 
+    # Mutation 6: reintroduce misleading MSRV claim into ci.yml
+    mut_msrv = ci_text + "\n  # MSRV Check\n"
+    res6 = evaluate_all(mut_msrv, extended_text, dsr_text)
+    assert any(
+        r["check"] == "ci_toolchain_pin_contract_without_msrv" and r["status"] == "fail" for r in res6
+    ), "expected failure when MSRV string is reintroduced in ci.yml"
+
     print(
         json.dumps(
             {
                 "check": "check_workflows_self_test",
                 "workflow": "self-test",
                 "status": "pass",
-                "detail": "5 seeded mutations rejected and baseline passed",
+                "detail": "6 seeded mutations rejected and baseline passed",
             }
         )
     )
