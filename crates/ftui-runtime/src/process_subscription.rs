@@ -2095,7 +2095,7 @@ mod tests {
             let mut tail = String::new();
             output.read_to_string(&mut tail).unwrap();
             assert_eq!(event, ProcessEvent::Killed);
-            assert!(elapsed < Duration::from_secs(2));
+            assert!(elapsed < Duration::from_secs(2) * ftui_core::cx::test_time_scale());
             assert_eq!(
                 observed.unwrap().signal(),
                 Some(rustix::process::Signal::KILL.as_raw())
@@ -2155,7 +2155,7 @@ mod tests {
         let cleanup = cleanup_child(&mut child, &mut wait_error, None);
         assert!(matches!(result, Ok(None)));
         assert!(matches!(still_running, Ok(None)));
-        assert!(elapsed < Duration::from_secs(1));
+        assert!(elapsed < Duration::from_secs(1) * ftui_core::cx::test_time_scale());
         assert!(status_before_cleanup.closed);
         assert!(!status_before_cleanup.can_restart);
         assert!(cleanup.kill_sent);
@@ -3082,10 +3082,10 @@ mod tests {
         let reaped = std::fs::metadata(format!("/proc/{pid}"))
             .is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
         assert!(full);
-        assert!(admission_elapsed < Duration::from_secs(1));
+        assert!(admission_elapsed < Duration::from_secs(1) * ftui_core::cx::test_time_scale());
         // One line can move from the queue to the blocked worker after Full.
         assert!(matches!(retry, Ok(()) | Err(ProcessInputError::Full(_))));
-        assert!(stopped_in < Duration::from_secs(2));
+        assert!(stopped_in < Duration::from_secs(2) * ftui_core::cx::test_time_scale());
         assert!(reaped, "child must be reaped before test cleanup");
         assert_eq!(
             input.try_send_line("late".to_owned()),
@@ -4862,7 +4862,7 @@ os.write(1,b'tail\r')
         // loaded runner, and it still fails when the kill waited for the
         // child (G04.2).
         assert!(
-            kill_elapsed < Duration::from_secs(5),
+            kill_elapsed < Duration::from_secs(5) * ftui_core::cx::test_time_scale(),
             "kill must complete promptly after the stop signal, took {kill_elapsed:?}"
         );
 

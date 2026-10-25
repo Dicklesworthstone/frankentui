@@ -573,6 +573,7 @@ pub struct Every<M: Send + 'static> {
     id: SubId,
     interval: Duration,
     make_msg: Box<dyn Fn() -> M + Send + Sync>,
+    clock: Option<ftui_core::cx::LabClock>,
 }
 
 impl<M: Send + 'static> Every<M> {
@@ -584,6 +585,7 @@ impl<M: Send + 'static> Every<M> {
             id,
             interval,
             make_msg: Box::new(make_msg),
+            clock: None,
         }
     }
 
@@ -597,7 +599,46 @@ impl<M: Send + 'static> Every<M> {
             id,
             interval,
             make_msg: Box::new(make_msg),
+            clock: None,
         }
+    }
+
+    /// Create a tick subscription driven by a deterministic [`ftui_core::cx::LabClock`].
+    #[must_use]
+    pub fn with_clock(
+        id: SubId,
+        interval: Duration,
+        clock: ftui_core::cx::LabClock,
+        make_msg: impl Fn() -> M + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            id,
+            interval,
+            make_msg: Box::new(make_msg),
+            clock: Some(clock),
+        }
+    }
+
+    /// Fire any due ticks against `clock` since `last_tick`, advancing `last_tick`
+    /// by `self.interval` for each emitted tick. Returns `None` if the receiver
+    /// disconnected.
+    #[must_use]
+    pub fn poll_virtual(
+        &self,
+        clock: &ftui_core::cx::LabClock,
+        last_tick: &mut Instant,
+        sender: &SubscriptionSender<M>,
+    ) -> Option<usize> {
+        let now = clock.now();
+        let mut emitted = 0;
+        while now.saturating_duration_since(*last_tick) >= self.interval {
+            *last_tick += self.interval;
+            if sender.send((self.make_msg)()).is_err() {
+                return None;
+            }
+            emitted += 1;
+        }
+        Some(emitted)
     }
 }
 
@@ -787,6 +828,24 @@ impl<M: Send + 'static> Subscription<M> for Every<M> {
             self.id,
             self.interval
         );
+        if let Some(ref clock) = self.clock {
+            let mut last_tick = clock.now();
+            loop {
+                if stop.wait_timeout(Duration::from_millis(1)) {
+                    break;
+                }
+                match self.poll_virtual(clock, &mut last_tick, &sender) {
+                    Some(emitted) => tick_count += emitted as u64,
+                    None => break,
+                }
+            }
+            crate::debug_trace!(
+                "Every virtual-clock subscription stopped: id={}, sent {} ticks",
+                self.id,
+                tick_count
+            );
+            return;
+        }
         loop {
             if stop.wait_timeout(self.interval) {
                 crate::debug_trace!(
@@ -1301,19 +1360,23 @@ mod tests {
 
     #[test]
     fn stop_signal_wait_wakes_immediately_when_already_stopped() {
+        stop_signal_wait_wakes_immediately_when_already_stopped_property();
+    }
+
+    #[test]
+    fn stop_signal_wait_wakes_immediately_when_already_stopped_property() {
         let (signal, trigger) = StopSignal::new();
         trigger.stop();
 
         // Should return immediately, not wait for timeout. The bound is a
-        // hang guard at half the timeout, not a speed assertion: a loaded
-        // runner may add tens of milliseconds, never seconds (G04.2).
+        // hang guard at half the timeout scaled by test_time_scale() (G04.2).
         let start = Instant::now();
         let stopped = signal.wait_timeout(Duration::from_secs(10));
         let elapsed = start.elapsed();
 
         assert!(stopped);
         assert!(
-            elapsed < Duration::from_secs(5),
+            elapsed < Duration::from_secs(5) * ftui_core::cx::test_time_scale(),
             "wait_timeout on a stopped signal must not wait for the timeout; took {elapsed:?}"
         );
     }
@@ -1441,6 +1504,83 @@ mod tests {
         assert!(
             start.elapsed() >= interval * 2,
             "two ticks cannot arrive before two intervals have passed"
+        );
+    }
+
+    #[test]
+    fn every_respects_interval_virtual_clock() {
+        let clock = ftui_core::cx::LabClock::new();
+        let epoch = clock.now();
+        let interval = Duration::from_millis(50);
+        let sub = Every::with_clock(1, interval, clock.clone(), || TestMsg::Tick);
+        let (tx, rx) = mpsc::sync_channel(SUBSCRIPTION_QUEUE_CAPACITY);
+        let (signal, _trigger) = StopSignal::new();
+        let sender = SubscriptionSender::new(tx, signal);
+        let mut last_tick = epoch;
+        let mut arrivals = Vec::new();
+
+        for _ in 0..16 {
+            clock.advance(Duration::from_millis(10));
+            sub.poll_virtual(&clock, &mut last_tick, &sender).unwrap();
+            let virtual_elapsed = clock.now().duration_since(epoch);
+            for msg in rx.try_iter() {
+                arrivals.push((msg, virtual_elapsed));
+            }
+        }
+
+        assert_eq!(
+            arrivals.len(),
+            3,
+            "expected 3 ticks in 160ms at 50ms interval"
+        );
+        for (idx, (msg, elapsed)) in arrivals.iter().enumerate() {
+            assert_eq!(*msg, TestMsg::Tick);
+            let expected = Duration::from_millis(50 * (idx as u64 + 1));
+            assert_eq!(
+                *elapsed,
+                expected,
+                "tick {} arrived at {:?}",
+                idx + 1,
+                elapsed
+            );
+        }
+    }
+
+    #[test]
+    fn every_ticks_at_least_once_wall() {
+        let scale = ftui_core::cx::test_time_scale();
+        let interval = Duration::from_millis(20);
+        let sub = Every::with_id(2, interval, || TestMsg::Tick);
+        let (tx, rx) = mpsc::sync_channel(SUBSCRIPTION_QUEUE_CAPACITY);
+        let (signal, trigger) = StopSignal::new();
+
+        let start = Instant::now();
+        let handle = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
+        });
+
+        thread::sleep(Duration::from_millis(60) * scale);
+        // If the worker thread was still delayed beyond 60ms * scale, wait up to a bounded
+        // hang-guard deadline for the first tick so liveness is proven without flakiness.
+        let mut msgs: Vec<TestMsg> = rx.try_iter().collect();
+        if msgs.is_empty()
+            && let Ok(first) = rx.recv_timeout(Duration::from_secs(5) * scale)
+        {
+            msgs.push(first);
+        }
+        let elapsed_ms = start.elapsed().as_millis();
+        trigger.stop();
+        handle.join().unwrap();
+
+        eprintln!(
+            "{{\"event\":\"every_ticks_wall\",\"elapsed_ms\":{},\"ticks\":{},\"scale\":{}}}",
+            elapsed_ms,
+            msgs.len(),
+            scale
+        );
+        assert!(
+            !msgs.is_empty(),
+            "expected at least 1 tick after 60ms * scale={scale}, got 0"
         );
     }
 
@@ -1661,18 +1801,23 @@ mod tests {
 
     #[test]
     fn running_subscription_stop_times_out_for_uncooperative_thread() {
+        running_subscription_stop_times_out_for_uncooperative_thread_property();
+    }
+
+    #[test]
+    fn running_subscription_stop_times_out_for_uncooperative_thread_property() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let completed = std::sync::Arc::new(AtomicBool::new(false));
         let completed_clone = completed.clone();
+        let scale = ftui_core::cx::test_time_scale();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
 
-        // The thread ignores the stop signal for 3 s; stop() honours its
-        // 250 ms join timeout, so it must return long before that. The 1.5 s
-        // bound leaves a 1.25 s margin for a loaded runner (G04.2) while
-        // still distinguishing "timed out" from "blocked for the full sleep".
+        // The thread ignores the stop signal until released (up to 10 s * scale);
+        // stop() honours its 250 ms join timeout, so it must return long before that.
         let (_signal, trigger) = StopSignal::new();
         let thread = thread::spawn(move || {
-            thread::sleep(Duration::from_secs(3));
+            let _ = release_rx.recv_timeout(Duration::from_secs(10) * scale);
             completed_clone.store(true, Ordering::SeqCst);
         });
 
@@ -1687,14 +1832,15 @@ mod tests {
         running.stop();
         let elapsed = start.elapsed();
         assert!(
-            elapsed < Duration::from_millis(1500),
+            elapsed < Duration::from_millis(1500) * ftui_core::cx::test_time_scale(),
             "stop() should not block behind an uncooperative subscription thread; took {elapsed:?}"
         );
 
-        // The detached thread keeps running to completion.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // Release the detached thread and verify it runs to completion.
+        let _ = release_tx.send(());
+        let deadline = Instant::now() + Duration::from_secs(10) * scale;
         while !completed.load(Ordering::SeqCst) && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(1));
         }
         assert!(completed.load(Ordering::SeqCst));
     }
@@ -1812,11 +1958,20 @@ mod tests {
     /// upper bound.
     #[test]
     fn contract_stop_all_bounded_time_with_uncooperative_subscriptions() {
-        let mut mgr = SubscriptionManager::<TestMsg>::new();
+        contract_stop_all_bounded_time_with_uncooperative_subscriptions_property();
+    }
 
-        // Create subscriptions that ignore the stop signal
+    #[test]
+    fn contract_stop_all_bounded_time_with_uncooperative_subscriptions_property() {
+        let mut mgr = SubscriptionManager::<TestMsg>::new();
+        let scale = ftui_core::cx::test_time_scale();
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // Create subscriptions that ignore the stop signal until released
         struct UncooperativeSub {
             id: SubId,
+            scale: u32,
+            release: std::sync::Arc<std::sync::atomic::AtomicBool>,
         }
 
         impl Subscription<TestMsg> for UncooperativeSub {
@@ -1825,14 +1980,26 @@ mod tests {
             }
 
             fn run(&self, _sender: SubscriptionSender<TestMsg>, _stop: StopSignal) {
-                // Ignore stop signal entirely, sleep for a long time
-                thread::sleep(Duration::from_secs(5));
+                let deadline = Instant::now() + Duration::from_secs(10) * self.scale;
+                while !self.release.load(std::sync::atomic::Ordering::Relaxed)
+                    && Instant::now() < deadline
+                {
+                    thread::sleep(Duration::from_millis(5));
+                }
             }
         }
 
         mgr.reconcile(vec![
-            Box::new(UncooperativeSub { id: 100 }),
-            Box::new(UncooperativeSub { id: 200 }),
+            Box::new(UncooperativeSub {
+                id: 100,
+                scale,
+                release: release.clone(),
+            }),
+            Box::new(UncooperativeSub {
+                id: 200,
+                scale,
+                release: release.clone(),
+            }),
         ]);
 
         thread::sleep(Duration::from_millis(20)); // let threads start
@@ -1840,14 +2007,14 @@ mod tests {
         let start = Instant::now();
         mgr.stop_all();
         let elapsed = start.elapsed();
+        release.store(true, std::sync::atomic::Ordering::Relaxed);
 
-        // Both subscriptions sleep 5 s and ignore the stop signal. stop_all
+        // Both subscriptions ignore the stop signal for up to 10 s * scale. stop_all
         // must give up on each after its 250 ms join timeout (about 500 ms
-        // in total); the bound is half the sleep, so it fails only when
-        // stop_all actually waited for a thread, never on a loaded runner
-        // (G04.2).
+        // in total); the bound fails only when stop_all actually waited for a thread,
+        // never on a loaded runner (G04.2).
         assert!(
-            elapsed < Duration::from_millis(2500),
+            elapsed < Duration::from_millis(2500) * ftui_core::cx::test_time_scale(),
             "stop_all took {elapsed:?}: it blocked on an uncooperative subscription"
         );
     }
@@ -2186,10 +2353,16 @@ mod tests {
     /// sequential shutdown when multiple subscriptions need to wind down.
     #[test]
     fn lifecycle_stop_all_parallel_shutdown() {
+        lifecycle_stop_all_parallel_shutdown_property();
+    }
+
+    #[test]
+    fn lifecycle_stop_all_parallel_shutdown_property() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let stop_count = std::sync::Arc::new(AtomicUsize::new(0));
         let sub_count = 4;
+        let scale = ftui_core::cx::test_time_scale();
 
         // Proves the stops overlap without timing them (G04.2): each
         // subscription's wind-down waits until every peer is also winding
@@ -2202,6 +2375,7 @@ mod tests {
         struct SlowStopSub {
             id: SubId,
             expected: usize,
+            scale: u32,
             winding_down: std::sync::Arc<AtomicUsize>,
             stranded: std::sync::Arc<AtomicUsize>,
             counter: std::sync::Arc<AtomicUsize>,
@@ -2219,7 +2393,7 @@ mod tests {
                 self.winding_down.fetch_add(1, Ordering::SeqCst);
                 let guard = Instant::now();
                 while self.winding_down.load(Ordering::SeqCst) < self.expected {
-                    if guard.elapsed() > Duration::from_secs(5) {
+                    if guard.elapsed() > Duration::from_secs(5) * self.scale {
                         self.stranded.fetch_add(1, Ordering::SeqCst);
                         return;
                     }
@@ -2235,6 +2409,7 @@ mod tests {
                 Box::new(SlowStopSub {
                     id: 1000 + i,
                     expected: sub_count as usize,
+                    scale,
                     winding_down: winding_down.clone(),
                     stranded: stranded.clone(),
                     counter: stop_count.clone(),
@@ -2249,7 +2424,7 @@ mod tests {
 
         // Every subscription completed its overlapped cleanup and none was
         // stranded waiting for a peer that was only signalled later.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(10) * scale;
         while stop_count.load(Ordering::SeqCst) + stranded.load(Ordering::SeqCst)
             < sub_count as usize
             && Instant::now() < deadline
@@ -2272,21 +2447,36 @@ mod tests {
     /// wind-down when removing multiple subscriptions at once.
     #[test]
     fn lifecycle_reconcile_removal_uses_parallel_stop() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        reconcile_removal_stops_subscriptions_in_parallel();
+    }
+
+    #[test]
+    fn reconcile_removal_stops_subscriptions_in_parallel() {
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
 
         let stop_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let scale = ftui_core::cx::test_time_scale();
+        let epoch = Instant::now();
+        let records: std::sync::Arc<Mutex<Vec<(SubId, u64, u64)>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
 
         // Same overlap proof as `lifecycle_stop_all_parallel_shutdown`: the
-        // three wind-downs wait for each other, so only a parallel signal
-        // phase lets any of them finish (G04.2).
+        // three wind-downs wait for each other and record `(id, start_ns, end_ns)`
+        // so all three `start_ns` precede the minimum `end_ns` (G04.2).
         let winding_down = std::sync::Arc::new(AtomicUsize::new(0));
         let stranded = std::sync::Arc::new(AtomicUsize::new(0));
 
         struct SlowStopSub {
             id: SubId,
+            epoch: Instant,
+            scale: u32,
             winding_down: std::sync::Arc<AtomicUsize>,
             stranded: std::sync::Arc<AtomicUsize>,
             counter: std::sync::Arc<AtomicUsize>,
+            records: std::sync::Arc<Mutex<Vec<(SubId, u64, u64)>>>,
         }
 
         impl Subscription<TestMsg> for SlowStopSub {
@@ -2298,15 +2488,22 @@ mod tests {
                 while !stop.is_stopped() {
                     thread::sleep(Duration::from_millis(5));
                 }
+                let start_ns = self.epoch.elapsed().as_nanos() as u64;
                 self.winding_down.fetch_add(1, Ordering::SeqCst);
                 let guard = Instant::now();
                 while self.winding_down.load(Ordering::SeqCst) < 3 {
-                    if guard.elapsed() > Duration::from_secs(5) {
+                    if guard.elapsed() > Duration::from_secs(5) * self.scale {
                         self.stranded.fetch_add(1, Ordering::SeqCst);
                         return;
                     }
                     thread::sleep(Duration::from_millis(1));
                 }
+                thread::sleep(Duration::from_millis(1));
+                let end_ns = self.epoch.elapsed().as_nanos() as u64;
+                self.records
+                    .lock()
+                    .unwrap()
+                    .push((self.id, start_ns, end_ns));
                 self.counter.fetch_add(1, Ordering::SeqCst);
             }
         }
@@ -2318,9 +2515,12 @@ mod tests {
                 .map(|id| -> Box<dyn Subscription<TestMsg>> {
                     Box::new(SlowStopSub {
                         id,
+                        epoch,
+                        scale,
                         winding_down: winding_down.clone(),
                         stranded: stranded.clone(),
                         counter: stop_count.clone(),
+                        records: records.clone(),
                     })
                 })
                 .collect(),
@@ -2328,9 +2528,15 @@ mod tests {
         thread::sleep(Duration::from_millis(20));
 
         // Remove all subscriptions via reconcile.
+        let remove_start = Instant::now();
         mgr.reconcile(vec![]);
+        let elapsed_ms = remove_start.elapsed().as_millis();
+        eprintln!(
+            "{{\"event\":\"reconcile_removal\",\"elapsed_ms\":{},\"scale\":{}}}",
+            elapsed_ms, scale
+        );
 
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(10) * scale;
         while stop_count.load(Ordering::SeqCst) + stranded.load(Ordering::SeqCst) < 3
             && Instant::now() < deadline
         {
@@ -2342,6 +2548,16 @@ mod tests {
             "reconcile removal stopped subscriptions sequentially"
         );
         assert_eq!(stop_count.load(Ordering::SeqCst), 3);
+
+        let recorded = records.lock().unwrap();
+        assert_eq!(recorded.len(), 3, "all 3 subscriptions must record spans");
+        let min_end_ns = recorded.iter().map(|&(_, _, end)| end).min().unwrap();
+        for &(id, start_ns, end_ns) in recorded.iter() {
+            assert!(
+                start_ns < min_end_ns,
+                "subscription {id} start_ns={start_ns} did not overlap min_end_ns={min_end_ns} (end_ns={end_ns})"
+            );
+        }
     }
 
     /// bd-1f2aw: has_panicked() must reflect the actual panic state of the thread.
@@ -2410,14 +2626,22 @@ mod tests {
     /// bd-1f2aw: join_bounded must return the handle for uncooperative threads.
     #[test]
     fn lifecycle_join_bounded_returns_handle_for_uncooperative() {
+        lifecycle_join_bounded_returns_handle_for_uncooperative_property();
+    }
+
+    #[test]
+    fn lifecycle_join_bounded_returns_handle_for_uncooperative_property() {
         use std::sync::atomic::AtomicBool;
 
-        // The thread sleeps 3 s; join_bounded gives up after 250 ms. The
-        // bound is half the sleep so it only trips when join_bounded really
-        // waited for the thread, never on a loaded runner (G04.2).
+        let scale = ftui_core::cx::test_time_scale();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+
+        // The thread waits on release_rx (up to 10 s * scale); join_bounded gives
+        // up after 250 ms. The bound fails only when join_bounded really waited
+        // for the thread, never on a loaded runner (G04.2).
         let (_signal, trigger) = StopSignal::new();
         let thread = thread::spawn(move || {
-            thread::sleep(Duration::from_secs(3));
+            let _ = release_rx.recv_timeout(Duration::from_secs(10) * scale);
         });
 
         let running = RunningSubscription {
@@ -2431,13 +2655,17 @@ mod tests {
         let start = Instant::now();
         let leftover = running.join_bounded();
         let elapsed = start.elapsed();
+        let _ = release_tx.send(());
 
         assert!(
             leftover.is_some(),
             "uncooperative thread should not join within timeout"
         );
+        if let Some(handle) = leftover {
+            let _ = handle.join();
+        }
         assert!(
-            elapsed < Duration::from_millis(1500),
+            elapsed < Duration::from_millis(1500) * ftui_core::cx::test_time_scale(),
             "join_bounded should respect the 250ms timeout, took {elapsed:?}"
         );
     }

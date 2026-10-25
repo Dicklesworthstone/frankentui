@@ -566,6 +566,20 @@ fn bench_scorer_corpus(c: &mut Criterion) {
         });
     }
 
+    let corpus_1000 = make_command_corpus(1_000);
+    group.bench_function("palette_corpus_1000_scan", |b| {
+        b.iter(|| {
+            let query = black_box("git co");
+            let mut results: Vec<_> = corpus_1000
+                .iter()
+                .map(|title| scorer.score(query, title))
+                .filter(|r| r.score > 0.0)
+                .collect();
+            results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+            black_box(&results);
+        })
+    });
+
     group.finish();
 }
 

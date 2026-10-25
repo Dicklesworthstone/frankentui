@@ -910,7 +910,7 @@ mod tests {
         rt.shutdown();
         let elapsed = started.elapsed();
         assert!(
-            elapsed < Duration::from_secs(5),
+            elapsed < Duration::from_secs(5) * ftui_core::cx::test_time_scale(),
             "render-thread shutdown should not block on a stuck writer: {elapsed:?}"
         );
 

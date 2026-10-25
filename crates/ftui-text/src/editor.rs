@@ -343,7 +343,15 @@ impl Editor {
             return;
         }
 
-        // Sanitize input: allow \n and \t, strip other control chars
+        // Sanitize input: allow \n and \t, strip other Unicode Cc control chars
+        // (such as ESC U+001B, BEL U+0007, NEL U+0085).
+        //
+        // Rationale (bd-gd9hm): `char::is_control()` intentionally covers category Cc
+        // only and preserves Unicode format/bidi characters (U+200E..U+200F,
+        // U+202A..U+202E, U+2066..U+2069) and line/paragraph separators
+        // (U+2028, U+2029). Silently stripping bidi isolates/marks would corrupt
+        // legitimate RTL (Arabic/Hebrew) pastes, and U+2028/U+2029 are handled
+        // consistently as line breaks by `ropey` and delete operations.
         let sanitized: String = text
             .chars()
             .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
@@ -2505,5 +2513,17 @@ mod proptests {
             let last_line = ed.line_count().saturating_sub(1);
             prop_assert_eq!(c.line, last_line);
         }
+    }
+
+    #[test]
+    fn insert_text_strips_cc_controls_and_preserves_rtl_bidi_and_separators() {
+        let mut ed = Editor::new();
+        // ESC (\x1b), BEL (\x07), and NEL (\u{0085}) are Cc controls and must be stripped;
+        // RTL isolate (\u{2067}...\u{2069}), RTL override (\u{202e}), and U+2028/U+2029 are preserved.
+        ed.insert_text("a\x1b\x07\u{0085}\u{2067}مرحبا\u{2069}\u{202e}b\u{2028}c\u{2029}d\t\ne");
+        assert_eq!(
+            ed.text(),
+            "a\u{2067}مرحبا\u{2069}\u{202e}b\u{2028}c\u{2029}d\t\ne"
+        );
     }
 }

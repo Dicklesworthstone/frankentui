@@ -2071,7 +2071,7 @@ mod tests {
         // steady_delay_ms (16ms).
         let decayed = det.recommended_delay_after_idle(16, 40, 35.0);
         assert!(
-            decayed < 40 && decayed >= 16,
+            (16..40).contains(&decayed),
             "expected decayed delay in [16, 40), got {decayed}"
         );
     }

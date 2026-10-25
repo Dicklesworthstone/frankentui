@@ -336,6 +336,16 @@ impl BenchmarkGate {
             if metric.starts_with('_') {
                 continue;
             }
+            // Non-criterion entries (kind: "bytes" or "allocs") use budget_expr/budget
+            // rather than nanosecond percentile fields.
+            if value
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("criterion")
+                != "criterion"
+            {
+                continue;
+            }
             let budget = value.get(percentile).and_then(|v| v.as_f64())?;
             let tolerance_pct = match value.get("threshold_pct") {
                 Some(value) => value.as_f64()?,
@@ -1021,6 +1031,14 @@ mod tests {
             Measurement::new("diff_200x60_sparse", 42_000.0).unit("ns"),
             Measurement::new("text_width_non_ascii", 15.0).unit("ns"),
             Measurement::new("text_width_non_ascii_uncached", 65.0).unit("ns"),
+            Measurement::new("runtime_render_frame_headless_80x24", 40_000.0).unit("ns"),
+            Measurement::new("virtualized_scroll_to_100k", 50.0).unit("ns"),
+            Measurement::new("present_80x24_sparse", 1_000_000.0).unit("ns"),
+            Measurement::new("present_120x40_sparse", 2_000_000.0).unit("ns"),
+            Measurement::new("present_200x60_sparse", 6_000_000.0).unit("ns"),
+            Measurement::new("input_parse_dispatch_event", 25_000.0).unit("ns"),
+            Measurement::new("wrap_200_lines", 500_000.0).unit("ns"),
+            Measurement::new("palette_corpus_1000_scan", 2_500_000.0).unit("ns"),
         ]
     }
 
@@ -1069,7 +1087,7 @@ mod tests {
             "all runtime metrics should pass: {}",
             result.summary()
         );
-        assert_eq!(result.pass_count, 17);
+        assert_eq!(result.pass_count, 25);
         assert!(result.validation_errors.is_empty());
     }
 
@@ -1089,7 +1107,7 @@ mod tests {
         let result = gate.evaluate(&measurements);
         assert!(!result.passed(), "regression should fail the gate");
         assert_eq!(result.fail_count, 1);
-        assert_eq!(result.pass_count, 16);
+        assert_eq!(result.pass_count, 24);
         assert!(result.validation_errors.is_empty());
 
         let failures = result.failures();

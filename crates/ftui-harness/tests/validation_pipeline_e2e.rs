@@ -333,6 +333,14 @@ fn benchmark_gate_loads_real_baseline_json() {
         Measurement::new("diff_200x60_sparse", 42_000.0).unit("ns"),
         Measurement::new("text_width_non_ascii", 15.0).unit("ns"),
         Measurement::new("text_width_non_ascii_uncached", 65.0).unit("ns"),
+        Measurement::new("runtime_render_frame_headless_80x24", 40_000.0).unit("ns"),
+        Measurement::new("virtualized_scroll_to_100k", 50.0).unit("ns"),
+        Measurement::new("present_80x24_sparse", 1_000_000.0).unit("ns"),
+        Measurement::new("present_120x40_sparse", 2_000_000.0).unit("ns"),
+        Measurement::new("present_200x60_sparse", 6_000_000.0).unit("ns"),
+        Measurement::new("input_parse_dispatch_event", 25_000.0).unit("ns"),
+        Measurement::new("wrap_200_lines", 500_000.0).unit("ns"),
+        Measurement::new("palette_corpus_1000_scan", 2_500_000.0).unit("ns"),
     ];
 
     let result = gate.evaluate(&measurements);
@@ -341,13 +349,13 @@ fn benchmark_gate_loads_real_baseline_json() {
         "all under-budget measurements should pass: {}",
         result.summary()
     );
-    assert_eq!(result.pass_count, 17);
+    assert_eq!(result.pass_count, 25);
 
     // The old ten-metric fixture silently omitted the required runtime, diff and
     // text-width measurements; it must no longer certify the full baseline.
     let incomplete = gate.evaluate(&measurements[..10]);
     assert!(!incomplete.passed());
-    assert_eq!(incomplete.validation_errors.len(), 7);
+    assert_eq!(incomplete.validation_errors.len(), 15);
 }
 
 // ============================================================================

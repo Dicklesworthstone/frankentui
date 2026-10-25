@@ -949,9 +949,9 @@ mod tests {
             let _ = pipeline.compute_ordering();
         }
         let elapsed = start.elapsed();
-        // 1000 orderings of 100 validators should be < 100ms.
+        // 1000 orderings of 100 validators should be < 100ms * test_time_scale().
         assert!(
-            elapsed < Duration::from_millis(100),
+            elapsed < Duration::from_millis(100) * ftui_core::cx::test_time_scale(),
             "ordering overhead too high: {elapsed:?} for 1000 iterations"
         );
     }

@@ -323,6 +323,19 @@
     "threshold_pct": 15
   },
 
+  "palette_corpus_1000_scan": {
+    "description": "Command palette BayesianScorer::fast() scan over 1000-item corpus (p95 <= 5ms budget)",
+    "criterion_name": "command_palette/score_corpus/palette_corpus_1000_scan",
+    "bench_file": "widget_bench",
+    "crate": "ftui-widgets",
+    "slo_metric": "widget_render_p99_us",
+    "p50_ns": 2500000,
+    "p95_ns": 5000000,
+    "p99_ns": 7500000,
+    "p999_ns": 15000000,
+    "threshold_pct": 15
+  },
+
   "bytes_emitted_sparse_5pct": {
     "description": "ANSI bytes emitted on 80x24 @ 5% change (<= 8 * cells_changed + 64)",
     "kind": "bytes",

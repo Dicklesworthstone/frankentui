@@ -118,3 +118,8 @@ Do NOT create trait objects or generics solely to swap real types for test doubl
 | Input parsing | Direct InputParser + byte sequences |
 | Runtime update/view loop | ProgramSimulator (headless) |
 | Full integration (user-visible behavior) | E2E PTY scripts |
+
+## Timing Assertions
+
+Unit tests must not assert wall-clock throughput on shared runners. Use [`LabClock`](../../crates/ftui-core/src/cx.rs) for deterministic timer ordering and tick counts, Criterion benchmarks with `tests/baseline.json` rows (enforced by `scripts/perf_regression_gate.sh`) for throughput/latency SLOs, and `ftui_core::cx::test_time_scale()` (`FTUI_TEST_TIME_SCALE`, default `1`, CI/DSR `4`) to scale residual sleep-based liveness or hang-guard bounds.
+

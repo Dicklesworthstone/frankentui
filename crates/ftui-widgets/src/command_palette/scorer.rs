@@ -3843,19 +3843,54 @@ mod perf_tests {
 
     #[test]
     fn perf_corpus_1000_under_budget() {
+        perf_corpus_1000_scores_and_sorts();
+    }
+
+    #[test]
+    fn perf_corpus_1000_scores_and_sorts() {
         let scorer = BayesianScorer::fast();
         let corpus = make_corpus(1_000);
+        let mut last_results: Vec<(&str, MatchResult)> = Vec::new();
         let stats = measure_stats_us(20, || {
-            let mut results: Vec<_> = corpus
+            let mut results: Vec<(&str, MatchResult)> = corpus
                 .iter()
-                .map(|t| scorer.score("git co", t))
-                .filter(|r| r.score > 0.0)
+                .map(|t| (t.as_str(), scorer.score("git co", t)))
+                .filter(|(_, r)| r.score > 0.0)
                 .collect();
-            results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+            results.sort_by(|a, b| b.1.score.partial_cmp(&a.1.score).unwrap());
             std::hint::black_box(&results);
+            last_results = results;
         });
+        assert!(
+            !last_results.is_empty(),
+            "1000-item corpus must return matches"
+        );
+        assert!(
+            last_results
+                .iter()
+                .all(|(_, r)| r.score.is_finite() && r.score > 0.0),
+            "all matched scores must be finite and positive"
+        );
+        assert!(
+            last_results
+                .windows(2)
+                .all(|pair| pair[0].1.score >= pair[1].1.score),
+            "results must be sorted descending by score"
+        );
+        assert!(
+            last_results[0]
+                .0
+                .to_ascii_lowercase()
+                .contains("git: commit"),
+            "top result for 'git co' must match 'Git: Commit', got {:?}",
+            last_results[0].0
+        );
+        let ts_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
         eprintln!(
-            "{{\"ts\":\"2026-02-04T00:00:00Z\",\"event\":\"palette_corpus_1000\",\"samples\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"mean_us\":{:.2},\"variance_us\":{:.2}}}",
+            "{{\"ts\":\"{ts_ms}\",\"event\":\"palette_corpus_1000\",\"samples\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"mean_us\":{:.2},\"variance_us\":{:.2}}}",
             stats.samples,
             stats.p50_us,
             stats.p95_us,

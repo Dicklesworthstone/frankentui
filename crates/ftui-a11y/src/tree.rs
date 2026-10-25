@@ -833,6 +833,18 @@ fn diff_state(
     }
 }
 
+/// Classifies live-region content changes (`LiveRegionChanged` / `LiveContentChanged`).
+///
+/// Rationale for state-field partitioning (`bd-inkss`):
+/// - `busy`, `checked`, `expanded`, `selected`, and spoken values (`value_text` /
+///   `value_now` via [`announced_value_changed`]) trigger `LiveContentChanged`
+///   on explicit live regions even when the node is not focused.
+/// - `disabled`, `readonly`, and `required` are intentionally excluded here so
+///   unfocused rows in a refreshing table or form do not chatter; when those
+///   flags change on the currently focused node, [`changed_control_states`]
+///   surfaces them as [`AnnouncementReason::FocusedStateChanged`].
+/// - `focused` is announced separately by [`AnnouncementReason::FocusChanged`].
+/// - `value_min` and `value_max` are range bounds metadata, not user-facing events.
 fn announcement_reason(node: &A11yNodeInfo, changes: &[A11yChange]) -> Option<AnnouncementReason> {
     if changes
         .iter()

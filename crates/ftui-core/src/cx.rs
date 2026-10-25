@@ -119,6 +119,24 @@ impl Default for LabClock {
     }
 }
 
+/// Read the `FTUI_TEST_TIME_SCALE` multiplier for sleep-based liveness bounds.
+///
+/// Defaults to `1` when unset, empty, zero, or unparseable; CI/DSR verification
+/// may set `FTUI_TEST_TIME_SCALE=4` on shared runners so hang-guard and liveness
+/// bounds scale proportionally without affecting deterministic [`LabClock`] tests.
+#[must_use]
+pub fn test_time_scale() -> u32 {
+    static SCALE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *SCALE.get_or_init(|| test_time_scale_from_reader(|key| std::env::var(key).ok()))
+}
+
+fn test_time_scale_from_reader(read: impl FnOnce(&str) -> Option<String>) -> u32 {
+    read("FTUI_TEST_TIME_SCALE")
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .filter(|&scale| scale >= 1)
+        .unwrap_or(1)
+}
+
 // ─── Inner shared state ──────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -792,6 +810,30 @@ mod tests {
         let err = update_with_optional_cx(None, &mut model, 1).expect_err("missing cx");
         assert_eq!(err, MissingCxError::MissingContext);
         assert_eq!(model.value, 0, "state should remain unchanged without cx");
+    }
+
+    #[test]
+    fn test_time_scale_defaults_to_one() {
+        assert_eq!(test_time_scale_from_reader(|_| None), 1);
+        assert_eq!(test_time_scale_from_reader(|_| Some(String::new())), 1);
+        assert_eq!(test_time_scale_from_reader(|_| Some("0".to_string())), 1);
+        assert_eq!(
+            test_time_scale_from_reader(|_| Some("invalid".to_string())),
+            1
+        );
+        assert!(test_time_scale() >= 1);
+    }
+
+    #[test]
+    fn test_time_scale_parses_env() {
+        assert_eq!(
+            test_time_scale_from_reader(|key| {
+                assert_eq!(key, "FTUI_TEST_TIME_SCALE");
+                Some("4".to_string())
+            }),
+            4
+        );
+        assert_eq!(test_time_scale_from_reader(|_| Some(" 8 ".to_string())), 8);
     }
 
     #[cfg(feature = "tracing-json")]
