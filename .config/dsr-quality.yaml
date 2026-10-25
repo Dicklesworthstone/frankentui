@@ -36,6 +36,8 @@ tools:
       - python3 -B scripts/check_readme_claims.py --schema-check
       - python3 -B scripts/check_readme_claims.py --proof-refs
       - python3 -B scripts/check_readme_claims.py --experimental-check
+      - python3 -B scripts/check_readme_claims.py --check
+      - python3 -B -m unittest scripts/tests/test_check_readme_claims.py
       - python3 -B scripts/check_env_docs.py --self-test
       - python3 -B scripts/check_env_docs.py
       - python3 -B scripts/check_close_evidence.py --self-test

@@ -1,7 +1,8 @@
 # FrankenTUI Service Level Objectives
 #
 # Machine-readable SLO definition for data-plane and decision-plane budgets.
-# CI validates this schema and runs deterministic replay exercising safe-mode.
+# Validated by crates/ftui-runtime/tests/slo_yaml_validation.rs (--features experimental);
+# ftui_runtime::slo is experimental and not wired into Program.
 #
 # Metric types:
 #   latency    - microseconds (p50/p95/p99/p999)

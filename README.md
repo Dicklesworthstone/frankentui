@@ -34,7 +34,7 @@ The **primary** way to see what the system can do is the demo showcase:
 `cargo run -p ftui-demo-showcase` (not the harness).
 
 ```bash
-# Download source with curl (no installer yet)
+# Download source with curl (or grab prebuilt showcase binaries + SHA256SUMS from GitHub Releases)
 curl -fsSL https://codeload.github.com/Dicklesworthstone/frankentui/tar.gz/main | tar -xz
 cd frankentui-main
 
@@ -289,7 +289,7 @@ fn main() -> std::io::Result<()> {
 | Pane workspaces (drag/resize/dock) | ✅ Built‑in | ❌ | ❌ | ❌ |
 | Web/WASM backend | ✅ Shared Rust core | ❌ | ❌ | ❌ |
 | Bayesian diff strategy | ✅ Adaptive | ❌ Fixed | ❌ Fixed | ❌ N/A |
-| Shadow‑run validation harness | ✅ Built‑in | ❌ | ❌ | ❌ |
+| Shadow‑run validation harness | ✅ Harness workflow (`ShadowRun`) | ❌ | ❌ | ❌ |
 | Snapshot/time‑travel harness | ✅ Built‑in | ❌ | ❌ | ❌ |
 | Widget count | <!-- fact:widgets -->70<!-- /fact --> direct impls (<!-- fact:widget_types -->55<!-- /fact --> types; <!-- fact:widgets_workspace -->93<!-- /fact --> workspace-wide) | ~20 | ~12 | 0 |
 | Demo screens | <!-- fact:demo_screens -->45<!-- /fact --> | ~5 | ~5 | 0 |
@@ -2362,7 +2362,7 @@ ftui-runtime = { version = "0.9", features = ["experimental"] }
 | `ftui-runtime` | `evidence_bridges` | Convert domain-specific decision types into unified evidence ledger records | `experimental` |
 | `ftui-runtime` | `flake_detector` | Anytime-valid test martingale detector for flaky timing regressions in E2E tests | `experimental` |
 | `ftui-runtime` | `flat_combine` | Caller-driven flat combining for batched operation dispatch | `experimental` |
-| `ftui-runtime` | `ivm` | Incremental View Maintenance (IVM) delta-propagation DAG for derived render state | `experimental` |
+| `ftui-runtime` | `ivm` | Incremental View Maintenance (IVM) signed-tuple delta algebra, DAG topology, and view operators (no propagation engine) | `experimental` |
 | `ftui-runtime` | `lens` | Bidirectional algebraic lenses for state-widget binding | `experimental` |
 | `ftui-runtime` | `policy_config` | Policy-as-data configuration capturing tunable parameters across the decision stack | `experimental` |
 | `ftui-runtime` | `policy_registry` | Thread-safe registry of named policy configurations with lock-free reads and atomic hot-swap | `experimental` |
@@ -3075,7 +3075,7 @@ The idea is to stop recomputing layouts, styled text, and visibility flags from 
 
 What does exist, and is tested: the signed-tuple delta algebra (`(key, weight, logical_time)` with cancellation), a DAG with topological ordering and cycle detection, a fallback-policy predicate, and two `IncrementalView` implementations (`StyleResolutionView`, `FilteredListView`). Useful groundwork; not something you can turn on.
 
-Before anyone builds the engine, note that the render cost surface measured on 2026-09-19 found `buffer_diff` to be the **cheapest** pipeline stage at 4.5–9.1% of the frame, while `cell_mutation` and `presenter_emit` dominate ([docs/perf/cost_surface_stage_dominance_2026-09-19.md](docs/perf/cost_surface_stage_dominance_2026-09-19.md)). An incremental layer that avoids recomputation has to beat simply doing the work — which is the measurement that stopped the e-graph. Tracked in `bd-lksq7`.
+Before anyone builds the engine, note that the render cost surface measured on 2026-09-19 found `buffer_diff` to be the **cheapest** pipeline stage at 4.5–9.1% of the frame, while `cell_mutation` and `presenter_emit` dominate ([docs/perf/cost_surface_stage_dominance_2026-09-19.md](docs/perf/cost_surface_stage_dominance_2026-09-19.md)). An incremental layer that avoids recomputation has to beat simply doing the work — which is the measurement that stopped the e-graph. Scoped permanently to the delta algebra, DAG topology, and view library (`bd-lksq7`).
 
 ---
 

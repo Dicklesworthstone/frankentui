@@ -9,6 +9,7 @@ future full --check gate: a structurally valid pending row is not proof.
 import argparse
 from collections import Counter
 from datetime import date
+import difflib
 import json
 from pathlib import Path
 import re
@@ -21,6 +22,22 @@ KINDS = set('count api constant default event file algorithm example ci env stat
 DECISIONS = {'CODE', 'DOC', 'DOC+quarantine', 'regenerate', 'n/a'}
 STATUSES = {'proven', 'pending-code', 'pending-doc', 'retracted', 'allowlisted'}
 PROOFS = {'test', 'path', 'ident', 'cmd', 'job', 'count', 'manual', 'bead'}
+
+PROOF_GRAMMAR = """\
+`test:<crate>::<name>` — a named test in the retained test inventory.
+`path:<repo-relative>` — a repository path exists; proves existence only.
+`ident:<Rust identifier or string>` — production source contains the identifier.
+`cmd:<shell command that must exit 0>` — an explicitly permitted, bounded command.
+`job:<workflow>:<job>` — historical syntax only; not an executable proof under DSR-only policy.
+`count:<python expression over repo files>` — a restricted counting expression.
+`manual:<YYYY-MM-DD>:<who>` — a dated manual verification, expires after 90 days.
+`bead:<slug>` — an unresolved implementation obligation, not a passing proof."""
+
+ALLOWLIST_LINE_RE = re.compile(
+    r'^([^:\s#][^:]*):(.+?)\s+#\s+(bd-[a-z0-9.-]+)\s+(.+)$'
+)
+MIN_PROVEN_RATIO = 0.60
+MANUAL_EXPIRY_DAYS = 90
 
 
 def cells(line):
@@ -137,6 +154,8 @@ def validate(text):
                 problems.append(
                     'proven row cannot rely solely on path:/ident: proofs (proof-class inflation)'
                 )
+            if 'bead' in proof_kinds:
+                problems.append('proven row cannot cite an unresolved bead: proof')
         if problems:
             errors.append(f'line {number} ({ident}): ' + '; '.join(problems))
         rows.append(row)
@@ -564,6 +583,437 @@ def experimental_modules(readme_text):
     return modules
 
 
+def check_proof_grammar_sync(ledger_text):
+    """Verify PROOF_GRAMMAR matches the `## Proof grammar` section of docs/claims-ledger.md."""
+    errors = []
+    if PROOF_GRAMMAR not in ledger_text:
+        errors.append(
+            'PROOF_GRAMMAR in scripts/check_readme_claims.py is out of sync with '
+            '`## Proof grammar` in docs/claims-ledger.md.'
+        )
+    return errors
+
+
+def load_bead_statuses(issues_path):
+    """Read `.beads/issues.jsonl` and return `{bead_id: status}`."""
+    statuses = {}
+    if not issues_path or not issues_path.exists():
+        return statuses
+    try:
+        for line in issues_path.read_text(encoding='utf-8', errors='replace').splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                obj = json.loads(stripped)
+            except ValueError:
+                continue
+            bid = obj.get('id')
+            status = obj.get('status')
+            if bid and status:
+                statuses[bid] = status
+    except OSError:
+        pass
+    return statuses
+
+
+def parse_allowlist(text, open_beads=None):
+    """Parse `docs/claims-allowlist.txt` and validate `<doc>:<pattern> # <bead-id> <reason>`.
+
+    If `open_beads` (set of open/in_progress bead IDs) is supplied, any entry
+    whose bead is not in `open_beads` produces an error.
+    """
+    entries = []
+    errors = []
+    for line_no, raw in enumerate(text.splitlines(), 1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        match = ALLOWLIST_LINE_RE.match(stripped)
+        if not match:
+            errors.append(
+                f'allowlist line {line_no}: expected `<doc>:<line-or-pattern> # <bead-id> <reason>`, '
+                f'got `{stripped}`'
+            )
+            continue
+        doc, pattern, bead, reason = (
+            match.group(1).strip(),
+            match.group(2).strip(),
+            match.group(3).strip(),
+            match.group(4).strip(),
+        )
+        if open_beads is not None and bead not in open_beads:
+            errors.append(
+                f'allowlist line {line_no}: `{doc}:{pattern}` cites closed or unknown bead `{bead}`'
+            )
+        entries.append(
+            {
+                'line': line_no,
+                'doc': doc,
+                'pattern': pattern,
+                'bead': bead,
+                'reason': reason,
+            }
+        )
+    return entries, errors
+
+
+def check_owners(rows, bead_statuses):
+    """Verify every ledger row's `owner` exists, and pending rows point at open beads."""
+    errors = []
+    if not bead_statuses:
+        return errors
+    open_statuses = {'open', 'in_progress'}
+    for row in rows:
+        owner = row.get('owner', '-').strip()
+        ident = row.get('id', '?')
+        status = row.get('status', '')
+        if owner == '-':
+            if row.get('decision') == 'CODE' or status in {'pending-code', 'pending-doc'}:
+                errors.append(f'{ident}: row with status `{status}` requires a bead owner')
+            continue
+        if owner not in bead_statuses:
+            errors.append(f'{ident}: owner bead `{owner}` does not exist in .beads/issues.jsonl')
+            continue
+        if status in {'pending-code', 'pending-doc'} and bead_statuses[owner] not in open_statuses:
+            errors.append(
+                f'{ident}: status is `{status}` but owner bead `{owner}` is `{bead_statuses[owner]}` '
+                f'(must be open or in_progress)'
+            )
+    return errors
+
+
+def check_all_proofs(rows, crates_dir, root, today=None):
+    """Run full proof verification (`test:`, `path:`, `ident:`, `manual:`, `bead:`)."""
+    errors = list(check_proof_refs(rows, crates_dir, root))
+    today = today or date.today()
+
+    # Collect searchable corpus for `ident:` proofs lazily on demand.
+    ident_Needles = {
+        proof.partition(':')[2].strip()
+        for row in rows
+        for proof in row['proof'].split('; ')
+        if proof.startswith('ident:') and proof.partition(':')[2].strip()
+    }
+    found_idents = set()
+    if ident_Needles and root.exists():
+        search_files = list(crates_dir.glob('*/**/*.rs')) if crates_dir.exists() else []
+        for extra in ('README.md', 'AGENTS.md'):
+            candidate = root / extra
+            if candidate.exists():
+                search_files.append(candidate)
+        docs_dir = root / 'docs'
+        if docs_dir.exists():
+            search_files.extend(docs_dir.glob('**/*.md'))
+        remaining = set(ident_Needles)
+        for path in search_files:
+            if not remaining:
+                break
+            try:
+                content = path.read_text(encoding='utf-8', errors='replace')
+            except OSError:
+                continue
+            matched = {needle for needle in remaining if needle in content}
+            found_idents.update(matched)
+            remaining -= matched
+
+    for row in rows:
+        ident = row['id']
+        status = row['status']
+        proofs = [p.strip() for p in row['proof'].split('; ') if p.strip()]
+        non_manual_kinds = {
+            p.partition(':')[0]
+            for p in proofs
+            if ':' in p and p.partition(':')[0] not in {'manual', 'bead'}
+        }
+        for proof in proofs:
+            kind, _, payload = proof.partition(':')
+            payload = payload.strip()
+            if kind == 'ident' and ident_Needles and root.exists():
+                if payload not in found_idents:
+                    errors.append(
+                        f'{ident}: cites `ident:{payload}`, which was not found in crates/ or docs.'
+                    )
+            elif kind == 'manual':
+                day_str, _, _ = payload.partition(':')
+                if iso_date(day_str) and status == 'proven' and not non_manual_kinds:
+                    age_days = (today - date.fromisoformat(day_str)).days
+                    if age_days > MANUAL_EXPIRY_DAYS:
+                        errors.append(
+                            f'{ident}: proven row relies solely on expired manual proof '
+                            f'`{proof}` ({age_days} days old > {MANUAL_EXPIRY_DAYS}).'
+                        )
+            elif kind == 'bead' and status == 'proven':
+                errors.append(
+                    f'{ident}: proven row cannot cite unresolved `{proof}`.'
+                )
+    return errors
+
+
+def check_doc_locations(rows, root, docs_list=None, allowlist_entries=None):
+    """Verify ledger location files exist and S/N anchors resolve in scanned docs."""
+    errors = []
+    doc_cache = {}
+    allowlisted_patterns = {}
+    for entry in allowlist_entries or []:
+        allowlisted_patterns.setdefault(entry['doc'], set()).add(entry['pattern'])
+
+    for row in rows:
+        ident = row['id']
+        loc_file, _, anchor = row['location'].partition(' :: ')
+        loc_file = loc_file.strip().split(':')[0]
+        anchor = anchor.strip()
+        if docs_list and loc_file not in docs_list:
+            continue
+        target = root / loc_file
+        if loc_file not in doc_cache:
+            if not target.exists():
+                errors.append(f'{ident}: location file `{loc_file}` does not exist.')
+                doc_cache[loc_file] = None
+                continue
+            try:
+                doc_cache[loc_file] = target.read_text(encoding='utf-8', errors='replace')
+            except OSError:
+                doc_cache[loc_file] = None
+                continue
+        content = doc_cache[loc_file]
+        if content is None:
+            continue
+        # S and N rows track current headings/capabilities in live docs (unless retracted or allowlisted).
+        if ident.startswith(('S', 'N')) and row['status'] == 'proven':
+            if anchor not in content and anchor not in allowlisted_patterns.get(loc_file, set()):
+                errors.append(
+                    f'{ident}: anchor `{anchor}` not found in `{loc_file}`.'
+                )
+    return errors
+
+
+def extract_markdown_rust_block(md_text, section_heading):
+    """Extract the first ```rust fenced block under `## <section_heading>`."""
+    in_section = False
+    in_rust = False
+    code_lines = []
+    heading_re = re.compile(rf'^##+\s+{re.escape(section_heading)}(?:\b.*)?$')
+    for line in md_text.splitlines():
+        if heading_re.match(line.strip()):
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith('## ') and not in_rust:
+                break
+            if not in_rust and line.strip().startswith('```rust'):
+                in_rust = True
+                continue
+            if in_rust:
+                if line.strip() == '```':
+                    return '\n'.join(code_lines)
+                code_lines.append(line)
+    return None
+
+
+def check_example_identity(md_path, section_heading, rs_path):
+    """Compare the first ```rust block under `section_heading` in `md_path` against `rs_path`."""
+    md_text = Path(md_path).read_text(encoding='utf-8')
+    rs_text = Path(rs_path).read_text(encoding='utf-8')
+    block = extract_markdown_rust_block(md_text, section_heading)
+    if block is None:
+        return False, [f'No ```rust block found under heading "{section_heading}" in {md_path}']
+    norm_md = [line.rstrip() for line in block.strip().splitlines()]
+    norm_rs = [line.rstrip() for line in rs_text.strip().splitlines()]
+    if norm_md == norm_rs:
+        return True, []
+    diff = list(
+        difflib.unified_diff(
+            norm_rs,
+            norm_md,
+            fromfile=str(rs_path),
+            tofile=f'{md_path}::{section_heading}',
+            lineterm='',
+        )
+    )
+    return False, diff
+
+
+WIDGET_IMPL_RE = re.compile(
+    r'\bimpl(?:\s*<[^>]*>)?\s+(?:[\w:]+::)?(StatefulWidget|Widget)\s+for\s+([A-Za-z_][A-Za-z0-9_]*)'
+)
+
+
+def count_widgets(crates_dir):
+    """Count Widget and StatefulWidget implementations in ftui-widgets and workspace-wide."""
+    ftui_widgets_impls = 0
+    ftui_widgets_types = set()
+    workspace_impls = 0
+    workspace_types = set()
+    for rs_file in sorted(Path(crates_dir).glob('*/src/**/*.rs')):
+        if rs_file.name.endswith('_test.rs') or rs_file.name == 'tests.rs':
+            continue
+        try:
+            raw = rs_file.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        prod = strip_test_regions(raw)
+        crate_name = rs_file.relative_to(crates_dir).parts[0]
+        for match in WIDGET_IMPL_RE.finditer(prod):
+            type_name = match.group(2)
+            workspace_impls += 1
+            workspace_types.add((crate_name, type_name))
+            if crate_name == 'ftui-widgets':
+                ftui_widgets_impls += 1
+                ftui_widgets_types.add(type_name)
+    return {
+        'ftui_widgets_impls': ftui_widgets_impls,
+        'ftui_widgets_types': len(ftui_widgets_types),
+        'workspace_impls': workspace_impls,
+        'workspace_types': len(workspace_types),
+    }
+
+
+def count_lines(crates_dir):
+    """Count Rust source lines and files under `crates/`."""
+    total_lines = 0
+    total_files = 0
+    for rs_file in sorted(Path(crates_dir).glob('*/**/*.rs')):
+        try:
+            text = rs_file.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        total_files += 1
+        total_lines += len(text.splitlines())
+    return {'files': total_files, 'lines': total_lines}
+
+
+def check_telemetry_literals(readme_path, crates_dir):
+    """Verify evidence-sink event names in README.md exist in crates/."""
+    readme_text = Path(readme_path).read_text(encoding='utf-8')
+    schema_path = Path(crates_dir) / 'ftui-runtime/src/telemetry_schema.rs'
+    corpus = ''
+    if schema_path.exists():
+        corpus += schema_path.read_text(encoding='utf-8', errors='replace')
+    for extra in Path(crates_dir).glob('*/src/**/*.rs'):
+        try:
+            corpus += '\n' + extra.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+    errors = []
+    in_evidence = False
+    for line in readme_text.splitlines():
+        if line.startswith('## ') or line.startswith('### '):
+            in_evidence = 'Evidence Sink' in line
+            continue
+        if in_evidence and line.startswith('| `'):
+            parts = [c.strip() for c in line.strip('|').split('|')]
+            if parts and parts[0].startswith('`') and parts[0].endswith('`'):
+                event_name = parts[0].strip('`')
+                if f'"{event_name}"' not in corpus:
+                    errors.append(
+                        f'README Evidence Sink event `{event_name}` not found as string literal in crates/'
+                    )
+    return errors
+
+
+def check_bench_block_hash(root):
+    """Verify README benchmark block matches docs/perf artifacts via render_perf_readme.py."""
+    scripts_dir = str(Path(__file__).resolve().parent)
+    added = scripts_dir not in sys.path
+    if added:
+        sys.path.insert(0, scripts_dir)
+    try:
+        import render_perf_readme
+        root_p = Path(root)
+        perf_dir = root_p / 'docs/perf'
+        rc = render_perf_readme.run_tool(
+            perf_dir / 'regression_report_2026-10-19.jsonl',
+            perf_dir / 'bytes_report_2026-10-19.json',
+            perf_dir / 'alloc_report_2026-10-19.json',
+            perf_dir / 'baseline_2026-10-19.md',
+            root_p / 'README.md',
+            perf_dir / 'README_BLOCK.sha256',
+            check_only=True,
+        )
+        if rc != 0:
+            return ['README.md benchmark block or docs/perf baseline drifted']
+        return []
+    except Exception as exc:  # pragma: no cover
+        return [f'bench block check failed: {exc}']
+    finally:
+        if added and scripts_dir in sys.path:
+            sys.path.remove(scripts_dir)
+
+
+def check_compat_matrix_fresh(root):
+    """Verify every E2E script path cited in docs/compat-matrix.md exists."""
+    matrix_path = Path(root) / 'docs/compat-matrix.md'
+    if not matrix_path.exists():
+        matrix_path = Path(root) / 'docs/compatibility-matrix.md'
+    if not matrix_path.exists():
+        return ['docs/compat-matrix.md does not exist']
+    text = matrix_path.read_text(encoding='utf-8')
+    errors = []
+    for match in re.finditer(r'\b(tests/e2e/scripts/[A-Za-z0-9_.-]+\.(?:sh|py))\b', text):
+        rel = match.group(1)
+        if not (Path(root) / rel).exists():
+            errors.append(f'{matrix_path.name} cites missing E2E script `{rel}`')
+    return errors
+
+
+def run_full_check(
+    ledger_path,
+    readme_path,
+    crates_dir,
+    allowlist_path=None,
+    issues_path=None,
+    docs_list=None,
+    today=None,
+):
+    """Run the complete G06 claims gate (`--check`)."""
+    root = Path(crates_dir).resolve().parent
+    ledger_text = Path(ledger_path).read_text(encoding='utf-8')
+    rows, errors = validate(ledger_text)
+    errors.extend(check_proof_grammar_sync(ledger_text))
+    if not errors:
+        errors.extend(check_all_proofs(rows, Path(crates_dir), root, today=today))
+    bead_statuses = load_bead_statuses(Path(issues_path)) if issues_path else {}
+    if bead_statuses:
+        errors.extend(check_owners(rows, bead_statuses))
+    open_beads = (
+        {bid for bid, st in bead_statuses.items() if st in {'open', 'in_progress'}}
+        if bead_statuses
+        else None
+    )
+    allowlist_entries = []
+    if allowlist_path and Path(allowlist_path).exists():
+        allow_text = Path(allowlist_path).read_text(encoding='utf-8')
+        allowlist_entries, allow_errors = parse_allowlist(allow_text, open_beads=open_beads)
+        errors.extend(allow_errors)
+    if Path(readme_path).exists():
+        _, exp_errors = check_experimental(Path(readme_path), Path(crates_dir), rows)
+        errors.extend(exp_errors)
+    errors.extend(check_doc_locations(rows, root, docs_list=docs_list, allowlist_entries=allowlist_entries))
+
+    statuses = dict(Counter(r['status'] for r in rows))
+    total = len(rows)
+    proven = statuses.get('proven', 0)
+    proven_ratio = (proven / total) if total else 0.0
+    if total and proven_ratio < MIN_PROVEN_RATIO:
+        errors.append(
+            f'proven ratio {proven}/{total} ({proven_ratio:.1%}) is below minimum '
+            f'{MIN_PROVEN_RATIO:.0%} threshold'
+        )
+    summary = {
+        'scope': 'full-check',
+        'ledger': str(ledger_path),
+        'rows': total,
+        'statuses': statuses,
+        'proven_ratio': round(proven_ratio, 4),
+        'allowlisted': len(allowlist_entries),
+        'coverage_verified': True,
+        'proofs_verified': not bool(errors),
+        'errors': errors,
+    }
+    return summary, errors
+
+
 def self_test():
     header = '| ' + ' | '.join(COLUMNS) + ' |\n|' + '---|' * 9 + '\n'
     row = '| C01 | A \\| B | README.md :: A | api | CODE | bd-example | bead:bd-example | pending-code | - |\n'
@@ -699,18 +1149,101 @@ def self_test():
 
 
 def main():
+    root_default = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument('--schema-check', action='store_true')
     action.add_argument('--self-test', action='store_true')
     action.add_argument('--experimental-check', action='store_true')
     action.add_argument('--proof-refs', action='store_true')
-    parser.add_argument('--ledger', type=Path, default=Path(__file__).resolve().parents[1] / 'docs/claims-ledger.md')
-    parser.add_argument('--readme', type=Path, default=Path(__file__).resolve().parents[1] / 'README.md')
-    parser.add_argument('--crates', type=Path, default=Path(__file__).resolve().parents[1] / 'crates')
+    action.add_argument('--check', action='store_true')
+    action.add_argument('--report', action='store_true')
+    action.add_argument('--verify-owners', action='store_true')
+    action.add_argument('--example-identity', nargs=3, metavar=('MD', 'SECTION', 'RS'))
+    action.add_argument('--count-widgets', action='store_true')
+    action.add_argument('--count-lines', action='store_true')
+    action.add_argument('--telemetry-literals', action='store_true')
+    action.add_argument('--bench-block-hash', action='store_true')
+    action.add_argument('--compat-matrix-fresh', action='store_true')
+    parser.add_argument('--ledger', type=Path, default=root_default / 'docs/claims-ledger.md')
+    parser.add_argument('--readme', type=Path, default=root_default / 'README.md')
+    parser.add_argument('--crates', type=Path, default=root_default / 'crates')
+    parser.add_argument('--allowlist', type=Path, default=root_default / 'docs/claims-allowlist.txt')
+    parser.add_argument('--issues', type=Path, default=root_default / '.beads/issues.jsonl')
+    parser.add_argument('--docs', type=str, default=None, help='Comma-separated doc paths to check')
+    parser.add_argument('--json', action='store_true', help='Emit JSON report output')
     args = parser.parse_args()
     if args.self_test:
         self_test()
+        return 0
+    if args.example_identity:
+        md_path, section, rs_path = args.example_identity
+        ok, diff = check_example_identity(md_path, section, rs_path)
+        print(json.dumps({'scope': 'example-identity', 'ok': ok, 'diff': diff}))
+        for line in diff:
+            print(line, file=sys.stderr)
+        return 0 if ok else 1
+    if args.count_widgets:
+        print(json.dumps({'scope': 'count-widgets', **count_widgets(args.crates)}))
+        return 0
+    if args.count_lines:
+        print(json.dumps({'scope': 'count-lines', **count_lines(args.crates)}))
+        return 0
+    if args.telemetry_literals:
+        errors = check_telemetry_literals(args.readme, args.crates)
+        print(json.dumps({'scope': 'telemetry-literals', 'errors': errors}))
+        for err in errors:
+            print(f'[claims] {err}', file=sys.stderr)
+        return int(bool(errors))
+    if args.bench_block_hash:
+        errors = check_bench_block_hash(args.crates.parent)
+        print(json.dumps({'scope': 'bench-block-hash', 'errors': errors}))
+        for err in errors:
+            print(f'[claims] {err}', file=sys.stderr)
+        return int(bool(errors))
+    if args.compat_matrix_fresh:
+        errors = check_compat_matrix_fresh(args.crates.parent)
+        print(json.dumps({'scope': 'compat-matrix-fresh', 'errors': errors}))
+        for err in errors:
+            print(f'[claims] {err}', file=sys.stderr)
+        return int(bool(errors))
+    if args.verify_owners:
+        rows, schema_errors = validate(args.ledger.read_text(encoding='utf-8'))
+        if schema_errors:
+            for err in schema_errors:
+                print(f'[claims] {err}', file=sys.stderr)
+            return 1
+        bead_statuses = load_bead_statuses(args.issues)
+        errors = check_owners(rows, bead_statuses)
+        print(json.dumps({'scope': 'verify-owners', 'rows': len(rows), 'errors': errors}))
+        for err in errors:
+            print(f'[claims] {err}', file=sys.stderr)
+        return int(bool(errors))
+    if args.check or args.report:
+        docs_list = (
+            [d.strip() for d in args.docs.split(',') if d.strip()]
+            if args.docs
+            else None
+        )
+        try:
+            summary, errors = run_full_check(
+                args.ledger,
+                args.readme,
+                args.crates,
+                allowlist_path=args.allowlist,
+                issues_path=args.issues,
+                docs_list=docs_list,
+            )
+        except (OSError, UnicodeError) as error:
+            print(f'[claims] {error}', file=sys.stderr)
+            return 1
+        if args.report:
+            summary['scope'] = 'report'
+        print(json.dumps(summary))
+        if args.check:
+            for error in errors:
+                print(f'[claims] {error}', file=sys.stderr)
+            return int(bool(errors))
         return 0
     if args.proof_refs:
         try:

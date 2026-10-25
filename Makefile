@@ -67,6 +67,8 @@ claims:
 	@python3 scripts/check_readme_claims.py --schema-check
 	@python3 scripts/check_readme_claims.py --proof-refs
 	@python3 scripts/check_readme_claims.py --experimental-check
+	@python3 scripts/check_readme_claims.py --check
+	@python3 -B -m unittest scripts/tests/test_check_readme_claims.py > /dev/null
 	@python3 scripts/render_todo_bead_map.py --self-test > /dev/null
 	@python3 scripts/render_todo_bead_map.py --check > /dev/null
 	@python3 scripts/render_perf_readme.py --self-test > /dev/null

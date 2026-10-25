@@ -1,16 +1,15 @@
+use std::cell::RefCell;
 use std::time::Duration;
 
 use ftui::core::event::{Event, KeyCode, KeyEventKind, Modifiers};
-use ftui::core::geometry::Rect;
 use ftui::render::frame::Frame;
 use ftui::runtime::{Every, Subscription};
-use ftui::widgets::StatefulWidget;
 use ftui::widgets::log_viewer::{LogViewer, LogViewerState};
-use ftui::{App, Cmd, Model, ScreenMode};
+use ftui::{App, Cmd, FrameExt, Model, ScreenMode};
 
 struct Harness {
     log: LogViewer,
-    state: LogViewerState,
+    state: RefCell<LogViewerState>,
 }
 
 enum Msg {
@@ -37,10 +36,16 @@ impl Model for Harness {
     fn update(&mut self, msg: Msg) -> Cmd<Self::Message> {
         match msg {
             Msg::Key(k) if k.kind == KeyEventKind::Press => {
-                if k.modifiers.contains(Modifiers::CTRL) && k.code == KeyCode::Char('c') {
+                if (k.modifiers.contains(Modifiers::CTRL) && k.code == KeyCode::Char('c'))
+                    || k.code == KeyCode::Char('q')
+                {
                     return Cmd::quit();
                 }
-                self.log.push(format!("Key: {:?}", k.code));
+                match k.code {
+                    KeyCode::Up => self.log.scroll_up(1),
+                    KeyCode::Down => self.log.scroll_down(1),
+                    _ => self.log.push(format!("Key: {:?}", k.code)),
+                }
             }
             Msg::Tick => self.log.push("Tick..."),
             _ => {}
@@ -49,9 +54,7 @@ impl Model for Harness {
     }
 
     fn view(&self, frame: &mut Frame) {
-        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
-        let mut state = self.state.clone();
-        self.log.render(area, frame, &mut state);
+        frame.render_stateful_widget(&self.log, frame.area(), &mut self.state.borrow_mut());
     }
 
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
@@ -61,11 +64,11 @@ impl Model for Harness {
 
 fn main() -> ftui::Result<()> {
     let mut log = LogViewer::new(1000);
-    log.push("Started. Press Ctrl+C to quit.");
+    log.push("Started. Press q or Ctrl+C to quit.");
 
     App::new(Harness {
         log,
-        state: LogViewerState::default(),
+        state: RefCell::new(LogViewerState::default()),
     })
     .screen_mode(ScreenMode::Inline { ui_height: 5 })
     .run()?;

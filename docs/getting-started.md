@@ -20,27 +20,34 @@ path to a working inline (scrollback-preserving) UI.
 - The facade's default features compile a terminal backend (native `ftui-tty`
   on Unix, Crossterm elsewhere) so `App::run()` works without configuration.
 
-## Crate Map (Core vs Optional)
+## Crate Map (20 Workspace Crates + External Web Wrapper)
 
-Core stack (what most applications use):
+1. **Published Core & Library Crates (17 crates on crates.io)**:
+   - `ftui` (facade): recommended entry point; re-exports core APIs, prelude, and `agent_shell`.
+   - `ftui-core`: terminal lifecycle, capabilities, and input events.
+   - `ftui-render`: 16-byte `Cell`, `Buffer`/`Frame`, diff computation, and ANSI `Presenter`.
+   - `ftui-runtime`: Elm-style `App`/`Program` loop, commands, subscriptions, and `TerminalWriter`.
+   - `ftui-widgets`: core `Widget` and `StatefulWidget` library.
+   - `ftui-layout`: `Flex` and `Grid` constraint solvers and pane workspace geometry.
+   - `ftui-style`: styles, semantic `Theme`, `StyleSheet`, color profiles, and WCAG contrast helpers.
+   - `ftui-text`: rope-backed text storage, Unicode width, wrapping, cursor/editor, and UAX #9 bidi.
+   - `ftui-i18n`: string catalogs, locale context, CLDR plural rules, and CLDR v45.0 number/date formatting.
+   - `ftui-a11y`: accessibility tree builder, roles, states, and live-region diff tracking.
+   - `ftui-backend`: backend traits (`BackendEventSource`, `BackendPresenter`, `BackendFeatures`).
+   - `ftui-tty`: default native Unix `TtyBackend` (`termios`, `poll`, `SIGWINCH`, job-control cleanup).
+   - `ftui-extras`: feature-gated add-ons (markdown, syntax highlighting, canvas, charts, mermaid, forms, VFX).
+   - `ftui-web`: step-driven WASM backend (`StepProgram`, deterministic clock, flat patch output).
+   - `ftui-harness`: headless simulator, snapshot assertions, shadow-run comparison, and runnable examples.
+   - `ftui-pty`: PTY process spawning, virtual terminal model, and E2E test utilities.
+   - `ftui-simd`: opt-in portable-SIMD kernels for printable-ASCII width and row comparison.
 
-- `ftui` (facade): recommended entry point; re-exports core APIs and `agent_shell`.
-- `ftui-core`: terminal lifecycle, capabilities, and input events.
-- `ftui-render`: buffer/frame, diff computation, and ANSI presenter.
-- `ftui-runtime`: Elm-style program loop, subscriptions, and terminal writer.
-- `ftui-widgets`: core widget library.
-- `ftui-layout`, `ftui-style`, `ftui-text`, `ftui-i18n`, `ftui-a11y`: supporting layout, styling, text, localization, and accessibility crates.
-- `ftui-backend`, `ftui-tty`: backend traits and native Unix TTY backend.
+2. **In-Tree Applications & Verification (`publish = false`, 3 workspace crates)**:
+   - `ftui-demo-showcase`: reference application and visual snapshot suite (45 screens).
+   - `ftui-showcase-wasm`: WASM showcase runner core (`ShowcaseRunner`) and JS/CSS `<pre>` host SDK.
+   - `doctor_frankentui`: verification harness (`replay`/`capture`, `seed-demo`, `migrate`/`suite`, `report`, `certify`/`doctor`, `plan`/`import`, `list-profiles`, `performance-diff`, `visual-diff`).
 
-Optional / web / verification:
-
-- `ftui-extras`: feature-gated add-ons (markdown, syntax highlighting, mermaid, text effects, VFX).
-- `ftui-web`, `ftui-showcase-wasm`: WASM-friendly backend (`StepProgram`) and browser showcase target.
-- `ftui-harness`: snapshot + PTY helpers and runnable examples (used heavily in this guide).
-- `ftui-pty`: PTY utilities for tests.
-- `ftui-demo-showcase`: reference app + visual snapshots (45 screens).
-- `ftui-simd`: internal portable-SIMD kernels (opt-in).
-- `doctor_frankentui`: verification harness, capture/replay, and migration synthesis.
+3. **External / Historical Web Wrapper (not a workspace crate)**:
+   - `FrankenTermWeb`: standalone WebGPU/Canvas2D browser renderer retrieved from pinned historical source by `build-wasm.sh`.
 
 ## Prereqs
 
@@ -236,12 +243,24 @@ the path to match your directory layout:
 ftui = { path = "../frankentui/crates/ftui" }
 ```
 
-The default features (`runtime`, `extras`, `backend`) are what the examples in
+The default features (`runtime`, `extras`, `backend`, `bidi`) are what the examples in
 this guide assume. `App::run()` selects native `ftui-tty` on Unix and Crossterm
 elsewhere when `backend` is enabled; `ftui::DEFAULT_BACKEND` names the selection.
 Headless, WASM, or custom-backend consumers
 should use `default-features = false, features = ["runtime"]`, in which case
 `App::run()` returns an `Unsupported` error naming the feature to enable.
+
+| Feature | Default | Enables |
+|---|---|---|
+| `runtime` | Yes | Elm-style `App` / `Program` loop, `Cmd`, subscriptions, and `TerminalWriter` (`ftui-runtime`) |
+| `extras` | Yes | Feature-gated add-ons (`ftui-extras`: markdown, syntax, canvas, charts, mermaid, VFX) |
+| `backend` | Yes | Both `native-backend` and `crossterm` so `App::run()` works out of the box |
+| `native-backend` | Via `backend` | Native Unix `ftui-tty` backend (`termios`, `poll`, `SIGWINCH`, job-control cleanup) |
+| `crossterm` | Via `backend` | Crossterm backend (`ftui-core/crossterm`, `ftui-runtime/crossterm-compat`) |
+| `bidi` | Yes | UAX #9 bidirectional text layout in `ftui-widgets` |
+| `serde` | No | Load and save `KeyMap` bindings as TOML/JSON (`ftui-core/serde`) |
+| `simd` | No | Opt-in portable-SIMD printable-ASCII width fast path (`ftui-core/simd`) |
+| `experimental` | No | Internal quarantined research modules (unsupported; see README) |
 
 If you only want a small slice, you can depend on individual crates directly:
 
@@ -267,19 +286,18 @@ tests compile (`cargo run -p ftui --example getting_started` runs it from the
 repository).
 
 ```rust
+use std::cell::RefCell;
 use std::time::Duration;
 
 use ftui::core::event::{Event, KeyCode, KeyEventKind, Modifiers};
-use ftui::core::geometry::Rect;
 use ftui::render::frame::Frame;
 use ftui::runtime::{Every, Subscription};
-use ftui::widgets::StatefulWidget;
 use ftui::widgets::log_viewer::{LogViewer, LogViewerState};
-use ftui::{App, Cmd, Model, ScreenMode};
+use ftui::{App, Cmd, FrameExt, Model, ScreenMode};
 
 struct Harness {
     log: LogViewer,
-    state: LogViewerState,
+    state: RefCell<LogViewerState>,
 }
 
 enum Msg {
@@ -306,10 +324,16 @@ impl Model for Harness {
     fn update(&mut self, msg: Msg) -> Cmd<Self::Message> {
         match msg {
             Msg::Key(k) if k.kind == KeyEventKind::Press => {
-                if k.modifiers.contains(Modifiers::CTRL) && k.code == KeyCode::Char('c') {
+                if (k.modifiers.contains(Modifiers::CTRL) && k.code == KeyCode::Char('c'))
+                    || k.code == KeyCode::Char('q')
+                {
                     return Cmd::quit();
                 }
-                self.log.push(format!("Key: {:?}", k.code));
+                match k.code {
+                    KeyCode::Up => self.log.scroll_up(1),
+                    KeyCode::Down => self.log.scroll_down(1),
+                    _ => self.log.push(format!("Key: {:?}", k.code)),
+                }
             }
             Msg::Tick => self.log.push("Tick..."),
             _ => {}
@@ -318,9 +342,7 @@ impl Model for Harness {
     }
 
     fn view(&self, frame: &mut Frame) {
-        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
-        let mut state = self.state.clone();
-        self.log.render(area, frame, &mut state);
+        frame.render_stateful_widget(&self.log, frame.area(), &mut self.state.borrow_mut());
     }
 
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
@@ -330,11 +352,11 @@ impl Model for Harness {
 
 fn main() -> ftui::Result<()> {
     let mut log = LogViewer::new(1000);
-    log.push("Started. Press Ctrl+C to quit.");
+    log.push("Started. Press q or Ctrl+C to quit.");
 
     App::new(Harness {
         log,
-        state: LogViewerState::default(),
+        state: RefCell::new(LogViewerState::default()),
     })
     .screen_mode(ScreenMode::Inline { ui_height: 5 })
     .run()?;
@@ -412,6 +434,12 @@ All of these are runnable and kept aligned with the repo's current APIs:
 - [`crates/ftui-harness/examples/counter.rs`](../crates/ftui-harness/examples/counter.rs) (state updates)
 - [`crates/ftui-harness/examples/layout.rs`](../crates/ftui-harness/examples/layout.rs) (layout composition)
 - [`crates/ftui-harness/examples/modal.rs`](../crates/ftui-harness/examples/modal.rs) (modal patterns)
+- [`crates/ftui-demo-showcase/src/screens/`](../crates/ftui-demo-showcase/src/screens/) (45 showcase screens covering widgets, layout, forms, markdown, charts, and VFX)
 
-Tutorial:
-- [`docs/tutorials/agent-harness.md`](tutorials/agent-harness.md)
+## Next Steps & Further Reading
+
+- [Agent Harness Tutorial](tutorials/agent-harness.md)
+- [One-Writer Rule](one-writer-rule.md)
+- [Terminal Compatibility Matrix](compat-matrix.md)
+- [Windows Support & Scope](WINDOWS.md)
+- [Architecture Decision Records](adr/README.md)

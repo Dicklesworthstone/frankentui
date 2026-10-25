@@ -115,11 +115,14 @@ GitHub Actions was disabled in the repository settings on 2026-09-06; keep it di
 
 | Crate | Purpose |
 |-------|---------|
-| `crossterm` | Terminal backend (events, raw mode, ANSI) |
-| `unicode-width` | Grapheme width calculation for rendering |
+| `nix` / `signal-hook` | Native Unix TTY backend (`ftui-tty`: `termios`, `poll`, `SIGWINCH`, `SIGTSTP`/`SIGCONT`) |
+| `crossterm` | Crossterm terminal backend (Windows default and opt-in `crossterm-compat`) |
+| `unicode-width` / `unicode-bidi` | Grapheme width calculation and UAX #9 bidirectional text layout |
+| `ropey` | Rope-backed text buffer for `ftui-text` and multiline editors |
+| `bumpalo` | Per-frame bump arena (`FrameArena`) for zero-allocation hot paths |
 | `pulldown-cmark` | GitHub-Flavored Markdown parsing |
 | `tracing` | Structured logging and instrumentation |
-| `insta` | Snapshot testing framework |
+| `insta` / `proptest` / `criterion` | Visual snapshot testing, property-based testing, and SLO benchmarks |
 
 ### Release Profile
 
@@ -195,6 +198,10 @@ cargo fmt --check
 # Run this documentation gate through DSR; a single bad link fails it
 # and hides every other rustdoc regression across the workspace.
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+# Run workspace doctests and full README/AGENTS claims verification
+cargo test --doc --workspace
+python3 -B scripts/check_readme_claims.py --check
 
 # Every non-cargo gate in one command: about six seconds, pure stdlib Python,
 # no compilation and no network. `make check` runs it too, so you get it for
@@ -418,6 +425,8 @@ successful frame logs and input recovery do not prove visible rendering.
 ./scripts/e2e_test.sh
 ./scripts/widget_api_e2e.sh
 ./scripts/demo_showcase_e2e.sh
+./scripts/consumer_smoke_e2e.sh
+./tests/e2e/scripts/run_all.sh
 
 # Agent shell headless 10k-line simulator + plain PTY + multiplexer scrollback E2E
 cargo test -p ftui --test agent_shell_sim
@@ -562,7 +571,8 @@ contains them.
 | `doctor_frankentui` | `src/intent_inference.rs`, `src/semantic_contract.rs` | Core intent inference and semantic contracts (`docs/doctor-frankentui-products.md` maps the 23 default core modules and 101 `--features experimental` product modules) |
 | `ftui-a11y` | `src/node.rs` | Accessibility node types, roles, states |
 | `ftui-a11y` | `src/tree.rs` | Accessibility tree builder + diff |
-| `ftui-core` | `src/terminal_session.rs` | RAII terminal lifecycle |
+| `ftui-tty` | `src/lib.rs` | Native Unix `TtyBackend` (`termios`, `poll`, `SIGWINCH`, `SIGTSTP`/`SIGCONT`) |
+| `ftui-core` | `src/terminal_session.rs` | RAII terminal lifecycle (`TerminalSession`, `session_teardown`) |
 | `ftui-render` | `src/buffer.rs` | 2D cell buffer with scissor stacks |
 | `ftui-render` | `src/cell.rs` | 16-byte cache-optimized Cell |
 | `ftui-render` | `src/diff.rs` | Efficient buffer diff computation |
@@ -580,8 +590,10 @@ contains them.
 | `Buffer` | 2D grid with scissor/opacity stacks, row-major layout |
 | `BufferDiff` | Efficient diff between two buffers for minimal ANSI output |
 | `Presenter` | State-tracked ANSI emitter (avoids redundant escape sequences) |
-| `Frame` | Per-render-cycle drawing context wrapping a Buffer |
-| `TerminalSession` | RAII terminal lifecycle (raw mode, alt-screen, cleanup) |
+| `Frame` | Per-render-cycle drawing context wrapping a Buffer and optional `FrameArena` |
+| `TtyBackend` | Default native Unix terminal backend (`termios`, `poll`, `SIGWINCH`, job-control cleanup) |
+| `TerminalSession` | RAII terminal lifecycle for Crossterm/session setup and teardown |
+| `TerminationSignalSlot` | Shared atomic termination signal slot coordinating backend signal receipt with the runtime |
 | `TerminalWriter` | One-writer rule enforcer for terminal output |
 | `Model` | Elm/Bubbletea trait: `init()`, `update()`, `view()`, `subscriptions()` |
 | `Cmd<M>` | Command returned from update — async side effects |

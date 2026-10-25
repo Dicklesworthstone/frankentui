@@ -1,0 +1,3 @@
+# Claims Allowlist (G06 / bd-g00-root-epic-ewths.5.3)
+# Format: <doc>:<line-or-pattern> # <bead-id> <reason>
+# Every non-comment line must cite an open bead in .beads/issues.jsonl.
