@@ -1074,6 +1074,37 @@ impl<W: Write> TerminalWriter<W> {
         self.last_certificate.as_ref()
     }
 
+    /// Notify the writer immediately when a terminal resize arrives, even
+    /// while [`ResizeCoalescer`](crate::resize_coalescer::ResizeCoalescer)
+    /// defers the next frame render.
+    ///
+    /// A live bottom-anchored inline session that started on a DECSTBM scroll
+    /// region transitions to [`InlineStrategy::OverlayRedraw`] so in-flight
+    /// log lines and frames during a resize storm use bottom-relative row
+    /// addressing instead of stale top-down DECSTBM row coordinates.
+    pub fn notify_resize(&mut self, width: u16, height: u16) {
+        let _output_guard = terminal_output_lock();
+        if (width, height) == (self.term_width, self.term_height) {
+            return;
+        }
+        if self.inline_rows_reserved
+            && matches!(self.ui_anchor, UiAnchor::Bottom)
+            && matches!(
+                self.inline_strategy,
+                InlineStrategy::ScrollRegion | InlineStrategy::Hybrid
+            )
+        {
+            self.inline_strategy = InlineStrategy::OverlayRedraw;
+        }
+        if self.scroll_region_active {
+            let _ = self.deactivate_scroll_region();
+            let _ = self.writer().flush();
+            self.decstbm_row_occupied =
+                self.inline_rows_reserved && matches!(self.ui_anchor, UiAnchor::Bottom);
+            self.decstbm_col = 0;
+        }
+    }
+
     /// Set the terminal size.
     ///
     /// Call this when the terminal is resized.
@@ -1477,9 +1508,22 @@ impl<W: Write> TerminalWriter<W> {
     }
 
     /// Deactivate the scroll region, resetting to full screen.
+    ///
+    /// `CSI r` homes the hardware cursor to `(0, 0)`; when called outside a
+    /// `present_inline` save/restore bracket (e.g. on resize), preserve the
+    /// cursor so a subsequent terminal shrink does not truncate rows below
+    /// `(0, 0)`.
     fn deactivate_scroll_region(&mut self) -> io::Result<()> {
         if self.scroll_region_active {
-            self.writer().write_all(b"\x1b[r")?;
+            if self.cursor_saved {
+                self.writer().write_all(b"\x1b[r")?;
+            } else {
+                self.writer().write_all(CURSOR_SAVE)?;
+                let reset_res = self.writer().write_all(b"\x1b[r");
+                let restore_res = self.writer().write_all(CURSOR_RESTORE);
+                reset_res?;
+                restore_res?;
+            }
             self.scroll_region_active = false;
         }
         Ok(())
@@ -2439,10 +2483,10 @@ impl<W: Write> TerminalWriter<W> {
                 show_cursor = true;
                 self.last_ui_cursor = Some((cx, abs_y));
                 self.cursor_ui_row = Some((cy, visible_height));
-            } else if self.bottom_addressed() && visible_height > 0 {
+            } else if visible_height > 0 && matches!(self.ui_anchor, UiAnchor::Bottom) {
                 // Park the hidden cursor on the UI's last row: the restore
                 // above returns to wherever it was before the frame, and the
-                // next re-anchor needs its row in the UI.
+                // next re-anchor or terminal shrink needs its row in the UI.
                 self.move_to_row(self.term_height - 1, 0)?;
                 self.cursor_ui_row = Some((visible_height - 1, visible_height));
             }
@@ -2786,22 +2830,39 @@ impl<W: Write> TerminalWriter<W> {
         if self.scroll_region_active {
             // A DECSTBM region matching the current effective height is
             // active: parking at its bottom margin lets every LF scroll the
-            // log region alone, accumulating lines into scrollback.
+            // log region alone, accumulating lines into scrollback. Bound the
+            // cursor excursion with DECSC/DECRC so the hardware cursor stays
+            // parked inside the UI rows between writes (otherwise a shrinking
+            // terminal deletes the UI rows below `log_row`).
             if text.is_empty() {
                 return Ok(());
             }
-            if !self.position_cursor_for_log(visible_height)? {
-                return Ok(());
+            let save_cursor = !self.cursor_saved;
+            if save_cursor {
+                self.writer().write_all(CURSOR_SAVE)?;
             }
-            let normalized;
-            let payload = if text.contains('\n') {
-                normalized = text.replace("\r\n", "\n").replace('\n', "\r\n");
-                normalized.as_str()
+            let write_result = (|| -> io::Result<()> {
+                if !self.position_cursor_for_log(visible_height)? {
+                    return Ok(());
+                }
+                let normalized;
+                let payload = if text.contains('\n') {
+                    normalized = text.replace("\r\n", "\n").replace('\n', "\r\n");
+                    normalized.as_str()
+                } else {
+                    text
+                };
+                self.write_log_payload(payload, mode)?;
+                self.advance_decstbm_col(payload);
+                Ok(())
+            })();
+            let restore_result = if save_cursor {
+                self.writer().write_all(CURSOR_RESTORE)
             } else {
-                text
+                Ok(())
             };
-            self.write_log_payload(payload, mode)?;
-            self.advance_decstbm_col(payload);
+            write_result?;
+            restore_result?;
             return self.writer().flush();
         }
 
@@ -5316,6 +5377,36 @@ mod tests {
         assert!(
             output.windows(new_region.len()).any(|w| w == new_region),
             "Should set scroll region to new dimensions after resize"
+        );
+    }
+
+    #[test]
+    fn notify_resize_transitions_live_scroll_region_to_overlay_redraw() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                scroll_region_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer, Some((2, 3)), true).unwrap();
+            assert!(writer.scroll_region_active());
+            assert_eq!(writer.inline_strategy(), InlineStrategy::ScrollRegion);
+
+            writer.notify_resize(80, 30);
+            assert!(!writer.scroll_region_active());
+            assert_eq!(writer.inline_strategy(), InlineStrategy::OverlayRedraw);
+        }
+
+        // Scroll region reset should be bracketed by DECSC/DECRC so cursor stays on the UI row.
+        let saved_reset = b"\x1b7\x1b[r\x1b8";
+        assert!(
+            output.windows(saved_reset.len()).any(|w| w == saved_reset),
+            "notify_resize should preserve cursor across DECSTBM reset"
         );
     }
 

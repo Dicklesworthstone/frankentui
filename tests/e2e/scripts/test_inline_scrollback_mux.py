@@ -33,15 +33,17 @@ A multiplexer that is not installed FAILS its cases as
 (comma separated; logged). Nothing outside the output directory is written,
 no session the script did not create is touched, and outputs are retained.
 
-Under tmux, two flagship journeys (bd-g00-root-epic-ewths.42.7) drive the
-agent shell like a user: a `--pty` child streams 100,000 hostile mixed lines
+Under tmux, screen, and zellij, flagship journeys (bd-g00-root-epic-ewths.42.7)
+drive the agent shell like a user: a `--pty` child streams hostile mixed lines
 around a stdin prompt; the driver types a line, resizes the window 50 times
 20 ms apart, sends Ctrl-C, restarts with F5 and quits. Every line must reach
 history once, in order, as its visible text; the typed line, interrupt,
 restart and exits must be logged once; injections stay inert; the pane's
 modes are restored; the child's background process is gone; bytes per log
-line stay bounded; and both the height-only storm and the width+height storm
-require zero UI fragment rows in history (bd-g00-root-epic-ewths.42.8).
+line and PTY keystroke echo latency stay bounded; and both the height-only
+storm and the width+height storm require zero UI fragment rows in history
+(bd-g00-root-epic-ewths.42.8), including DECSTBM scroll-region transport under
+tmux (`flagship_journey_scroll_region`).
 
 With `--showcase`, each multiplexer also starts `ftui-demo-showcase` in inline
 mode under 500 existing history lines: they must all remain, once and in
@@ -62,14 +64,21 @@ JSONL: one row per case plus a summary row, in
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
+import pty
 import re
+import select
 import shlex
 import shutil
+import signal
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
+import threading
 import time
 from pathlib import Path
 
@@ -248,20 +257,98 @@ JOURNEY_STORM = [(120, 40), (80, 24), (100, 30), (90, 35), (110, 26)]
 # O(1) bytes per log line, not a repaint of the screen per line: a 100x30
 # repaint is ~3000 bytes, so a few hundred is the bound that separates them.
 JOURNEY_MAX_BYTES_PER_LINE = 400
+JOURNEY_ECHO_BUDGET_MS = 50.0
 
 
-def journey_child(marker: Path, pid_file: Path) -> str:
-    """The journey's child: 100k mixed lines around a prompt read from stdin,
+def _setup_ctty() -> None:
+    os.setsid()
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+
+def measure_pty_keystroke_latency(agent: Path, count: int = 24) -> dict:
+    """Measure end-to-end PTY keystroke-to-echo latency (ms) on agent_shell."""
+    mfd, sfd = pty.openpty()
+    ws = struct.pack("HHHH", ROWS, COLS, 0, 0)
+    fcntl.ioctl(mfd, termios.TIOCSWINSZ, ws)
+    fcntl.ioctl(sfd, termios.TIOCSWINSZ, ws)
+    proc = subprocess.Popen(
+        [
+            str(agent),
+            "--pty",
+            "--ui-height=5",
+            "--exit-when-child-exits",
+            "--",
+            "sh",
+            "-c",
+            "echo READY_NOW; IFS= read -r _",
+        ],
+        stdin=sfd,
+        stdout=sfd,
+        stderr=sfd,
+        preexec_fn=_setup_ctty,
+    )
+    os.close(sfd)
+    try:
+        buf = b""
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and b"READY_NOW" not in buf:
+            r, _, _ = select.select([mfd], [], [], 0.05)
+            if r:
+                buf += os.read(mfd, 65536)
+        while select.select([mfd], [], [], 0.05)[0]:
+            os.read(mfd, 65536)
+
+        samples_ms: list[float] = []
+        for idx in range(count):
+            ch = chr(ord("A") + (idx % 26)).encode()
+            t0 = time.perf_counter()
+            os.write(mfd, ch)
+            echo_buf = b""
+            t_dead = time.monotonic() + 2.0
+            while time.monotonic() < t_dead:
+                r, _, _ = select.select([mfd], [], [], max(0.0, t_dead - time.monotonic()))
+                if r:
+                    echo_buf += os.read(mfd, 65536)
+                    if ch in echo_buf:
+                        samples_ms.append((time.perf_counter() - t0) * 1000.0)
+                        break
+            # Clear the character with Backspace so the prompt stays empty.
+            os.write(mfd, b"\x7f")
+            while select.select([mfd], [], [], 0.01)[0]:
+                os.read(mfd, 65536)
+        os.write(mfd, b"done\r")
+        proc.wait(timeout=5)
+    finally:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        os.close(mfd)
+
+    samples_ms.sort()
+    p50_ms = round(samples_ms[len(samples_ms) // 2], 3) if samples_ms else 999.0
+    p99_ms = round(samples_ms[min(len(samples_ms) - 1, int(len(samples_ms) * 0.99))], 3) if samples_ms else 999.0
+    return {
+        "samples": len(samples_ms),
+        "p50_ms": p50_ms,
+        "p99_ms": p99_ms,
+        "budget_ms": JOURNEY_ECHO_BUDGET_MS,
+        "ok": len(samples_ms) == count and p99_ms <= JOURNEY_ECHO_BUDGET_MS,
+    }
+
+
+def journey_child(marker: Path, pid_file: Path, total_lines: int = JOURNEY_LINES) -> str:
+    """The journey's child: mixed lines around a prompt read from stdin,
     then it waits for SIGINT. A restart (marker present) prints one line."""
     cases = " ".join(f"{k}) {JOURNEY_PRINTF[k]} $1;;" for k in sorted(JOURNEY_PRINTF))
-    half = JOURNEY_LINES // 2
+    half = total_lines // 2
     m, p = shlex.quote(str(marker)), shlex.quote(str(pid_file))
     return (f"if [ -e {m} ]; then echo second-run; exit 0; fi; : > {m}; "
             f"sleep 60 & echo $! > {p}; "
             f"line() {{ case $(($1 % 6)) in {cases} esac; }}; "
             f"i=1; while [ $i -le {half} ]; do line $i; i=$((i+1)); done; "
             "printf 'type now: '; IFS= read -r l; echo \"got:$l\"; "
-            f"while [ $i -le {JOURNEY_LINES} ]; do line $i; i=$((i+1)); done; "
+            f"while [ $i -le {total_lines} ]; do line $i; i=$((i+1)); done; "
             "trap 'echo interrupted; exit 130' INT; echo waiting; "
             "while :; do sleep 0.1; done")
 
@@ -275,10 +362,83 @@ REFLOW_LIMITATION = ("tmux reflows full-width UI rows when the pane narrows; the
                      "rows of a frame can reach history (bd-g00-root-epic-ewths.42.8)")
 
 
+def analyse_journey_capture(
+    text: str,
+    raw: Path,
+    visible: dict[int, str],
+    total_lines: int,
+    storm_steps: int,
+    storm_interval_s: float,
+    reflow_expected: bool,
+    terminal_restored: bool,
+    pane_flags: str,
+    pane_title: str,
+    buffers: str,
+    keystroke_latency: dict,
+) -> dict:
+    rows_all = text.splitlines()
+    # The agent's final frame (its 5 UI rows, which include a viewer showing
+    # the latest lines) sits right above the pane shell's probe output; the
+    # rest is history, where every logged line must appear exactly once.
+    probe_row = next((i for i, r in enumerate(rows_all) if ORPHAN.match(r)), len(rows_all))
+    frame = rows_all[max(0, probe_row - 5):probe_row]
+    history = rows_all[:max(0, probe_row - 5)] + rows_all[probe_row:]
+    # Log lines arrive as a stream and carry no padding; UI rows are drawn
+    # across the full width. A padded numbered row is a viewer row of a UI
+    # frame that reached history (tmux reflow can split a full-width row when
+    # a pane narrows, so part of a frame may overflow), not a log line.
+    log_rows = [r for r in history if r == r.rstrip()]
+    fragments = [r for r in history if STATUS_HINT.search(r)
+                 or (r != r.rstrip() and MIXED_LINE.match(r))]
+    seen = [(int(m.group(1)), m.group(2)) for r in log_rows if (m := MIXED_LINE.match(r))
+            and 1 <= int(m.group(1)) <= total_lines]
+    good = [n for n, payload in seen if payload == visible[n % 6]]
+    wrong = sorted({n for n, payload in seen if payload != visible[n % 6]})
+    once = lambda needle: sum(1 for r in history if needle in r)
+    bytes_per_line = round(raw.stat().st_size / total_lines, 1) if raw.exists() else None
+    checks = {
+        "lines_in_order_once": good == list(range(1, total_lines + 1)),
+        "typed_line_reached_child": once("type now: got:hello") == 1,
+        "typed_line_echoed": once("[stdin queued] hello") == 1,
+        "interrupt_delivered": once("interrupted") == 1 and once("[process] EXIT 130") == 1,
+        "restart_logged": once("[process] RESTART run=") == 1 and once("second-run") == 1
+        and once("[process] EXIT 0") == 1,
+        "one_ui_frame_in_history": (reflow_expected or not fragments)
+        and sum(1 for r in frame if STATUS_HINT.search(r)) == 1,
+        "injection_inert": pane_title != "pwn" and not buffers and not wrong,
+        "terminal_restored": terminal_restored,
+        "child_tree_reaped": once("ORPHAN=gone") == 1,
+        "shell_marker_own_row": any(r.strip().startswith(DONE_MARKER) for r in history),
+        "bytes_per_line_bounded": bytes_per_line is not None
+        and bytes_per_line <= JOURNEY_MAX_BYTES_PER_LINE,
+        "keystroke_latency_bounded": bool(keystroke_latency.get("ok")),
+    }
+    return {
+        "storm": f"{storm_steps} resizes every {round(storm_interval_s * 1000)} ms",
+        "lines": total_lines,
+        "found": len(set(good)),
+        "duplicates": len(good) - len(set(good)),
+        "missing": [n for n in range(1, total_lines + 1) if n not in set(good)][:10],
+        "ui_fragment_rows": len(fragments),
+        "known_limitation": REFLOW_LIMITATION if reflow_expected else None,
+        "wrong_payload": wrong[:5],
+        "visible_controls": {k: visible[k] for k in (1, 2)},
+        "pane_flags": pane_flags,
+        "pane_title": pane_title,
+        "bytes_per_line": bytes_per_line,
+        "keystroke_latency": keystroke_latency,
+        **checks,
+        "ok": all(checks.values()),
+    }
+
+
 def run_tmux_journey(out: Path, agent: Path, timeout_s: float, storm_steps: int = 50,
                      storm_interval_s: float = 0.02,
                      storm_sizes: list[tuple[int, int]] | None = None,
-                     reflow_expected: bool = False, case: str = "flagship_journey") -> dict:
+                     reflow_expected: bool = False, case: str = "flagship_journey",
+                     total_lines: int = JOURNEY_LINES,
+                     scroll_region: bool = False,
+                     keystroke_latency: dict | None = None) -> dict:
     """Drive the agent shell like a user inside real tmux and check history.
 
     Start inline (5 rows) with a --pty child streaming 100k hostile mixed
@@ -290,6 +450,7 @@ def run_tmux_journey(out: Path, agent: Path, timeout_s: float, storm_steps: int 
     terminal modes restored; the child's background process gone; bytes per
     log line bounded.
     """
+    latency = keystroke_latency or measure_pty_keystroke_latency(agent)
     tmux = Tmux(out)
     tmux.start()
     base = tmux.base
@@ -309,8 +470,12 @@ def run_tmux_journey(out: Path, agent: Path, timeout_s: float, storm_steps: int 
                  "kill -0 \"$pid\" 2>/dev/null || break; sleep 0.2; done; "
                  "if kill -0 \"$pid\" 2>/dev/null; then echo ORPHAN=alive; kill -9 \"$pid\"; "
                  "else echo ORPHAN=gone; fi")
-        child = shlex.quote(journey_child(marker, pid_file))
-        cmd = (f"{shlex.quote(str(agent))} --pty --ui-height=5 -- sh -c {child}; rc=$?; "
+        child = shlex.quote(journey_child(marker, pid_file, total_lines))
+        env_prefix = (
+            "env -u TMUX -u TMUX_PANE TERM=xterm-256color FTUI_SCROLL_REGION=1 "
+            if scroll_region else ""
+        )
+        cmd = (f"{env_prefix}{shlex.quote(str(agent))} --pty --ui-height=5 -- sh -c {child}; rc=$?; "
                f"{probe}; echo {DONE_MARKER} rc=$rc; sleep 1")
         cols, rows = JOURNEY_SIZE
         run(base + ["new-session", "-d", "-s", case, "-x", str(cols), "-y", str(rows),
@@ -364,60 +529,327 @@ def run_tmux_journey(out: Path, agent: Path, timeout_s: float, storm_steps: int 
     finally:
         tmux.stop()
 
-    rows_all = text.splitlines()
-    # The agent's final frame (its 5 UI rows, which include a viewer showing
-    # the latest lines) sits right above the pane shell's probe output; the
-    # rest is history, where every logged line must appear exactly once.
-    probe_row = next((i for i, r in enumerate(rows_all) if ORPHAN.match(r)), len(rows_all))
-    frame = rows_all[max(0, probe_row - 5):probe_row]
-    history = rows_all[:max(0, probe_row - 5)] + rows_all[probe_row:]
-    # Log lines arrive as a stream and carry no padding; UI rows are drawn
-    # across the full width. A padded numbered row is a viewer row of a UI
-    # frame that reached history (tmux reflow can split a full-width row when
-    # a pane narrows, so part of a frame may overflow), not a log line.
-    log_rows = [r for r in history if r == r.rstrip()]
-    fragments = [r for r in history if STATUS_HINT.search(r)
-                 or (r != r.rstrip() and MIXED_LINE.match(r))]
-    seen = [(int(m.group(1)), m.group(2)) for r in log_rows if (m := MIXED_LINE.match(r))
-            and 1 <= int(m.group(1)) <= JOURNEY_LINES]
-    good = [n for n, payload in seen if payload == visible[n % 6]]
-    wrong = sorted({n for n, payload in seen if payload != visible[n % 6]})
-    once = lambda needle: sum(1 for r in history if needle in r)
     expected_flags = ["0", "1", "0", "0", "0", "0", str(rows - 1)]
-    bytes_per_line = round(raw.stat().st_size / JOURNEY_LINES, 1) if raw.exists() else None
-    checks = {
-        "lines_in_order_once": good == list(range(1, JOURNEY_LINES + 1)),
-        "typed_line_reached_child": once("type now: got:hello") == 1,
-        "typed_line_echoed": once("[stdin queued] hello") == 1,
-        "interrupt_delivered": once("interrupted") == 1 and once("[process] EXIT 130") == 1,
-        "restart_logged": once("[process] RESTART run=") == 1 and once("second-run") == 1
-        and once("[process] EXIT 0") == 1,
-        "one_ui_frame_in_history": (reflow_expected or not fragments)
-        and sum(1 for r in frame if STATUS_HINT.search(r)) == 1,
-        "injection_inert": title != "pwn" and not buffers and not wrong,
-        "terminal_restored": flags == expected_flags,
-        "child_tree_reaped": once("ORPHAN=gone") == 1,
-        "shell_marker_own_row": any(r.strip().startswith(DONE_MARKER) for r in history),
-        "bytes_per_line_bounded": bytes_per_line is not None
-        and bytes_per_line <= JOURNEY_MAX_BYTES_PER_LINE,
-    }
-    return {
-        "storm": f"{storm_steps} resizes every {round(storm_interval_s * 1000)} ms",
-        "lines": JOURNEY_LINES,
-        "found": len(set(good)),
-        "duplicates": len(good) - len(set(good)),
-        "missing": [n for n in range(1, JOURNEY_LINES + 1) if n not in set(good)][:10],
-        "ui_fragment_rows": len(fragments),
-        "known_limitation": REFLOW_LIMITATION if reflow_expected else None,
-        "wrong_payload": wrong[:5],
-        "visible_controls": {k: visible[k] for k in (1, 2)},
-        "pane_flags": " ".join(flags),
-        "pane_title": title,
-        "bytes_per_line": bytes_per_line,
-        "keystroke_latency": "not measured here (dispatch budget is an in-process benchmark)",
-        **checks,
-        "ok": all(checks.values()),
-    }
+    return analyse_journey_capture(
+        text=text,
+        raw=raw,
+        visible=visible,
+        total_lines=total_lines,
+        storm_steps=storm_steps,
+        storm_interval_s=storm_interval_s,
+        reflow_expected=reflow_expected,
+        terminal_restored=(flags == expected_flags),
+        pane_flags=" ".join(flags),
+        pane_title=title,
+        buffers=buffers,
+        keystroke_latency=latency,
+    )
+
+
+def run_screen_journey(out: Path, agent: Path, timeout_s: float, storm_steps: int = 50,
+                       storm_interval_s: float = 0.02,
+                       storm_sizes: list[tuple[int, int]] | None = None,
+                       reflow_expected: bool = False, case: str = "flagship_journey",
+                       total_lines: int = 10_000,
+                       keystroke_latency: dict | None = None) -> dict:
+    """Drive the flagship journey inside real GNU screen attached to a PTY."""
+    latency = keystroke_latency or measure_pty_keystroke_latency(agent)
+    scr = Screen(out)
+    controls = scr.capture(
+        f"{case}_control",
+        " ; ".join(f"{JOURNEY_PRINTF[k]} {k}" for k in (1, 2)) + f"; echo {DONE_MARKER}; sleep 1",
+        60,
+    )
+    visible = dict(JOURNEY_VISIBLE)
+    for row in controls.splitlines():
+        if (m := MIXED_LINE.match(row)) and m.group(1) in ("1", "2"):
+            visible[int(m.group(1))] = m.group(2)
+
+    session = f"{scr.prefix}_{case}"
+    marker = out / f"screen.{case}.{RUN_ID}.restarted"
+    pid_file = out / f"screen.{case}.{RUN_ID}.pid"
+    raw = out / f"screen.{case}.{RUN_ID}.raw"
+    probe = (f"pid=$(cat {shlex.quote(str(pid_file))}); for i in 1 2 3 4 5 6 7 8 9 10; do "
+             "kill -0 \"$pid\" 2>/dev/null || break; sleep 0.2; done; "
+             "if kill -0 \"$pid\" 2>/dev/null; then echo ORPHAN=alive; kill -9 \"$pid\"; "
+             "else echo ORPHAN=gone; fi; "
+             "stty_out=$(stty -a 2>/dev/null || true); "
+             "case \" $stty_out \" in *\" -icanon \"*|*\" -echo \"*) echo STTY_RESTORED=no ;; "
+             "*) echo STTY_RESTORED=yes ;; esac")
+    child = shlex.quote(journey_child(marker, pid_file, total_lines))
+    cmd = (f"{shlex.quote(str(agent))} --pty --ui-height=5 -- sh -c {child}; rc=$?; "
+           f"{probe}; echo {DONE_MARKER} rc=$rc; sleep 600")
+
+    cols, rows = JOURNEY_SIZE
+    mfd, sfd = pty.openpty()
+    ws = struct.pack("HHHH", rows, cols, 0, 0)
+    fcntl.ioctl(mfd, termios.TIOCSWINSZ, ws)
+    fcntl.ioctl(sfd, termios.TIOCSWINSZ, ws)
+    env = dict(os.environ, TERM="xterm-256color", LINES=str(rows), COLUMNS=str(cols))
+    proc = subprocess.Popen(
+        ["screen", "-c", "/dev/null", "-S", session, "-h", "500000", "bash", "-c", cmd],
+        stdin=sfd,
+        stdout=sfd,
+        stderr=sfd,
+        env=env,
+        preexec_fn=_setup_ctty,
+    )
+    os.close(sfd)
+
+    stop_drain = False
+
+    def drain_raw() -> None:
+        with raw.open("wb") as rf:
+            while not stop_drain:
+                try:
+                    r, _, _ = select.select([mfd], [], [], 0.05)
+                    if r:
+                        data = os.read(mfd, 65536)
+                        if not data:
+                            break
+                        rf.write(data)
+                        rf.flush()
+                except OSError:
+                    break
+
+    drain_thread = threading.Thread(target=drain_raw, daemon=True)
+    drain_thread.start()
+    attempts = iter(range(10_000))
+
+    def screen_view(history: bool = False) -> str:
+        dump = out / f"screen.{case}.{RUN_ID}.{next(attempts)}.hardcopy"
+        args = ["screen", "-c", "/dev/null", "-S", session, "-p", "0", "-X", "hardcopy"]
+        if history:
+            args.append("-h")
+        args.append(str(dump))
+        run(args, check=False)
+        if history:
+            return dump.read_text(errors="replace") if stable_file(dump) else ""
+        for _ in range(20):
+            if dump.exists() and dump.stat().st_size > 0:
+                return dump.read_text(errors="replace")
+            time.sleep(0.05)
+        return ""
+
+    def await_screen(needle: str, limit: float) -> None:
+        if not wait_for(lambda: needle in screen_view(False), limit):
+            raise TimeoutError(f"screen journey: {needle!r} never appeared on screen")
+
+    try:
+        await_screen("type now", timeout_s)
+        run(["screen", "-c", "/dev/null", "-S", session, "-p", "0", "-X", "stuff", "hello\r"])
+        sizes = storm_sizes or JOURNEY_STORM
+        for step in range(storm_steps):
+            width, height = sizes[step % len(sizes)]
+            ws = struct.pack("HHHH", height, width, 0, 0)
+            fcntl.ioctl(mfd, termios.TIOCSWINSZ, ws)
+            os.killpg(os.getpgid(proc.pid), signal.SIGWINCH)
+            time.sleep(storm_interval_s)
+        ws = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(mfd, termios.TIOCSWINSZ, ws)
+        os.killpg(os.getpgid(proc.pid), signal.SIGWINCH)
+
+        await_screen("waiting", timeout_s)
+        run(["screen", "-c", "/dev/null", "-S", session, "-p", "0", "-X", "stuff", "\x03"])
+        await_screen("EXIT 130", 60)
+        restarted = False
+        deadline = time.monotonic() + 30
+        while not restarted and time.monotonic() < deadline:
+            run(["screen", "-c", "/dev/null", "-S", session, "-p", "0", "-X", "stuff", "\x1b[15~"])
+            restarted = wait_for(lambda: "second-run" in screen_view(False), 2)
+        if not restarted:
+            raise TimeoutError("screen journey: F5 never restarted the child")
+        await_screen("EXIT 0", 60)
+        run(["screen", "-c", "/dev/null", "-S", session, "-p", "0", "-X", "stuff", "q"])
+        await_screen(DONE_MARKER, 60)
+        text = settled(lambda: screen_view(True))
+        (out / f"screen.{case}.{RUN_ID}.txt").write_text(text)
+    finally:
+        run(["screen", "-c", "/dev/null", "-S", session, "-X", "quit"], check=False)
+        try:
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        stop_drain = True
+        drain_thread.join(timeout=2)
+        try:
+            os.close(mfd)
+        except OSError:
+            pass
+
+    raw_bytes = raw.read_bytes() if raw.exists() else b""
+    # Verify outer PTY stream left primary screen and inner pane restored stty.
+    alt_balanced = raw_bytes.count(b"\x1b[?1049h") == raw_bytes.count(b"\x1b[?1049l")
+    stty_restored = "STTY_RESTORED=yes" in text
+    return analyse_journey_capture(
+        text=text,
+        raw=raw,
+        visible=visible,
+        total_lines=total_lines,
+        storm_steps=storm_steps,
+        storm_interval_s=storm_interval_s,
+        reflow_expected=reflow_expected,
+        terminal_restored=alt_balanced and stty_restored,
+        pane_flags=f"alt_balanced={alt_balanced} stty_restored={stty_restored}",
+        pane_title="screen",
+        buffers="",
+        keystroke_latency=latency,
+    )
+
+
+def run_zellij_journey(out: Path, agent: Path, timeout_s: float, storm_steps: int = 50,
+                       storm_interval_s: float = 0.02,
+                       storm_sizes: list[tuple[int, int]] | None = None,
+                       reflow_expected: bool = False, case: str = "flagship_journey",
+                       total_lines: int = 10_000,
+                       keystroke_latency: dict | None = None) -> dict:
+    """Drive the flagship journey inside real zellij attached to a PTY."""
+    latency = keystroke_latency or measure_pty_keystroke_latency(agent)
+    zj = Zellij(out)
+    controls = zj.capture(
+        f"{case}_control",
+        " ; ".join(f"{JOURNEY_PRINTF[k]} {k}" for k in (1, 2)) + f"; echo {DONE_MARKER}; sleep 1",
+        60,
+    )
+    visible = dict(JOURNEY_VISIBLE)
+    for row in controls.splitlines():
+        if (m := MIXED_LINE.match(row)) and m.group(1) in ("1", "2"):
+            visible[int(m.group(1))] = m.group(2)
+
+    session = f"ftui{os.getpid()}{case.replace('_', '')}"[:30]
+    marker = out / f"zellij.{case}.{RUN_ID}.restarted"
+    pid_file = out / f"zellij.{case}.{RUN_ID}.pid"
+    raw = out / f"zellij.{case}.{RUN_ID}.raw"
+    layout = out / f"zellij.{case}.{RUN_ID}.kdl"
+    probe = (f"pid=$(cat {shlex.quote(str(pid_file))}); for i in 1 2 3 4 5 6 7 8 9 10; do "
+             "kill -0 \"$pid\" 2>/dev/null || break; sleep 0.2; done; "
+             "if kill -0 \"$pid\" 2>/dev/null; then echo ORPHAN=alive; kill -9 \"$pid\"; "
+             "else echo ORPHAN=gone; fi; "
+             "stty_out=$(stty -a 2>/dev/null || true); "
+             "case \" $stty_out \" in *\" -icanon \"*|*\" -echo \"*) echo STTY_RESTORED=no ;; "
+             "*) echo STTY_RESTORED=yes ;; esac")
+    child = shlex.quote(journey_child(marker, pid_file, total_lines))
+    cmd = (f"{shlex.quote(str(agent))} --pty --ui-height=5 -- sh -c {child}; rc=$?; "
+           f"{probe}; echo {DONE_MARKER} rc=$rc; sleep 600")
+    layout.write_text(
+        "layout {\n  pane command=\"bash\" {\n    args \"-c\" "
+        + json.dumps(cmd)
+        + "\n  }\n}\n"
+    )
+
+    cols, rows = JOURNEY_SIZE
+    mfd, sfd = pty.openpty()
+    ws = struct.pack("HHHH", rows, cols, 0, 0)
+    fcntl.ioctl(mfd, termios.TIOCSWINSZ, ws)
+    fcntl.ioctl(sfd, termios.TIOCSWINSZ, ws)
+    proc = subprocess.Popen(
+        ["zellij", "--config", str(zj.config), "--layout", str(layout), "attach", "--create", session],
+        stdin=sfd,
+        stdout=sfd,
+        stderr=sfd,
+        env=zj.env,
+        preexec_fn=_setup_ctty,
+    )
+    os.close(sfd)
+
+    stop_drain = False
+
+    def drain_raw() -> None:
+        with raw.open("wb") as rf:
+            while not stop_drain:
+                try:
+                    r, _, _ = select.select([mfd], [], [], 0.05)
+                    if r:
+                        data = os.read(mfd, 65536)
+                        if not data:
+                            break
+                        rf.write(data)
+                        rf.flush()
+                except OSError:
+                    break
+
+    drain_thread = threading.Thread(target=drain_raw, daemon=True)
+    drain_thread.start()
+    attempts = iter(range(10_000))
+
+    def zellij_view(full: bool = False) -> str:
+        dump = out / f"zellij.{case}.{RUN_ID}.{next(attempts)}.dump"
+        args = ["zellij", "--session", session, "action", "dump-screen"]
+        if full:
+            args.append("--full")
+        args.append(str(dump))
+        run(args, env=zj.env, check=False)
+        return dump.read_text(errors="replace") if stable_file(dump) else ""
+
+    def await_screen(needle: str, limit: float) -> None:
+        if not wait_for(lambda: needle in zellij_view(False), limit):
+            raise TimeoutError(f"zellij journey: {needle!r} never appeared on screen")
+
+    try:
+        await_screen("type now", timeout_s)
+        run(["zellij", "--session", session, "action", "write-chars", "hello\n"], env=zj.env)
+        sizes = storm_sizes or JOURNEY_STORM
+        for step in range(storm_steps):
+            width, height = sizes[step % len(sizes)]
+            ws = struct.pack("HHHH", height, width, 0, 0)
+            fcntl.ioctl(mfd, termios.TIOCSWINSZ, ws)
+            os.killpg(os.getpgid(proc.pid), signal.SIGWINCH)
+            time.sleep(storm_interval_s)
+        ws = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(mfd, termios.TIOCSWINSZ, ws)
+        os.killpg(os.getpgid(proc.pid), signal.SIGWINCH)
+
+        await_screen("waiting", timeout_s)
+        run(["zellij", "--session", session, "action", "write", "3"], env=zj.env)
+        await_screen("EXIT 130", 60)
+        restarted = False
+        deadline = time.monotonic() + 30
+        while not restarted and time.monotonic() < deadline:
+            run(["zellij", "--session", session, "action", "write", "27", "91", "49", "53", "126"],
+                env=zj.env)
+            restarted = wait_for(lambda: "second-run" in zellij_view(False), 2)
+        if not restarted:
+            raise TimeoutError("zellij journey: F5 never restarted the child")
+        await_screen("EXIT 0", 60)
+        run(["zellij", "--session", session, "action", "write-chars", "q"], env=zj.env)
+        await_screen(DONE_MARKER, 60)
+        text = settled(lambda: zellij_view(True))
+        (out / f"zellij.{case}.{RUN_ID}.txt").write_text(text)
+    finally:
+        run(["zellij", "kill-session", session], env=zj.env, check=False)
+        zj.stop()
+        try:
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        stop_drain = True
+        drain_thread.join(timeout=2)
+        try:
+            os.close(mfd)
+        except OSError:
+            pass
+
+    stty_restored = "STTY_RESTORED=yes" in text
+    return analyse_journey_capture(
+        text=text,
+        raw=raw,
+        visible=visible,
+        total_lines=total_lines,
+        storm_steps=storm_steps,
+        storm_interval_s=storm_interval_s,
+        reflow_expected=reflow_expected,
+        terminal_restored=stty_restored,
+        pane_flags=f"zellij stty_restored={stty_restored}",
+        pane_title="zellij",
+        buffers="",
+        keystroke_latency=latency,
+    )
 
 
 def analyse_quit(transcript: str, expect_orphan: bool) -> dict:
@@ -519,7 +951,7 @@ class Screen:
 
     def stop(self) -> None:
         for s in self.sessions:
-            run(["screen", "-S", s, "-X", "quit"], check=False)
+            run(["screen", "-c", "/dev/null", "-S", s, "-X", "quit"], check=False)
 
     def capture(self, case: str, shell_cmd: str, timeout_s: float) -> str:
         session = f"{self.prefix}_{case}"
@@ -527,7 +959,7 @@ class Screen:
         marker = self.out / f"{case}.{RUN_ID}.screen.done"
         wrapped = f"{shell_cmd}; touch {shlex.quote(str(marker))}; sleep 600"
         env = dict(os.environ, LINES=str(ROWS), COLUMNS=str(COLS))
-        run(["screen", "-S", session, "-h", "500000", "-d", "-m", "bash", "-c", wrapped], env=env)
+        run(["screen", "-c", "/dev/null", "-S", session, "-h", "500000", "-d", "-m", "bash", "-c", wrapped], env=env)
         if not wait_for(marker.exists, timeout_s):
             raise TimeoutError(f"screen case {case} did not finish in {timeout_s}s")
         attempts = iter(range(1_000))
@@ -535,11 +967,11 @@ class Screen:
         def read() -> str:
             # A fresh file per attempt, read only once screen stops writing it.
             dump = self.out / f"{case}.{RUN_ID}.{next(attempts)}.screen.hardcopy"
-            run(["screen", "-S", session, "-X", "hardcopy", "-h", str(dump)])
+            run(["screen", "-c", "/dev/null", "-S", session, "-X", "hardcopy", "-h", str(dump)])
             return dump.read_text(errors="replace") if stable_file(dump) else ""
 
         text = settled(read)
-        run(["screen", "-S", session, "-X", "quit"], check=False)
+        run(["screen", "-c", "/dev/null", "-S", session, "-X", "quit"], check=False)
         return text
 
 
@@ -552,7 +984,7 @@ class Zellij:
         # directory must be short: prefer the per-user runtime directory.
         runtime = os.environ.get("XDG_RUNTIME_DIR") or None
         self.sockdir = Path(tempfile.mkdtemp(prefix="fz", dir=runtime))
-        self.env = dict(os.environ, ZELLIJ_SOCKET_DIR=str(self.sockdir))
+        self.env = dict(os.environ, TERM="xterm-256color", ZELLIJ_SOCKET_DIR=str(self.sockdir))
         self.config = out / "zellij.config.kdl"
         self.config.write_text("show_startup_tips false\nshow_release_notes false\n")
         self.out = out
@@ -712,6 +1144,12 @@ def main() -> int:
                 print(json.dumps(row))
                 log.write(json.dumps(row) + "\n")
                 continue
+            if mux not in drivers:
+                row = {"mux": mux, "status": "fail", "reason": "unsupported_driver"}
+                results.append(row)
+                print(json.dumps(row))
+                log.write(json.dumps(row) + "\n")
+                continue
             driver = drivers[mux](out)
             version = driver.version()
             wide = None
@@ -750,20 +1188,39 @@ def main() -> int:
                     log.write(json.dumps(row) + "\n")
             finally:
                 driver.stop()
-        # The flagship journeys run on their own tmux servers after the cases:
-        # a height-only resize storm and a width+height resize storm, both
-        # requiring zero UI fragment rows in history.
+        # The flagship journeys run on dedicated multiplexer sessions after the
+        # standard cases: a height-only resize storm and a width+height resize
+        # storm, both requiring zero UI fragment rows in history.
         muxes = [m.strip() for m in args.mux.split(",") if m.strip()]
-        if "tmux" in muxes and "tmux" not in out_of_scope and shutil.which("tmux"):
-            for case, sizes, reflow in [
-                ("flagship_journey", JOURNEY_HEIGHT_STORM, False),
-                ("flagship_journey_width_resizes", JOURNEY_STORM, False),
-            ]:
+        journey_runners = {
+            "tmux": (Tmux, run_tmux_journey),
+            "screen": (Screen, run_screen_journey),
+            "zellij": (Zellij, run_zellij_journey),
+        }
+        active_journey_muxes = [
+            m for m in muxes
+            if m in journey_runners and m not in out_of_scope and shutil.which(m)
+        ]
+        keystroke_latency = measure_pty_keystroke_latency(agent) if active_journey_muxes else None
+        for mux in active_journey_muxes:
+            drv_cls, runner = journey_runners[mux]
+            version = drv_cls(out).version()
+            journey_matrix: list[tuple[str, list[tuple[int, int]], bool, dict]] = [
+                ("flagship_journey", JOURNEY_HEIGHT_STORM, False, {}),
+                ("flagship_journey_width_resizes", JOURNEY_STORM, False, {}),
+            ]
+            if mux == "tmux":
+                journey_matrix.append(
+                    ("flagship_journey_scroll_region", JOURNEY_STORM, False,
+                     {"total_lines": 10_000, "scroll_region": True})
+                )
+            for case, sizes, reflow, extra in journey_matrix:
                 started = time.monotonic()
-                row = {"mux": "tmux", "version": Tmux(out).version(), "case": case}
+                row = {"mux": mux, "version": version, "case": case}
                 try:
-                    row.update(run_tmux_journey(out, agent, args.timeout, storm_sizes=sizes,
-                                                reflow_expected=reflow, case=case))
+                    row.update(runner(out, agent, args.timeout, storm_sizes=sizes,
+                                      reflow_expected=reflow, case=case,
+                                      keystroke_latency=keystroke_latency, **extra))
                     row["status"] = "pass" if row.pop("ok") else "fail"
                 except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as err:
                     row.update(status="fail", reason=str(err))

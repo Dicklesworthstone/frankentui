@@ -5,6 +5,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
 
+PRESET_E2E_LOG_DIR="${E2E_LOG_DIR:-}"
+PRESET_E2E_LOG_DIR_EXISTED=false
+if [[ -n "$PRESET_E2E_LOG_DIR" && -e "$PRESET_E2E_LOG_DIR" ]]; then
+    PRESET_E2E_LOG_DIR_EXISTED=true
+fi
+PRESET_E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-}"
+PRESET_E2E_JSONL_FILE="${E2E_JSONL_FILE:-}"
+PRESET_LOG_FILE="${LOG_FILE:-}"
+
 # shellcheck source=/dev/null
 source "$LIB_DIR/common.sh"
 # shellcheck source=/dev/null
@@ -88,21 +97,33 @@ fi
 e2e_fixture_init "e2e"
 
 TIMESTAMP="$(e2e_log_stamp)"
-E2E_LOG_DIR="${E2E_LOG_DIR:-/tmp/ftui_e2e_${E2E_RUN_ID}_${TIMESTAMP}}"
-if [[ -e "$E2E_LOG_DIR" ]]; then
-    base="$E2E_LOG_DIR"
-    suffix=1
-    while [[ -e "${base}_$suffix" ]]; do
-        suffix=$((suffix + 1))
-    done
-    E2E_LOG_DIR="${base}_$suffix"
+if [[ -n "$PRESET_E2E_LOG_DIR" ]]; then
+    E2E_LOG_DIR="$PRESET_E2E_LOG_DIR"
+    if $PRESET_E2E_LOG_DIR_EXISTED; then
+        base="$E2E_LOG_DIR"
+        suffix=1
+        while [[ -e "${base}_$suffix" ]]; do
+            suffix=$((suffix + 1))
+        done
+        E2E_LOG_DIR="${base}_$suffix"
+    fi
+else
+    E2E_LOG_DIR="/tmp/ftui_e2e_${E2E_RUN_ID}_${TIMESTAMP}"
+    if [[ -e "$E2E_LOG_DIR" ]]; then
+        base="$E2E_LOG_DIR"
+        suffix=1
+        while [[ -e "${base}_$suffix" ]]; do
+            suffix=$((suffix + 1))
+        done
+        E2E_LOG_DIR="${base}_$suffix"
+    fi
 fi
-E2E_RESULTS_DIR="$E2E_LOG_DIR/results"
-LOG_FILE="$E2E_LOG_DIR/e2e.log"
+E2E_RESULTS_DIR="${PRESET_E2E_RESULTS_DIR:-$E2E_LOG_DIR/results}"
+LOG_FILE="${PRESET_LOG_FILE:-$E2E_LOG_DIR/e2e.log}"
 E2E_RUN_CMD="${E2E_RUN_CMD:-$0 ${ARGS[*]}}"
 export E2E_LOG_DIR E2E_RESULTS_DIR LOG_FILE LOG_LEVEL E2E_RUN_CMD
 export E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
-export E2E_JSONL_FILE="${E2E_JSONL_FILE:-$E2E_LOG_DIR/e2e.jsonl}"
+export E2E_JSONL_FILE="${PRESET_E2E_JSONL_FILE:-$E2E_LOG_DIR/e2e.jsonl}"
 
 required_tools=(cargo "${E2E_PYTHON:-python3}" jq rg awk sed wc tr cat tail)
 if $RUN_BASELINE; then
@@ -146,7 +167,7 @@ if $RUN_BASELINE; then
     set +e
     run_all_start_ms="$(e2e_now_ms)"
     jsonl_step_start "run_all"
-    "$PROJECT_ROOT/tests/e2e/scripts/run_all.sh" "${ARGS[@]}"
+    E2E_SUPPRESS_SUMMARY_RUN_END=1 "$PROJECT_ROOT/tests/e2e/scripts/run_all.sh" "${ARGS[@]}"
     RUN_ALL_STATUS=$?
     run_all_duration_ms=$(( $(e2e_now_ms) - run_all_start_ms ))
     if [ "$RUN_ALL_STATUS" -eq 0 ]; then
@@ -1928,8 +1949,19 @@ if $RUN_AGENT_SHELL; then
     fi
 fi
 
+if [[ "${E2E_FORCE_FAIL:-0}" == "1" ]]; then
+    force_fail_case="${E2E_FORCE_FAIL_CASE:-e2e_force_fail}"
+    force_fail_log="$E2E_LOG_DIR/${force_fail_case}.log"
+    LOG_FILE="$force_fail_log"
+    log_test_start "$force_fail_case"
+    jsonl_assert "e2e_force_fail_injected" "fail" "E2E_FORCE_FAIL=1 injected failure for $force_fail_case"
+    log_test_fail "$force_fail_case" "E2E_FORCE_FAIL=1 negative control injected failure"
+    record_result "$force_fail_case" "failed" 1 "$force_fail_log" "E2E_FORCE_FAIL=1 negative control injected failure"
+    RUN_ALL_STATUS=1
+fi
+
 SUMMARY_JSON="$E2E_RESULTS_DIR/summary.json"
-finalize_summary "$SUMMARY_JSON"
+E2E_SUPPRESS_SUMMARY_RUN_END=1 finalize_summary "$SUMMARY_JSON"
 jsonl_assert "artifact_summary_json" "pass" "summary_json=$SUMMARY_JSON"
 
 run_duration_ms=$(( $(e2e_now_ms) - ${E2E_RUN_START_MS:-0} ))
@@ -1942,6 +1974,9 @@ else
     else
         failed_count="$(grep -Eo '\"failed\":[0-9]+' "$SUMMARY_JSON" | head -1 | awk -F: '{print $2}' || echo 0)"
     fi
+fi
+if [[ "$failed_count" -gt 0 ]]; then
+    RUN_ALL_STATUS=1
 fi
 if [ "$RUN_ALL_STATUS" -eq 0 ]; then
     jsonl_run_end "complete" "$run_duration_ms" "$failed_count"

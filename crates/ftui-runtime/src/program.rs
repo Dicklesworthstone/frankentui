@@ -7138,6 +7138,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 // Clamp to minimum 1 to prevent Buffer::new panic on zero dimensions
                 let width = width.max(1);
                 let height = height.max(1);
+                self.presenter.notify_resize(width, height);
                 match self.resize_behavior {
                     ResizeBehavior::Immediate => {
                         self.resize_coalescer

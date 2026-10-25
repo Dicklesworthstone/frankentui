@@ -173,6 +173,10 @@ pub trait BackendPresenter {
     /// Optional: release resources held by the presenter (e.g., grapheme pool compaction).
     fn gc(&mut self) {}
 
+    /// Notify the presenter immediately when a resize event arrives, before
+    /// resize coalescing defers the frame redraw.
+    fn notify_resize(&mut self, _cols: u16, _rows: u16) {}
+
     /// Resize the presentation surface.
     fn resize(&mut self, _cols: u16, _rows: u16) {}
 

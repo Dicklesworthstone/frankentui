@@ -60,14 +60,17 @@ tools:
       # leave the audit green while every close sailed through. Builds a
       # throwaway beads project under the run root and never deletes it.
       - bash scripts/check_close_policy_e2e.sh "${DSR_CLOSE_POLICY_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_close_policy/dsr}"
-      # Release preflight gate self-tests (bd-g00-root-epic-ewths.10.1).
+      # Release preflight + publish helper self-tests (bd-g00-root-epic-ewths.10.1, .6.22).
       - bash scripts/release_preflight_test.sh
+      - bash scripts/ci/release_publish_test.sh
       # Static workflow + DSR doctor verification contract assertions (bd-g00-root-epic-ewths.28.4).
       - python3 -B scripts/check_workflows.py --self-test
       - python3 -B scripts/check_workflows.py
       # Tree-derived README/AGENTS inventory facts and drift gate (bd-g00-root-epic-ewths.5.11).
       - python3 -B scripts/repo_facts.py --self-test
       - python3 -B scripts/repo_facts.py --check
+      # Vision scorecard synthetic self-test (bd-g00-root-epic-ewths.42.6).
+      - python3 -B scripts/vision_scorecard.py --self-test
   # The AGENTS.md "Landing the Plane" gate set on the native host, without RCH
   # (forbidden until bd-g00-root-epic-ewths.6.24): `cargo` on this host's PATH
   # is an RCH shim, so every cargo line carries RCH_CARGO_WRAPPER_BYPASS=1, the
@@ -109,6 +112,17 @@ tools:
     language: rust
     required_checks:
       - bash tests/e2e/scripts/test_examples.sh
+  # Render + Pane E2E acceptance gates (bd-g00-root-epic-ewths.6.27, .6.28):
+  # runs `scripts/e2e_test.sh --quick` and `scripts/pane_e2e.sh --mode smoke`
+  # with strict JSONL schema and hash-registry validation. Full/stress modes
+  # (`./scripts/e2e_test.sh` and `./scripts/pane_e2e.sh --mode full`) run in
+  # scheduled extended sweeps.
+  frankentui-render-pane-e2e:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') E2E_JSONL_VALIDATE=1 E2E_JSONL_VALIDATE_MODE=strict bash scripts/e2e_test.sh --quick
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') E2E_JSONL_VALIDATE=1 E2E_JSONL_VALIDATE_MODE=strict bash scripts/pane_e2e.sh --mode smoke
   # G48 (bd-g00-root-epic-ewths.47.4): every inline log line reaches real
   # multiplexer history. Needs tmux, GNU screen and zellij on the host; a
   # missing one FAILS its cases unless named in FTUI_E2E_MUX_OUT_OF_SCOPE
@@ -178,6 +192,7 @@ tools:
     language: rust
     required_checks:
       - bash scripts/release_preflight_test.sh
+      - bash scripts/ci/release_publish_test.sh
       - bash scripts/release_preflight.sh "${DSR_RELEASE_TAG:-v$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')}" --strict --out "${DSR_PREFLIGHT_OUT:-${TMPDIR:-/tmp}/ftui_release_preflight.jsonl}"
   # Windows cross-target and start/stop smoke verification (bd-g00-root-epic-ewths.6.5,
   # bd-g00-root-epic-ewths.36.1, bd-g00-root-epic-ewths.36.2).
@@ -212,4 +227,14 @@ tools:
       - bash scripts/doctor_frankentui_determinism_soak.sh "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}/determinism" 3
       - bash scripts/doctor_frankentui_coverage.sh "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}/coverage"
       - python3 -B scripts/doctor_frankentui_validate_jsonl.py --bundle-root "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}" --write-artifact-map
+  # G42 (bd-g00-root-epic-ewths.42.6): executable vision scorecard across truth
+  # gates, all 45 showcase screens in a real PTY, core examples, DEC 2026 sync
+  # bracket balance, inline scrollback across 4 terminal identities, and real
+  # tmux history preservation.
+  frankentui-vision-scorecard:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - python3 -B scripts/vision_scorecard.py --self-test
+      - RCH_CARGO_WRAPPER_BYPASS=1 python3 -B scripts/vision_scorecard.py --skip-cargo-sweeps --out "${DSR_VISION_SCORECARD_OUT:-${TMPDIR:-/tmp}/ftui_vision_scorecard/dsr}"
 

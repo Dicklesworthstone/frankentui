@@ -421,8 +421,10 @@ another browser wrapper. A screenshot must be inspected for actual UI pixels:
 successful frame logs and input recovery do not prove visible rendering.
 
 ```bash
-# Run E2E test scripts
+# Run E2E test scripts (DSR tool `frankentui-render-pane-e2e` gates `e2e_test.sh --quick` and `pane_e2e.sh --mode smoke`)
+./scripts/e2e_test.sh --quick
 ./scripts/e2e_test.sh
+./scripts/pane_e2e.sh --mode smoke
 ./scripts/widget_api_e2e.sh
 ./scripts/demo_showcase_e2e.sh
 ./scripts/consumer_smoke_e2e.sh

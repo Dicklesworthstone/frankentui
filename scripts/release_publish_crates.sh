@@ -16,7 +16,7 @@ case "$mode" in
     *) echo "Unknown mode: $mode" >&2; exit 2 ;;
 esac
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected a stable X.Y.Z version' >&2; exit 2; }
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="${RELEASE_PUBLISH_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$root"
 out="$(python3 -I -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$out")"
 case "$out/" in
@@ -216,7 +216,7 @@ while IFS= read -r crate; do
             break
         fi
         [[ "$registry_status" == 4 ]] || break
-        sleep 5
+        sleep "${RELEASE_PUBLISH_SLEEP_SECS:-5}"
     done
     if [[ "$observed" != true ]] || ! verify_archive "$crate" "$response"; then
         record "$crate" failed 'Publication was not confirmed with the candidate archive checksum'

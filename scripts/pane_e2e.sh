@@ -165,11 +165,14 @@ jsonl_assert "artifact_pane_e2e_results_dir" "pass" "path=$E2E_RESULTS_DIR"
 jsonl_assert "artifact_pane_e2e_artifact_root" "pass" "path=$PANE_ARTIFACT_ROOT"
 jsonl_assert "artifact_pane_traceability_matrix" "pass" "path=$PANE_TRACEABILITY_MATRIX"
 
-if command -v rch >/dev/null 2>&1; then
+if [[ "${RCH_CARGO_WRAPPER_BYPASS:-0}" != "1" ]] && command -v rch >/dev/null 2>&1; then
     CARGO_RUNNER=(rch exec -- cargo)
+    CARGO_RUNNER_NAME="rch"
 else
     CARGO_RUNNER=(cargo)
+    CARGO_RUNNER_NAME="cargo"
 fi
+jsonl_assert "cargo_runner" "pass" "runner=$CARGO_RUNNER_NAME"
 
 FAILURES=0
 TOTAL_STEPS=0
@@ -475,6 +478,10 @@ if [[ "$MODE" != "smoke" ]]; then
 fi
 
 run_traceability_step
+
+if [[ "${E2E_FORCE_FAIL:-0}" == "1" ]]; then
+    run_step "${E2E_FORCE_FAIL_CASE:-pane_e2e_force_fail}" "terminal" bash -c "echo 'E2E_FORCE_FAIL=1 injected failure' >&2; exit 1" || true
+fi
 
 SUMMARY_JSON="$E2E_RESULTS_DIR/pane_e2e_summary.json"
 if command -v jq >/dev/null 2>&1; then

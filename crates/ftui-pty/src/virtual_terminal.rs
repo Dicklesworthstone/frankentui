@@ -642,6 +642,128 @@ impl VirtualTerminal {
         self.scrollback.clear();
     }
 
+    /// Resize the virtual terminal to `(new_width, new_height)`.
+    ///
+    /// On the primary screen, shrinking height removes trailing blank rows
+    /// below the cursor first and shifts any remaining excess rows from the
+    /// top of the screen into `scrollback`; growing height pulls rows back
+    /// from the bottom of `scrollback` into the top of the screen (keeping
+    /// bottom-anchored rows at the bottom, as in xterm/tmux) before padding
+    /// any remaining rows at the bottom. Resets active DECSTBM scrolling
+    /// margins to the full new height and clamps cursor positions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `new_width == 0` or `new_height == 0`.
+    pub fn resize(&mut self, new_width: u16, new_height: u16) {
+        assert!(
+            new_width > 0 && new_height > 0,
+            "terminal dimensions must be > 0"
+        );
+        if new_width == self.width && new_height == self.height {
+            return;
+        }
+
+        let old_w = usize::from(self.width);
+        let new_w = usize::from(new_width);
+        let new_h = usize::from(new_height);
+
+        let resize_row = |mut row: Vec<VCell>| -> Vec<VCell> {
+            if new_w < row.len() {
+                if row.get(new_w).is_some_and(|c| c.ch == WIDE_CONTINUATION) && new_w > 0 {
+                    row[new_w - 1] = VCell::default();
+                }
+                row.truncate(new_w);
+            } else if new_w > row.len() {
+                row.resize(new_w, VCell::default());
+            }
+            row
+        };
+
+        let mut rows: VecDeque<Vec<VCell>> = self
+            .grid
+            .chunks(old_w)
+            .map(|chunk| resize_row(chunk.to_vec()))
+            .collect();
+
+        if !self.alternate_screen {
+            if new_h < rows.len() {
+                let mut to_remove = rows.len() - new_h;
+                while to_remove > 0
+                    && rows.len() > usize::from(self.cursor_y) + 1
+                    && rows.back().is_some_and(|row| {
+                        row.iter()
+                            .all(|c| c.ch == ' ' && c.style == CellStyle::default())
+                    })
+                {
+                    rows.pop_back();
+                    to_remove -= 1;
+                }
+                for _ in 0..to_remove {
+                    let Some(top_row) = rows.pop_front() else {
+                        break;
+                    };
+                    self.scrollback.push_back(top_row);
+                    if self.scrollback.len() > self.max_scrollback {
+                        self.scrollback.pop_front();
+                    }
+                    self.cursor_y = self.cursor_y.saturating_sub(1);
+                    if let Some((_, ref mut saved_y)) = self.saved_cursor {
+                        *saved_y = saved_y.saturating_sub(1);
+                    }
+                }
+            } else if new_h > rows.len() {
+                let to_add = new_h - rows.len();
+                for _ in 0..to_add {
+                    if let Some(sb_row) = self.scrollback.pop_back() {
+                        rows.push_front(resize_row(sb_row));
+                        self.cursor_y = self.cursor_y.saturating_add(1);
+                        if let Some((_, ref mut saved_y)) = self.saved_cursor {
+                            *saved_y = saved_y.saturating_add(1);
+                        }
+                    } else {
+                        rows.push_back(vec![VCell::default(); new_w]);
+                    }
+                }
+            }
+        } else {
+            while rows.len() > new_h {
+                rows.pop_back();
+            }
+            while rows.len() < new_h {
+                rows.push_back(vec![VCell::default(); new_w]);
+            }
+            if let Some(alt_grid) = self.alternate_grid.take() {
+                let mut alt_rows: Vec<Vec<VCell>> = alt_grid
+                    .chunks(old_w)
+                    .map(|chunk| resize_row(chunk.to_vec()))
+                    .collect();
+                alt_rows.truncate(new_h);
+                while alt_rows.len() < new_h {
+                    alt_rows.push(vec![VCell::default(); new_w]);
+                }
+                self.alternate_grid = Some(alt_rows.into_iter().flatten().collect());
+            }
+        }
+
+        self.grid = rows.into_iter().flatten().collect();
+        self.width = new_width;
+        self.height = new_height;
+        self.cursor_x = self.cursor_x.min(new_width.saturating_sub(1));
+        self.cursor_y = self.cursor_y.min(new_height.saturating_sub(1));
+        if let Some((ref mut sx, ref mut sy)) = self.saved_cursor {
+            *sx = (*sx).min(new_width.saturating_sub(1));
+            *sy = (*sy).min(new_height.saturating_sub(1));
+        }
+        if let Some((ref mut ax, ref mut ay)) = self.alternate_cursor {
+            *ax = (*ax).min(new_width.saturating_sub(1));
+            *ay = (*ay).min(new_height.saturating_sub(1));
+        }
+        self.scroll_top = 0;
+        self.scroll_bottom = new_height.saturating_sub(1);
+        self.tab_stops = Self::default_tab_stops(new_width);
+    }
+
     // ── Query Responses ─────────────────────────────────────────────
 
     /// Generate a cursor position report (CPR) response.
@@ -3410,6 +3532,34 @@ mod tests {
         vt.clear_scrollback();
         assert_eq!(vt.row_text(0), "Hello");
         assert_eq!(vt.row_text(1), "World");
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn resize_shrink_and_grow_preserves_scrollback_and_bottom_rows() {
+        let mut vt = VirtualTerminal::new(10, 4);
+        vt.feed_str("row1\r\nrow2\r\nrow3\r\nui_bottom");
+        assert_eq!(vt.scrollback_len(), 0);
+        assert_eq!(vt.row_text(3), "ui_bottom");
+
+        // Shrinking from 4 to 2 rows pushes row1 and row2 into scrollback and
+        // keeps row3 + ui_bottom at the bottom.
+        vt.resize(10, 2);
+        assert_eq!(vt.scrollback_len(), 2);
+        assert_eq!(vt.scrollback_line(0).as_deref(), Some("row1"));
+        assert_eq!(vt.scrollback_line(1).as_deref(), Some("row2"));
+        assert_eq!(vt.row_text(0), "row3");
+        assert_eq!(vt.row_text(1), "ui_bottom");
+        assert_invariants(&vt);
+
+        // Growing back from 2 to 4 rows pulls row1 and row2 back from scrollback.
+        vt.resize(12, 4);
+        assert_eq!(vt.scrollback_len(), 0);
+        assert_eq!(vt.row_text(0), "row1");
+        assert_eq!(vt.row_text(1), "row2");
+        assert_eq!(vt.row_text(2), "row3");
+        assert_eq!(vt.row_text(3), "ui_bottom");
+        assert_eq!(vt.scroll_region(), (0, 3));
         assert_invariants(&vt);
     }
 }

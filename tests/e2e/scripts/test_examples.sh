@@ -67,7 +67,7 @@ bordered = any(len(top) == len(middle) == len(bottom) == 80
 counts = dict(cursor_hide=raw.count(b'\x1b[?25l'), cursor_show=raw.count(b'\x1b[?25h'),
               alt_1049h=raw.count(b'\x1b[?1049h'), sync_h=sync.count(b'h'), sync_l=sync.count(b'l'),
               decstbm_set=len(re.findall(rb'\x1b\[\d+;\d+r', raw)), decstbm_reset=raw.count(b'\x1b[r'))
-# Each frame ends its sync block; terminal-session cleanup sends one extra end.
+# Each frame opens and closes its own synchronized-output block (?2026h/?2026l).
 checks = dict(duration=child_ms is not None and (950 if name == 'auto_exit' else 500) <= child_ms < 2000
                        and not timing['timed_out'],
               input=timing['input_chunks_sent'] == timing['input_chunks_expected']
@@ -77,7 +77,7 @@ checks = dict(duration=child_ms is not None and (950 if name == 'auto_exit' else
                                      and b'Hello from FrankenTUI ticks: 0' in raw,
               cursor=bool(cursor) and cursor[0] == b'\x1b[?25l' and cursor[-1] == b'\x1b[?25h',
               inline=counts['alt_1049h'] == 0,
-              sync=counts['sync_h'] > 0 and sync == [b'h', b'l'] * counts['sync_h'] + [b'l'],
+              sync=counts['sync_h'] > 0 and sync == [b'h', b'l'] * counts['sync_h'],
               scroll=counts['decstbm_set'] > 0 and counts['decstbm_reset'] == 2
                      and raw.rfind(b'\x1b7\x1b[r\x1b8') > raw.rfind(b'\x1b[?2026h'))
 record = dict(scenario='minimal_example_' + name, identity='kitty', exit_code=0,

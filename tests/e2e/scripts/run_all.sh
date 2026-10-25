@@ -4,6 +4,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/../lib"
 
+PRESET_E2E_LOG_DIR="${E2E_LOG_DIR:-}"
+PRESET_E2E_LOG_DIR_EXISTED=false
+if [[ -n "$PRESET_E2E_LOG_DIR" && -e "$PRESET_E2E_LOG_DIR" && "${E2E_JSONL_INIT:-0}" != "1" ]]; then
+    PRESET_E2E_LOG_DIR_EXISTED=true
+fi
+PRESET_E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-}"
+PRESET_E2E_JSONL_FILE="${E2E_JSONL_FILE:-}"
+PRESET_LOG_FILE="${LOG_FILE:-}"
+
 # shellcheck source=/dev/null
 source "$LIB_DIR/common.sh"
 # shellcheck source=/dev/null
@@ -38,18 +47,30 @@ done
 e2e_fixture_init "e2e"
 
 TIMESTAMP="$(e2e_log_stamp)"
-E2E_LOG_DIR="${E2E_LOG_DIR:-/tmp/ftui_e2e_${E2E_RUN_ID}_${TIMESTAMP}}"
-if [[ -e "$E2E_LOG_DIR" ]]; then
-    base="$E2E_LOG_DIR"
-    suffix=1
-    while [[ -e "${base}_$suffix" ]]; do
-        suffix=$((suffix + 1))
-    done
-    E2E_LOG_DIR="${base}_$suffix"
+if [[ -n "$PRESET_E2E_LOG_DIR" ]]; then
+    E2E_LOG_DIR="$PRESET_E2E_LOG_DIR"
+    if $PRESET_E2E_LOG_DIR_EXISTED; then
+        base="$E2E_LOG_DIR"
+        suffix=1
+        while [[ -e "${base}_$suffix" ]]; do
+            suffix=$((suffix + 1))
+        done
+        E2E_LOG_DIR="${base}_$suffix"
+    fi
+else
+    E2E_LOG_DIR="/tmp/ftui_e2e_${E2E_RUN_ID}_${TIMESTAMP}"
+    if [[ -e "$E2E_LOG_DIR" ]]; then
+        base="$E2E_LOG_DIR"
+        suffix=1
+        while [[ -e "${base}_$suffix" ]]; do
+            suffix=$((suffix + 1))
+        done
+        E2E_LOG_DIR="${base}_$suffix"
+    fi
 fi
-E2E_RESULTS_DIR="$E2E_LOG_DIR/results"
-LOG_FILE="$E2E_LOG_DIR/e2e.log"
-E2E_JSONL_FILE="${E2E_JSONL_FILE:-$E2E_LOG_DIR/e2e.jsonl}"
+E2E_RESULTS_DIR="${PRESET_E2E_RESULTS_DIR:-$E2E_LOG_DIR/results}"
+LOG_FILE="${PRESET_LOG_FILE:-$E2E_LOG_DIR/e2e.log}"
+E2E_JSONL_FILE="${PRESET_E2E_JSONL_FILE:-$E2E_LOG_DIR/e2e.jsonl}"
 E2E_RUN_CMD="${E2E_RUN_CMD:-$0 $*}"
 
 export E2E_LOG_DIR E2E_RESULTS_DIR LOG_FILE LOG_LEVEL E2E_JSONL_FILE E2E_RUN_CMD

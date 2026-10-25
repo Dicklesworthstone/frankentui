@@ -166,6 +166,10 @@ impl<W: Write + Send> BackendPresenter for TerminalPresenter<W> {
         self.writer.gc(None);
     }
 
+    fn notify_resize(&mut self, cols: u16, rows: u16) {
+        self.writer.notify_resize(cols, rows);
+    }
+
     fn resize(&mut self, cols: u16, rows: u16) {
         self.writer.set_size(cols, rows);
     }

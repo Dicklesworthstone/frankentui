@@ -145,42 +145,87 @@ def check_workflow_block(
 
 
 def check_dsr_quality(dsr_text: str, workflow_label: str = ".config/dsr-quality.yaml") -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
     marker = "  frankentui-doctor-verification:\n"
     idx = dsr_text.find(marker)
     if idx < 0:
-        return [
+        results.append(
             {
                 "check": "dsr_doctor_verification_tool_contract",
                 "workflow": workflow_label,
                 "status": "fail",
                 "detail": "missing tool frankentui-doctor-verification",
             }
-        ]
-    rest = dsr_text[idx + len(marker) :]
-    lines = [marker.rstrip("\n")]
-    for line in rest.splitlines():
-        if re.match(r"^  [a-zA-Z0-9_-]+:\s*$", line):
-            break
-        lines.append(line)
-    block = "\n".join(lines)
-    missing = [script for script in DSR_REQUIRED_SCRIPTS if script not in block]
-    if not missing:
-        return [
+        )
+    else:
+        rest = dsr_text[idx + len(marker) :]
+        lines = [marker.rstrip("\n")]
+        for line in rest.splitlines():
+            if re.match(r"^  [a-zA-Z0-9_-]+:\s*$", line):
+                break
+            lines.append(line)
+        block = "\n".join(lines)
+        missing = [script for script in DSR_REQUIRED_SCRIPTS if script not in block]
+        if not missing:
+            results.append(
+                {
+                    "check": "dsr_doctor_verification_tool_contract",
+                    "workflow": workflow_label,
+                    "status": "pass",
+                    "detail": "invokes " + ", ".join(DSR_REQUIRED_SCRIPTS),
+                }
+            )
+        else:
+            results.append(
+                {
+                    "check": "dsr_doctor_verification_tool_contract",
+                    "workflow": workflow_label,
+                    "status": "fail",
+                    "detail": "missing DSR doctor checks: " + ", ".join(missing),
+                }
+            )
+
+    e2e_marker = "  frankentui-render-pane-e2e:\n"
+    e2e_idx = dsr_text.find(e2e_marker)
+    if e2e_idx < 0:
+        results.append(
             {
-                "check": "dsr_doctor_verification_tool_contract",
+                "check": "dsr_render_pane_e2e_tool_contract",
                 "workflow": workflow_label,
-                "status": "pass",
-                "detail": "invokes " + ", ".join(DSR_REQUIRED_SCRIPTS),
+                "status": "fail",
+                "detail": "missing tool frankentui-render-pane-e2e",
             }
-        ]
-    return [
-        {
-            "check": "dsr_doctor_verification_tool_contract",
-            "workflow": workflow_label,
-            "status": "fail",
-            "detail": "missing DSR doctor checks: " + ", ".join(missing),
-        }
-    ]
+        )
+    else:
+        rest = dsr_text[e2e_idx + len(e2e_marker) :]
+        lines = [e2e_marker.rstrip("\n")]
+        for line in rest.splitlines():
+            if re.match(r"^  [a-zA-Z0-9_-]+:\s*$", line):
+                break
+            lines.append(line)
+        block = "\n".join(lines)
+        required_e2e = ("scripts/e2e_test.sh --quick", "scripts/pane_e2e.sh --mode smoke")
+        missing_e2e = [cmd for cmd in required_e2e if cmd not in block]
+        if not missing_e2e:
+            results.append(
+                {
+                    "check": "dsr_render_pane_e2e_tool_contract",
+                    "workflow": workflow_label,
+                    "status": "pass",
+                    "detail": "invokes " + ", ".join(required_e2e),
+                }
+            )
+        else:
+            results.append(
+                {
+                    "check": "dsr_render_pane_e2e_tool_contract",
+                    "workflow": workflow_label,
+                    "status": "fail",
+                    "detail": "missing DSR E2E checks: " + ", ".join(missing_e2e),
+                }
+            )
+
+    return results
 
 
 def evaluate_all(ci_text: str, extended_text: str, dsr_text: str) -> list[dict[str, str]]:

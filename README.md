@@ -487,12 +487,17 @@ cargo clippy --all-targets -- -D warnings
 
 ### E2E Scripts
 
+DSR runs `./scripts/e2e_test.sh --quick` and `./scripts/pane_e2e.sh --mode smoke` as direct acceptance checks via `frankentui-render-pane-e2e` in [`.config/dsr-quality.yaml`](.config/dsr-quality.yaml) with strict JSONL validation (`validate_jsonl.py --strict`); the full suites (`./scripts/e2e_test.sh` and `./scripts/pane_e2e.sh --mode full`) run in scheduled extended sweeps.
+
 ```bash
+./scripts/e2e_test.sh --quick
 ./scripts/e2e_test.sh
 ./scripts/widget_api_e2e.sh
 ./scripts/pane_e2e.sh --mode smoke
 ./scripts/pane_e2e.sh --mode full
 ./tests/e2e/check_pane_traceability.sh
+./tests/e2e/scripts/run_all.sh
+python3 -B scripts/vision_scorecard.py --skip-cargo-sweeps --out /tmp/ftui_vision_scorecard
 ```
 
 ### Performance Gates

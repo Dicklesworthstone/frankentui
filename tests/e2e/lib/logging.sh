@@ -581,7 +581,8 @@ jsonl_validate_current() {
         fi
     fi
 
-    if [[ -n "${E2E_PYTHON:-}" && -f "$E2E_JSONL_VALIDATOR" && -f "$E2E_JSONL_SCHEMA_FILE" ]]; then
+    local py_bin="${E2E_PYTHON:-python3}"
+    if command -v "$py_bin" >/dev/null 2>&1 && [[ -f "$E2E_JSONL_VALIDATOR" && -f "$E2E_JSONL_SCHEMA_FILE" ]]; then
         local flag="--warn"
         if [[ "$mode" == "strict" ]]; then
             flag="--strict"
@@ -590,7 +591,7 @@ jsonl_validate_current() {
         if [[ -n "${E2E_JSONL_REGISTRY_FILE:-}" && -f "$E2E_JSONL_REGISTRY_FILE" ]]; then
             registry_args=(--registry "$E2E_JSONL_REGISTRY_FILE")
         fi
-        if ! "$E2E_PYTHON" "$E2E_JSONL_VALIDATOR" "$E2E_JSONL_FILE" --schema "$E2E_JSONL_SCHEMA_FILE" "${registry_args[@]}" "$flag"; then
+        if ! "$py_bin" -B "$E2E_JSONL_VALIDATOR" "$E2E_JSONL_FILE" --schema "$E2E_JSONL_SCHEMA_FILE" "${registry_args[@]}" "$flag"; then
             log_error "JSONL schema validation failed for $E2E_JSONL_FILE"
             return 1
         fi
@@ -1602,12 +1603,13 @@ finalize_summary() {
     end_ms="$(e2e_now_ms)"
     local start_ms="${E2E_RUN_START_MS:-$end_ms}"
     local duration_ms=$((end_ms - start_ms))
+    local tmp_summary="${summary_file}.tmp.$$"
 
     if command -v jq >/dev/null 2>&1; then
         jq -s \
             --arg timestamp "$(e2e_timestamp)" \
             --argjson duration_ms "$duration_ms" \
-            '{
+            'map(select(type == "object" and has("name") and has("status"))) | {
                 timestamp: $timestamp,
                 total: length,
                 passed: (map(select(.status=="passed")) | length),
@@ -1616,7 +1618,8 @@ finalize_summary() {
                 duration_ms: $duration_ms,
                 tests: .
             }' \
-            "$E2E_RESULTS_DIR"/*.json > "$summary_file"
+            "$E2E_RESULTS_DIR"/*.json > "$tmp_summary"
+        mv "$tmp_summary" "$summary_file"
     else
         local total
         total=$(ls -1 "$E2E_RESULTS_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ')
@@ -1628,10 +1631,12 @@ EOF_SUM
     if command -v jq >/dev/null 2>&1; then
         failed_count=$(jq '.failed // 0' "$summary_file" 2>/dev/null || echo 0)
     fi
-    if [[ "$failed_count" -gt 0 ]]; then
-        jsonl_run_end "failed" "$duration_ms" "$failed_count"
-    else
-        jsonl_run_end "complete" "$duration_ms" "$failed_count"
+    if [[ "${E2E_SUPPRESS_SUMMARY_RUN_END:-0}" != "1" ]]; then
+        if [[ "$failed_count" -gt 0 ]]; then
+            jsonl_run_end "failed" "$duration_ms" "$failed_count"
+        else
+            jsonl_run_end "complete" "$duration_ms" "$failed_count"
+        fi
     fi
     jsonl_assert "artifact_summary_json" "pass" "summary_json=$summary_file"
     jsonl_assert "artifact_e2e_jsonl" "pass" "e2e_jsonl=$E2E_JSONL_FILE"
