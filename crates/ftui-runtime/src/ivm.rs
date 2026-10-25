@@ -1,61 +1,33 @@
-//! Incremental View Maintenance (IVM) — delta-propagation DAG for derived
-//! render state (bd-3akdb.1).
+//! Incremental View Maintenance (IVM) — signed-tuple delta algebra, DAG
+//! topology, and view operators (bd-3akdb.1, scoped in bd-lksq7).
 //!
 //! # Status: parts, not a pipeline
 //!
-//! **There is no propagation engine.** This module has the delta algebra, a DAG
-//! with topological ordering and cycle detection, a fallback policy predicate,
-//! and two [`IncrementalView`] implementations ([`StyleResolutionView`],
-//! [`FilteredListView`]). Nothing walks the topological order feeding one view's
-//! output into the next — the tests call [`IncrementalView::apply_delta`] one
-//! view at a time and build DAGs separately, because there is no driver to call.
+//! **There is no propagation engine.** This module is permanently scoped to the
+//! signed-tuple delta algebra, a DAG with topological ordering and cycle
+//! detection, a fallback policy predicate, and two [`IncrementalView`]
+//! implementations ([`StyleResolutionView`], [`FilteredListView`]). Nothing
+//! walks the topological order feeding one view's output into the next — callers
+//! and tests invoke [`IncrementalView::apply_delta`] on individual views and
+//! construct [`DagTopology`] graphs directly.
 //!
-//! The sections below describe the design this module is *for*, not behaviour it
-//! *has*. Concretely, as of 2026-09-19:
+//! Concretely (`bd-lksq7`):
 //!
-//! - The architecture diagram names `LayoutView` and `RenderView`. Neither
-//!   exists; the only `IncrementalView` impls are the two named above.
-//! - Nothing here imports `Observable`, `DepGraph`, `Buffer` or `Presenter`.
+//! - Nothing here imports `Observable`, `DepGraph`, `Buffer`, or `Presenter`.
 //!   The module's only dependencies are `std::fmt` and `std::hash`, so no delta
-//!   reaches a buffer and none is "consumed by the presenter".
-//! - There is no `ivm.propagate` tracing span; `tracing` is not imported.
-//! - [`EpochEvidence::to_jsonl`] is never called outside this module's tests,
-//!   so no evidence is emitted.
-//! - [`IvmConfig::from_env`] really does read `FRANKENTUI_FULL_RECOMPUTE`, but
-//!   `force_full` and `emit_evidence` are read by nothing afterwards. Setting
-//!   the variable changes a struct field and no behaviour.
-//!
-//! What is here is real and tested — the delta encoding, the DAG, and the two
-//! views all have unit and e2e coverage. Treat it as the groundwork for an IVM
-//! system rather than one you can turn on. Gated behind the `experimental`
-//! feature. Wiring or retiring it is `bd-lksq7`.
-//!
-//! # Intended architecture (not implemented)
-//!
-//! ```text
-//!   Observable<Theme>   Observable<Content>   Observable<Constraint>
-//!          │                    │                      │
-//!          ▼                    │                      │
-//!   ┌──────────────┐           │                      │
-//!   │  StyleView   │◄──────────┘                      │
-//!   │  (resolve)   │                                  │
-//!   └──────┬───────┘                                  │
-//!          │ Δ(style)                                 │
-//!          ▼                                          │
-//!   ┌──────────────┐                                  │
-//!   │  LayoutView  │◄─────────────────────────────────┘
-//!   │  (compute)   │
-//!   └──────┬───────┘
-//!          │ Δ(rects)
-//!          ▼
-//!   ┌──────────────┐
-//!   │  RenderView  │
-//!   │  (cells)     │
-//!   └──────┬───────┘
-//!          │ Δ(cells)
-//!          ▼
-//!     BufferDiff → Presenter → Terminal
-//! ```
+//!   reaches a render buffer or presenter.
+//! - [`EpochEvidence`] and [`EpochEvidence::to_jsonl`] provide deterministic
+//!   JSONL serialization for caller-supplied epoch summaries; no runtime loop
+//!   emits them automatically.
+//! - [`IvmConfig::from_env`] reads `FRANKENTUI_FULL_RECOMPUTE` into
+//!   `IvmConfig::force_full` for caller inspection, and [`FallbackPolicy`]
+//!   evaluates whether a delta batch exceeds a fraction of materialized size.
+//! - The 2026-09-19 render cost surface measurement
+//!   (`docs/perf/cost_surface_stage_dominance_2026-09-19.md`) showed
+//!   `buffer_diff` is the cheapest pipeline stage (4.5–9.1% of frame time) while
+//!   `cell_mutation` and `presenter_emit` dominate, so a frame-pipeline
+//!   propagation engine is intentionally not built (`bd-lksq7`).
+//! - Gated behind the `experimental` feature.
 //!
 //! # Delta Representation
 //!
@@ -68,59 +40,6 @@
 //! This is the standard IVM delta encoding from database theory (Chirkova &
 //! Yang, "Materialized Views", §3.1). It composes: applying Δ₁ then Δ₂ is
 //! equivalent to applying their union (with cancellation of opposite signs).
-//!
-//! # Processing model (intended)
-//!
-//! Deltas would be processed in **topological micro-batches**. Steps 1, 3 and 4
-//! have no implementation; step 2 is [`DagTopology::compute_topo_order`], which
-//! does exist:
-//!
-//! 1. Collect all input changes since last frame (the "epoch").
-//! 2. Sort the DAG topologically (pre-computed at DAG build time).
-//! 3. For each view in topological order:
-//!    a. Receive input deltas from upstream views.
-//!    b. Apply `apply_delta()` to produce output deltas.
-//!    c. Forward output deltas to downstream views.
-//! 4. The final view emits cell-level deltas consumed by the presenter.
-//!
-//! The threshold above which a view should fall back to full recomputation
-//! (heuristic: > 50% of the materialized view size) is decided by
-//! [`FallbackPolicy::should_fallback`], which is a pure predicate. Nothing calls
-//! it during processing, because nothing processes.
-//!
-//! # Evidence logging (intended)
-//!
-//! Each propagation epoch would log an `ivm.propagate` tracing span carrying
-//! `epoch`, `views_processed`, `views_recomputed`, `total_delta_size` and
-//! `duration_us`, alongside an [`EpochEvidence`] JSONL line comparing delta size
-//! against full-recompute cost per view.
-//!
-//! [`EpochEvidence`] and its [`EpochEvidence::to_jsonl`] serializer exist and are
-//! tested. The span does not: `tracing` is not imported here, and nothing calls
-//! `to_jsonl` outside this module's tests.
-//!
-//! # Fallback (intended)
-//!
-//! `FRANKENTUI_FULL_RECOMPUTE=1` is meant to disable incremental processing as a
-//! benchmarking baseline and a safety valve. [`IvmConfig::from_env`] does read
-//! it, but nothing reads `force_full` afterwards, so today the variable changes
-//! a struct field and nothing else. The same is true of `emit_evidence`.
-//!
-//! # Intended integration with existing infrastructure (none of it wired)
-//!
-//! None of the following is implemented. This module imports `std::fmt` and
-//! `std::hash` and nothing else, so it cannot currently observe or affect any of
-//! these:
-//!
-//! - **DepGraph** (ftui-layout): would provide layout-level dirty tracking as
-//!   the backing store for a `LayoutView`. There is no `LayoutView`.
-//! - **Observable/Computed** (ftui-runtime/reactive): would feed the IVM input
-//!   layer, letting IVM views replace frequently-updated `Computed` values.
-//! - **Buffer dirty tracking** (ftui-render): a `RenderView`'s output deltas
-//!   would translate to `Buffer` dirty_rows/dirty_spans for the presenter.
-//!   There is no `RenderView`.
-//! - **BatchScope** (ftui-runtime/reactive): one batch would align with one
-//!   propagation epoch. There are no epochs to align with.
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -1573,5 +1492,27 @@ mod tests {
         assert_eq!(view.materialized_size(), 0);
         assert_eq!(view.domain(), ViewDomain::Style);
         assert_eq!(view.label(), "dynamic");
+    }
+
+    #[test]
+    fn module_doc_scopes_ivm_to_delta_algebra_and_dag_only() {
+        let src = include_str!("ivm.rs");
+        let header = src.split("use std::fmt;").next().unwrap_or("");
+        assert!(
+            header.contains("**There is no propagation engine.**"),
+            "ivm module header must state explicitly that there is no propagation engine"
+        );
+        for unimplemented_heading in [
+            "# Intended architecture (not implemented)",
+            "# Processing model (intended)",
+            "# Evidence logging (intended)",
+            "# Fallback (intended)",
+            "# Intended integration with existing infrastructure",
+        ] {
+            assert!(
+                !header.contains(unimplemented_heading),
+                "ivm module header must not contain unimplemented pipeline section {unimplemented_heading:?}"
+            );
+        }
     }
 }
