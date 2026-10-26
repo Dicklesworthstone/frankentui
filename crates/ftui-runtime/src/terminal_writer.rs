@@ -586,14 +586,11 @@ impl RuntimeDiffConfig {
 
 #[inline]
 fn is_uncolored_blank(cell: &ftui_render::cell::Cell) -> bool {
-    use ftui_render::cell::{CellAttrs, CellContent, StyleFlags};
+    use ftui_render::cell::{CellAttrs, CellContent};
     (cell.content.is_empty() || cell.content == CellContent::from_char(' '))
         && cell.bg.a() == 0
         && cell.attrs.link_id() == CellAttrs::LINK_ID_NONE
-        && !cell
-            .attrs
-            .flags()
-            .intersects(StyleFlags::UNDERLINE | StyleFlags::STRIKETHROUGH | StyleFlags::REVERSE)
+        && cell.attrs.flags().is_empty()
 }
 
 fn row_occupied_width(buffer: &Buffer, y: u16) -> u16 {
@@ -2857,7 +2854,13 @@ impl<W: Write> TerminalWriter<W> {
                 Ok(())
             })();
             let restore_result = if save_cursor {
-                self.writer().write_all(CURSOR_RESTORE)
+                self.writer().write_all(CURSOR_RESTORE).and_then(|()| {
+                    if mode == SanitizeMode::SgrOnly {
+                        self.writer().write_all(SGR_RESET)
+                    } else {
+                        Ok(())
+                    }
+                })
             } else {
                 Ok(())
             };
