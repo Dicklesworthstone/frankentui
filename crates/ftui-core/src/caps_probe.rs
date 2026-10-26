@@ -368,6 +368,9 @@ pub fn probe_scroll_region(
 ) -> Option<ScrollRegionVerdict> {
     use std::io::Write;
 
+    if !stdio_owns_terminal() {
+        return None;
+    }
     let region_bottom = rows.checked_sub(ui_height)?;
     if region_bottom == 0 || region_bottom >= rows {
         return None;
@@ -641,6 +644,12 @@ fn parse_color_component(s: &str) -> Option<u16> {
 // interfering with crossterm's internal event reader, which also
 // uses /dev/tty but through its own file descriptor.
 
+#[cfg(unix)]
+fn stdio_owns_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
 /// Send `query` to the tty and wait for the reply `is_reply` recognises.
 ///
 /// Anything else that arrives while waiting (a key pressed during startup,
@@ -654,6 +663,10 @@ fn send_probe_expecting(
     is_reply: impl Fn(&[u8]) -> bool,
 ) -> Option<Vec<u8>> {
     use std::io::Write;
+
+    if !stdio_owns_terminal() {
+        return None;
+    }
 
     // Write query directly to the tty.
     let mut tty_write = std::fs::OpenOptions::new()
