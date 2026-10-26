@@ -4,21 +4,21 @@
 ││Type to search...                                                           ││
 │╰────────────────────────────────────────────────────────────────────────────╯│
 │╭─────────────────Items (10000 total)─────────────────╮╭────────Stats────────╮│
-││[00000] Configuration :: CoreService initialized — pa││Total:    10000 items││
-││[00001] Authentication :: CoreService initialized — p││Matches:  10000      ││
-││[00002] Database :: CoreService initialized — payload││Selected: 1          ││
-││[00003] Network :: CoreService initialized — payload_││Query:    ""         ││
-││[00004] FileSystem :: CoreService initialized — paylo││Top score: 0         ││
-││[00005] Logging :: CoreService initialized — payload_││                     ││
-││[00006] Security :: CoreService initialized — payload││Keybindings:         ││
-││[00007] Performance :: CoreService initialized — payl││  /      Focus search││
-││[00008] Configuration :: CoreService updated — payloa││  Esc    Clear search││
-││[00009] Authentication :: CoreService updated — paylo││  j/k    Navigate    ││
-││[00010] Database :: CoreService updated — payload_10 ││  g/G    Top/Bottom  ││
-││[00011] Network :: CoreService updated — payload_11  ││  PgUp/Dn  Page scrol││
-││[00012] FileSystem :: CoreService updated — payload_1││                     ││
-││[00013] Logging :: CoreService updated — payload_13  ││                     ││
-││[00014] Security :: CoreService updated — payload_14 ││                     ││
+││[00000] Configuration :: CoreService initialized — p█││Total:    10000 items││
+││[00001] Authentication :: CoreService initialized — │││Matches:  10000      ││
+││[00002] Database :: CoreService initialized — payloa│││Selected: 1          ││
+││[00003] Network :: CoreService initialized — payload│││Query:    ""         ││
+││  ↳ trace_id=0x0064 latency=4ms                     │││Top score: 0         ││
+││[00004] FileSystem :: CoreService initialized — payl│││                     ││
+││[00005] Logging :: CoreService initialized — payload│││Keybindings:         ││
+││[00006] Security :: CoreService initialized — payloa│││  /      Focus search││
+││[00007] Performance :: CoreService initialized — pay│││  Esc    Clear search││
+││  ↳ trace_id=0x00e0 latency=8ms                     │││  j/k    Navigate    ││
+││[00008] Configuration :: CoreService updated — paylo│││  g/G    Top/Bottom  ││
+││[00009] Authentication :: CoreService updated — payl│││  PgUp/Dn  Page scrol││
+││[00010] Database :: CoreService updated — payload_10│││                     ││
+││[00011] Network :: CoreService updated — payload_11 │││                     ││
+││  ↳ trace_id=0x015c latency=12ms                    │││                     ││
 │╰─────────────────────────────────────────────────────╯╰─────────────────────╯│
 ╰──────────────────────────────────────────────────────────────────────────────╯
  Virtualized Search [28/45] [h] [cmd] [p] [d]Tab/Shift+Tab: next/prev 0x0 00:00 

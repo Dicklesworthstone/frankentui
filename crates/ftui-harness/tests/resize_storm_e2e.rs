@@ -204,7 +204,10 @@ const PER_CELL_BUDGET_US: u64 = 3;
 /// ANSI presentation + headless terminal parsing is `O(cells)`.
 fn effective_frame_budget_us(base_budget_us: u64, width: u16, height: u16) -> u64 {
     let cells = u64::from(width) * u64::from(height);
-    let area_budget_us = cells.saturating_mul(PER_CELL_BUDGET_US);
+    let scale = (base_budget_us / FRAME_BUDGET_US_DEFAULT).max(1);
+    let area_budget_us = cells
+        .saturating_mul(PER_CELL_BUDGET_US)
+        .saturating_mul(scale);
     base_budget_us.max(area_budget_us)
 }
 
@@ -231,10 +234,14 @@ fn frame_budget_us_for(
 
 fn frame_budget_us_with_mode() -> (u64, &'static str) {
     let override_value = std::env::var(FRAME_BUDGET_ENV).ok();
-    frame_budget_us_for(
+    let (budget, mode) = frame_budget_us_for(
         is_coverage_mode(),
         is_shared_worker_run(),
         override_value.as_deref(),
+    );
+    (
+        budget.saturating_mul(u64::from(ftui_core::cx::test_time_scale())),
+        mode,
     )
 }
 

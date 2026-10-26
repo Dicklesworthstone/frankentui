@@ -1108,10 +1108,7 @@ pub fn run_doctor(args: DoctorArgs) -> Result<()> {
 }
 
 fn opt_path_string(path: Option<&PathBuf>) -> Option<String> {
-    match path {
-        Some(path) => Some(path.display().to_string()),
-        None => None,
-    }
+    path.map(|path| path.display().to_string())
 }
 
 fn existing_path_string(path: &Path) -> Option<String> {

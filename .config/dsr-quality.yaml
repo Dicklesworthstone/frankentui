@@ -83,6 +83,8 @@ tools:
   # these checks through `rch exec` from an ad hoc config and failed 4 of 5 on
   # RCH itself (bd-g00-root-epic-ewths.6.37). Set CARGO_TARGET_DIR to a target
   # directory this run owns; shared ones get poisoned by concurrent builds.
+  # Explicit debug=0 and incremental=0 (.6.23 item 4) keep workspace test
+  # binaries under ~3.8 GiB instead of ~30 GiB with full DWARF + incremental.
   #   DSR_REPOS_FILE="$PWD/.config/dsr-quality.yaml" dsr quality \
   #     --tool frankentui-full-gates -w "$PWD"
   frankentui-full-gates:
@@ -92,10 +94,10 @@ tools:
       - make gates
       - bash scripts/ci/toolchain_pin_contract.sh --check-git-lockfile
       - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') cargo fmt --all --check
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --locked
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness clippy --workspace --all-targets --locked -- -D warnings
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTDOCFLAGS="-D warnings" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness doc --workspace --no-deps --locked
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --workspace --no-fail-fast --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness clippy --workspace --all-targets --locked -- -D warnings
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTDOCFLAGS="-D warnings" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness doc --workspace --no-deps --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 FTUI_TEST_TIME_SCALE="${FTUI_TEST_TIME_SCALE:-4}" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --workspace --no-fail-fast --locked
   # The baseline cache's provenance, atomicity and comparison logic
   # (bd-g00-root-epic-ewths.9.2 item 5). 24 tests, ~3 s, no timing assertions:
   # what is gated here is the *logic* that decides whether two baselines are
@@ -168,9 +170,9 @@ tools:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --all-features --locked
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTDOCFLAGS="-D warnings" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness doc --workspace --all-features --no-deps --locked
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --workspace --all-features --no-fail-fast --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --all-features --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTDOCFLAGS="-D warnings" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness doc --workspace --all-features --no-deps --locked
+      - RCH_CARGO_WRAPPER_BYPASS=1 FTUI_TEST_TIME_SCALE="${FTUI_TEST_TIME_SCALE:-4}" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --workspace --all-features --no-fail-fast --locked
   # Release-profile performance budget suites (bd-g00-root-epic-ewths.6.38):
   # perf_hud_regression, mermaid_perf_budget, and visual_effects_pty skip their
   # release-only frame budget assertions when debug_assertions are enabled.

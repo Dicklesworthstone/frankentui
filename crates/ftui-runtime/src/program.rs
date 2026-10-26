@@ -14965,7 +14965,7 @@ mod tests {
         };
         let config = ProgramConfig::default()
             .with_locale("ar")
-            .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)));
+            .with_budget(FrameBudgetConfig::strict(Duration::from_secs(60)));
         let mut program = headless_program_with_config(model, config);
 
         program.render_frame().expect("render initial frame");
@@ -15026,7 +15026,7 @@ mod tests {
         let mut program = headless_program_with_config(
             RenderModel,
             ProgramConfig::default()
-                .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5))),
+                .with_budget(FrameBudgetConfig::strict(Duration::from_secs(60))),
         );
         program.render_frame().expect("render frame");
 

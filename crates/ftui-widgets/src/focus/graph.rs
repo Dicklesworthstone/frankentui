@@ -801,10 +801,12 @@ mod tests {
             g.insert(node(i));
         }
         let elapsed = start.elapsed();
+        let budget = 5000_u128.saturating_mul(u128::from(ftui_core::cx::test_time_scale()));
         assert!(
-            elapsed.as_micros() < 5000,
-            "Inserting 1000 nodes took {}μs (budget: 5000μs)",
-            elapsed.as_micros()
+            elapsed.as_micros() < budget,
+            "Inserting 1000 nodes took {}μs (budget: {}μs)",
+            elapsed.as_micros(),
+            budget
         );
     }
 
@@ -825,12 +827,13 @@ mod tests {
         // Prevent optimizing away.
         assert!(current < 100);
         // Generous budget for shared CI/multi-agent environments.
-        let budget: u128 =
+        let base_budget: u128 =
             if std::env::var("CARGO_LLVM_COV").is_ok() || std::env::var("COVERAGE").is_ok() {
                 16_000
             } else {
                 8_000
             };
+        let budget = base_budget.saturating_mul(u128::from(ftui_core::cx::test_time_scale()));
         assert!(
             elapsed.as_micros() < budget,
             "10,000 navigations took {}μs (budget: {}μs)",

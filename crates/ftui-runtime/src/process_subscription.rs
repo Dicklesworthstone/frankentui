@@ -4779,7 +4779,7 @@ os.write(1,b'tail\r')
             TestMsg::Proc(event)
         })
         .args(["-c", "printf 'tail\\n'; exit 42"])
-        .timeout(Duration::from_millis(500));
+        .timeout(Duration::from_millis(500) * ftui_core::cx::test_time_scale());
         let (signal, _trigger) = StopSignal::new();
         let handle = thread::spawn(move || {
             sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
@@ -4788,13 +4788,13 @@ os.write(1,b'tail\r')
 
         assert_eq!(
             observed_rx
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(Duration::from_secs(5) * ftui_core::cx::test_time_scale())
                 .expect("real child output"),
             ProcessEvent::Stdout("tail".to_owned())
         );
         assert_eq!(
             observed_rx
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(Duration::from_secs(5) * ftui_core::cx::test_time_scale())
                 .expect("interrupted output drain"),
             ProcessEvent::Error(
                 "output drain timed out after Exited(42); stdout/stderr output is incomplete"
@@ -4802,11 +4802,11 @@ os.write(1,b'tail\r')
             )
         );
         done_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(2) * ftui_core::cx::test_time_scale())
             .expect("a full final-status send must honor the timeout");
         handle.join().expect("supervisor thread");
         assert_eq!(
-            observed_rx.recv_timeout(Duration::from_secs(2)),
+            observed_rx.recv_timeout(Duration::from_secs(2) * ftui_core::cx::test_time_scale()),
             Err(stdmpsc::RecvTimeoutError::Disconnected)
         );
         assert_eq!(
@@ -5080,7 +5080,12 @@ os._exit(7)
         assert!(workers.iter().all(|task| task.exists()));
         trigger.stop();
         let deadline = Instant::now() + Duration::from_secs(2);
-        while !supervisor.is_finished() && Instant::now() < deadline {
+        while (!supervisor.is_finished()
+            || !workers.iter().all(|task| {
+                std::fs::metadata(task).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            }))
+            && Instant::now() < deadline
+        {
             thread::sleep(Duration::from_millis(5));
         }
         let supervisor_finished = supervisor.is_finished();

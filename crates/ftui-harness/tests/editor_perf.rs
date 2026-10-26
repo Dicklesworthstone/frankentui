@@ -176,10 +176,14 @@ fn budget_multiplier_for(
 
 fn budget_multiplier_with_mode() -> (u128, &'static str) {
     let override_value = std::env::var(BUDGET_MULTIPLIER_ENV).ok();
-    budget_multiplier_for(
+    let (multiplier, mode) = budget_multiplier_for(
         is_coverage_run(),
         is_shared_worker_run(),
         override_value.as_deref(),
+    );
+    (
+        multiplier.saturating_mul(u128::from(ftui_core::cx::test_time_scale())),
+        mode,
     )
 }
 

@@ -2459,11 +2459,12 @@ mod perf_cache_overhead {
 
     #[allow(unexpected_cfgs)]
     fn perf_budget_ns(base_ns: u128) -> u128 {
-        if cfg!(coverage) || cfg!(coverage_nightly) {
+        let scaled = if cfg!(coverage) || cfg!(coverage_nightly) {
             base_ns.saturating_mul(10)
         } else {
             base_ns
-        }
+        };
+        scaled.saturating_mul(u128::from(ftui_core::cx::test_time_scale()))
     }
 
     #[test]

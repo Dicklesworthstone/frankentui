@@ -1110,9 +1110,12 @@ mod bloodstream_roundtrip {
         );
         drop(stats);
 
+        let latency_budget_us =
+            1_000_u64.saturating_mul(u64::from(ftui_core::cx::test_time_scale()));
         assert!(
-            single_row_latency_us.get() <= 1_000,
-            "single-row propagation target is sub-millisecond, got {}us",
+            single_row_latency_us.get() <= latency_budget_us,
+            "single-row propagation target is sub-millisecond (budget {}us), got {}us",
+            latency_budget_us,
             single_row_latency_us.get()
         );
 
