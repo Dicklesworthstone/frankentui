@@ -396,7 +396,7 @@ fn terminal_state_screen_text(state: &TerminalState) -> String {
 fn vt100_screen_text(screen: &vt100::Screen) -> String {
     let (_rows, cols) = screen.size();
     screen
-        .rows(0, cols)
+        .rows(0, cols.get())
         .map(|row| row.trim_end().to_string())
         .collect::<Vec<_>>()
         .join("\n")
@@ -406,7 +406,8 @@ fn assert_differential_parity(width: u16, height: u16, stream: &[u8]) {
     let mut handler = TestHandler::new(width, height);
     let mut parser = AnsiParser::new();
     let mut reference = VirtualTerminal::new(width, height);
-    let mut vt100 = Vt100Parser::new(height, width, 0);
+    let size = |n| std::num::NonZeroU16::new(n).expect("vt100 screen size must be nonzero");
+    let mut vt100 = Vt100Parser::new(size(height), size(width), 0);
 
     parser.parse(stream, &mut handler);
     reference.feed(stream);

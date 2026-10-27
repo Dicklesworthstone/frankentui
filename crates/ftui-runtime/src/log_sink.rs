@@ -241,7 +241,11 @@ mod tests {
         let output = writer.into_inner().unwrap();
         // An empty line is a blank line in the log, as in a terminal: it
         // reaches scrollback between its neighbours (G48).
-        let mut vt = vt100::Parser::new(24, 80, 1_000);
+        let mut vt = vt100::Parser::new(
+            std::num::NonZeroU16::new(24).unwrap(),
+            std::num::NonZeroU16::new(80).unwrap(),
+            1_000,
+        );
         vt.process(&output);
         vt.screen_mut().set_scrollback(usize::MAX);
         let mut rows: Vec<String> = vt.screen().rows(0, 80).collect();
