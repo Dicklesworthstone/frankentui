@@ -5488,7 +5488,8 @@ mod tests {
     /// Feed `bytes` to an independent VT emulator (`vt100`) of the given
     /// size; overlay-transport tests check the screen it shows, not bytes.
     fn vt_screen(bytes: &[u8], cols: u16, rows: u16) -> vt100::Parser {
-        let mut parser = vt100::Parser::new(rows, cols, 10_000);
+        let size = |n| std::num::NonZeroU16::new(n).expect("vt100 screen size must be nonzero");
+        let mut parser = vt100::Parser::new(size(rows), size(cols), 10_000);
         parser.process(bytes);
         parser
     }
@@ -5496,6 +5497,7 @@ mod tests {
     /// Scrollback (oldest first) followed by the visible rows.
     fn vt_transcript(parser: &mut vt100::Parser) -> Vec<String> {
         let (rows, cols) = parser.screen().size();
+        let (rows, cols) = (rows.get(), cols.get());
         parser.screen_mut().set_scrollback(usize::MAX);
         let mut offset = parser.screen().scrollback();
         let mut lines = Vec::new();

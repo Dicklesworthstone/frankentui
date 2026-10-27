@@ -111,7 +111,7 @@ imbl = "7.0.2"
 flate2 = "1.1.10"
 # Independent VT emulator used as the inline-scrollback oracle
 # (tests/e2e_inline_mode_scrollback.rs); already in the lockfile via ftui-extras.
-vt100 = "0.16.2"
+vt100 = "0.18.1"
 # OpenTelemetry testing infrastructure (kept in lockstep with the optional
 # runtime deps above so the test build resolves a single otel version set)
 opentelemetry = "0.33"

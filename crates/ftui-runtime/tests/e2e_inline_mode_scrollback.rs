@@ -101,6 +101,10 @@ impl Write for SharedOutput {
 /// on the main screen. xterm, tmux and Alacritty additionally keep rows that
 /// scroll out of a region whose top margin is row 1; `vt100` drops them, so
 /// a `ScrollRegion` run can only be checked for its visible screen here.
+fn nonzero(n: u16) -> std::num::NonZeroU16 {
+    std::num::NonZeroU16::new(n).expect("vt100 screen size must be nonzero")
+}
+
 struct Emulator {
     parser: vt100::Parser,
     cols: u16,
@@ -110,7 +114,7 @@ struct Emulator {
 impl Emulator {
     fn new(cols: u16, rows: u16) -> Self {
         Self {
-            parser: vt100::Parser::new(rows, cols, 1_000_000),
+            parser: vt100::Parser::new(nonzero(rows), nonzero(cols), 1_000_000),
             cols,
             rows,
         }
@@ -121,7 +125,9 @@ impl Emulator {
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
-        self.parser.screen_mut().set_size(rows, cols);
+        self.parser
+            .screen_mut()
+            .set_size(nonzero(rows), nonzero(cols));
         self.cols = cols;
         self.rows = rows;
     }
