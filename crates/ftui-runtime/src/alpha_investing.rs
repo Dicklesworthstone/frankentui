@@ -31,7 +31,7 @@
 //! mFDR_η = E[V] / (E[R] + η) ≤ α    (for stabilizer η > 0, e.g. η = 1 or 1 - W₀)
 //! ```
 //!
-//! (Note: unstabilized $E[V]/E[R]$ is undefined when $E[R] = 0$, and $R / m$ is the raw
+//! (Note: unstabilized $E\[V\]/E\[R\]$ is undefined when $E\[R\] = 0$, and $R / m$ is the raw
 //! rejection rate, not the false discovery proportion $\text{FDP} = V / \max(R, 1)$.)
 //!
 //! Because this implementation deducts $\alpha_i$ upfront and refunds only $\psi \alpha_i \le \alpha_i$
@@ -44,9 +44,9 @@
 //! 2. **Expected false discoveries & stabilized $\text{mFDR}_\eta$**:
 //!    With $\alpha_{\max} = \sup_i \alpha_i \le \text{investment\_fraction} \cdot W_0$, the process
 //!    $A_t = (1 - \psi \alpha_{\max}) V_t + W_t$ is a nonnegative supermartingale, yielding:
-//!    $$E[V] \le E\left[\sum_{i=1}^m \alpha_i\right] \le \frac{W_0}{1 - \psi \alpha_{\max}} \le \frac{W_0}{1 - \psi}$$
+//!    $$E\[V\] \le E\left[\sum_{i=1}^m \alpha_i\right] \le \frac{W_0}{1 - \psi \alpha_{\max}} \le \frac{W_0}{1 - \psi}$$
 //!    and for any stabilizer $\eta \ge 1$:
-//!    $$\text{mFDR}_\eta = \frac{E[V]}{E[R] + \eta} \le \frac{E[V]}{\eta} \le \frac{W_0}{\eta (1 - \psi \alpha_{\max})}$$
+//!    $$\text{mFDR}_\eta = \frac{E\[V\]}{E\[R\] + \eta} \le \frac{E\[V\]}{\eta} \le \frac{W_0}{\eta (1 - \psi \alpha_{\max})}$$
 //!
 //! # Integration
 //!
