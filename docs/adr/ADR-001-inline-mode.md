@@ -191,13 +191,24 @@ iTerm2, Windows Terminal, nested tmux, tmux versions before 3.6.
 ### Decision
 
 1. **Overlay transport = whole-screen scroll stream.** Bottom-anchored UI:
-   complete log lines are batched and streamed at the next present, explicit
-   flush or teardown (or early at 256 lines / 64 KiB): erase the UI rows
-   (`CUP T;1`, `ED 0`), write the lines from row `T` with `CR LF`, then `u-1`
-   more `CR LF`, and redraw the UI. The terminal's own LF at the bottom row
-   scrolls the whole screen, which every terminal keeps in scrollback, and the
-   accounting needs no width arithmetic (autowrap breaks long lines). Cost: one
-   UI redraw per batch.
+   log lines are batched and streamed at the next present, explicit flush or
+   teardown (or early at 256 lines / 64 KiB); the render thread also flushes
+   a batch that arrives with no frame to draw. A stream erases the UI rows
+   (`CUP T;1`, `ED 0`), writes the lines from row `T` with `CR LF`, then
+   `u-1` more `CR LF`, and redraws the UI. The terminal's own LF at the
+   bottom row scrolls the whole screen, which every terminal keeps in
+   scrollback, and complete lines need no width arithmetic (autowrap breaks
+   long lines). Text without a terminator at the end of a batch is written
+   without one: room for the UI and for the rows the text will wrap onto is
+   scrolled first (`CR LF` over the blank rows below, then `CUP` back), the
+   column the text ends at is recorded, and the next stream continues it
+   there if the terminal size and UI height are unchanged; otherwise the next
+   text starts its own row. Text taller than the rows above the UI is ended
+   like a complete line. That end column is the only width estimate, as in
+   the DECSTBM strategies. While the UI fills the screen nothing can be
+   streamed; the queue then holds at most 1,024 lines / 256 KiB and drops
+   the oldest beyond that, counting them (`dropped_log_lines`). Cost: one UI
+   redraw per batch.
 2. **The multiplexer veto stays.** With (1) logs reach history in muxes
    without DECSTBM; lifting the veto for tmux ≥ 3.6 would save the redraw but
    rests on one measured version. Revisit with the unmeasured list above.

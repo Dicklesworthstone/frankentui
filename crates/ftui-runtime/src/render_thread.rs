@@ -273,6 +273,19 @@ fn render_loop<W: Write + Send>(
             }
         }
 
+        // The channel is drained. Overlay log lines batched by the writer
+        // reach the terminal at a present; with no frame in this batch, flush
+        // them now instead of holding them until the next message. Lines that
+        // arrive together are still streamed together.
+        if !shutdown
+            && latest_render.is_none()
+            && writer.has_pending_logs()
+            && let Err(e) = writer.flush()
+        {
+            let _ = err_tx.try_send(e);
+            return;
+        }
+
         // Periodic grapheme pool GC
         if loop_count.is_multiple_of(1000) {
             writer.gc(latest_render.as_ref().map(|(buf, _, _)| buf));
@@ -493,6 +506,30 @@ mod tests {
         let output = String::from_utf8(tw.output()).unwrap();
         assert!(output.contains("RAWCHUNK:one\r\ntwo\nbad:\u{fffd}:end\x1b8"));
         assert!(!output.contains("\r\r\n"));
+    }
+
+    #[test]
+    fn log_only_batch_reaches_the_terminal_without_a_render() {
+        // G48: a log with no frame after it must not wait for a later
+        // Render, Resize, SetMode or Shutdown message.
+        let (writer, tw) = test_writer();
+        let rt = RenderThread::start(writer).unwrap();
+        rt.send(OutMsg::Log {
+            bytes: b"held-line\n".to_vec(),
+            mode: SanitizeMode::Strip,
+        })
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5) * ftui_core::cx::test_time_scale();
+        while !String::from_utf8_lossy(&tw.output()).contains("held-line") {
+            assert!(
+                Instant::now() < deadline,
+                "a log-only batch was held back with no frame to present"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        rt.shutdown();
+        let output = String::from_utf8_lossy(&tw.output()).into_owned();
+        assert_eq!(output.matches("held-line").count(), 1);
     }
 
     #[test]
