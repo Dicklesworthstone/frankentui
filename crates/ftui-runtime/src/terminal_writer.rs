@@ -721,6 +721,12 @@ pub struct TerminalWriter<W: Write> {
     pending_logs: Vec<PendingLogLine>,
     /// Text bytes held in `pending_logs`.
     pending_log_bytes: usize,
+    /// `pending_logs` held lines when the terminal was last resized, and no
+    /// log text was queued since. Until a frame is drawn at the new geometry
+    /// the bare [`Self::flush`] leaves them for the next present: the rows a
+    /// stream would erase hold the terminal's reflowed content, not UI rows.
+    /// Teardown streams them without erasing.
+    logs_held_across_resize: bool,
     /// The open line the last overlay stream left (see [`OverlayOpenLine`]).
     overlay_open: Option<OverlayOpenLine>,
     /// Overlay log lines dropped at the queue bound (see
@@ -924,6 +930,7 @@ impl<W: Write> TerminalWriter<W> {
             last_inline_region: None,
             pending_logs: Vec::new(),
             pending_log_bytes: 0,
+            logs_held_across_resize: false,
             overlay_open: None,
             dropped_log_lines: 0,
             inline_rows_reserved: false,
@@ -1192,6 +1199,7 @@ impl<W: Write> TerminalWriter<W> {
         // cursor's row within the UI stays: it is relative to the UI, which
         // the multiplexer moved together with the cursor.
         self.last_inline_region = None;
+        self.logs_held_across_resize = !self.pending_logs.is_empty();
         self.spare_buffer = None;
         self.clone_buf = None;
         self.reset_diff_on_resize();
@@ -3094,6 +3102,10 @@ impl<W: Write> TerminalWriter<W> {
         } else {
             text
         };
+        if !rest.is_empty() {
+            // New text streams at the next flush, with what is held.
+            self.logs_held_across_resize = false;
+        }
         while !rest.is_empty() {
             let (line, tail, terminated) = match rest.split_once('\n') {
                 Some((line, tail)) => (line, tail, true),
@@ -3189,6 +3201,14 @@ impl<W: Write> TerminalWriter<W> {
     ///
     /// Returns whether anything was streamed.
     fn flush_pending_logs(&mut self, repaint: bool) -> io::Result<bool> {
+        self.stream_pending_logs(repaint, false)
+    }
+
+    /// [`Self::flush_pending_logs`]; with `without_ui` and no displayed
+    /// region, the lines are streamed as if no UI rows were reserved: from
+    /// the bottom row, nothing erased (teardown with lines held across a
+    /// resize).
+    fn stream_pending_logs(&mut self, repaint: bool, without_ui: bool) -> io::Result<bool> {
         if self.pending_logs.is_empty() {
             return Ok(false);
         }
@@ -3208,6 +3228,7 @@ impl<W: Write> TerminalWriter<W> {
                 let start = region.start.min(self.term_height);
                 (start, region.height.min(self.term_height - start))
             }
+            None if without_ui => (self.term_height, 0),
             None => {
                 let height = self.effective_ui_height().min(self.term_height);
                 // An earlier stream may have left lines below the pending UI
@@ -3224,6 +3245,7 @@ impl<W: Write> TerminalWriter<W> {
         }
         let lines = std::mem::take(&mut self.pending_logs);
         self.pending_log_bytes = 0;
+        self.logs_held_across_resize = false;
         // Column of the line the previous stream left open, when this stream
         // can continue it (same geometry, so it is still directly above the
         // UI, or on the bottom row without one).
@@ -3656,8 +3678,18 @@ impl<W: Write> TerminalWriter<W> {
     /// repainted below them).
     pub fn flush(&mut self) -> io::Result<()> {
         let _output_guard = terminal_output_lock();
-        self.flush_pending_logs(true)?;
+        // Lines held across a resize wait for the next present (or new log
+        // text): a resize is not a log write, so it must not erase.
+        if !self.holding_logs_across_resize() {
+            self.flush_pending_logs(true)?;
+        }
         self.writer().flush()
+    }
+
+    /// Lines are held across a resize and no frame is drawn at the new
+    /// geometry yet (see `logs_held_across_resize`).
+    fn holding_logs_across_resize(&self) -> bool {
+        self.logs_held_across_resize && self.last_inline_region.is_none()
     }
 
     /// Get the grapheme pool for interning complex characters.
@@ -3829,7 +3861,10 @@ impl<W: Write> TerminalWriter<W> {
             return; // Presenter already taken (via into_inner)
         }
         if !std::thread::panicking() {
-            let _ = self.flush_pending_logs(true);
+            // Lines held across a resize go below what the screen shows:
+            // no UI is drawn at the new geometry, so nothing is erased.
+            let without_ui = self.holding_logs_across_resize();
+            let _ = self.stream_pending_logs(true, without_ui);
         }
         let bottom_inline = matches!(self.ui_anchor, UiAnchor::Bottom)
             && matches!(
@@ -5958,6 +5993,105 @@ mod tests {
         let mut vt = vt_screen(writer.writer().inner().get_ref(), 80, 24);
         let transcript = vt_transcript(&mut vt);
         assert_eq!(log_rows(&transcript), ["kept-1", "kept-2"]);
+    }
+
+    /// Writes a line while an inline-auto UI fills the terminal, so the line
+    /// is held (proptest_flicker_invariants seed cc 6c8ea6c1, ops 0-4).
+    fn hold_a_log_line_while_the_ui_fills_the_terminal<W: Write>(writer: &mut TerminalWriter<W>) {
+        writer.set_size(20, 5);
+        writer.flush().unwrap();
+        writer.set_auto_ui_height(5);
+        writer.flush().unwrap();
+        let frame = marked_frame(20, writer.ui_height());
+        writer.present_ui(&frame, None, false).unwrap();
+        writer.flush().unwrap();
+        writer.set_auto_ui_height(1);
+        writer.flush().unwrap();
+        writer.write_log("held\n").unwrap();
+        writer.flush().unwrap();
+        assert!(
+            !writer.pending_logs.is_empty(),
+            "the line must be held while the displayed UI fills the terminal"
+        );
+    }
+
+    #[test]
+    fn overlay_held_logs_do_not_stream_on_the_flush_after_a_resize() {
+        // A resize is not a log write or a present: the flush after it must
+        // not erase. Nothing is drawn at the new geometry yet, so the rows the
+        // stream would vacate hold the terminal's reflowed content. The held
+        // line streams at the next present, once.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::InlineAuto {
+                min_height: 1,
+                max_height: 10,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        hold_a_log_line_while_the_ui_fills_the_terminal(&mut writer);
+        let before = writer.writer().inner().get_ref().len();
+        writer.set_size(20, 5);
+        writer.flush().unwrap();
+        let after_resize = writer.writer().inner().get_ref()[before..].to_vec();
+        assert!(
+            !contains_bytes(&after_resize, b"\x1b[J"),
+            "the flush after a resize must not erase: {after_resize:?}"
+        );
+        assert!(
+            !contains_bytes(&after_resize, b"held"),
+            "the held line must wait for the next present: {after_resize:?}"
+        );
+
+        let frame = marked_frame(20, writer.ui_height());
+        writer.present_ui(&frame, None, false).unwrap();
+        writer.flush().unwrap();
+        assert!(writer.pending_logs.is_empty());
+        let mut vt = vt_screen(writer.writer().inner().get_ref(), 20, 5);
+        let transcript = vt_transcript(&mut vt);
+        assert_eq!(log_rows(&transcript), ["held"]);
+    }
+
+    #[test]
+    fn overlay_held_logs_stream_without_erase_at_teardown_after_a_resize() {
+        // Teardown right after the resize: the held line is written, not
+        // lost, and nothing is erased (no UI is drawn at the new geometry).
+        #[derive(Clone, Default)]
+        struct SharedOut(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for SharedOut {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let out = SharedOut::default();
+        let mut writer = TerminalWriter::new(
+            out.clone(),
+            ScreenMode::InlineAuto {
+                min_height: 1,
+                max_height: 10,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        hold_a_log_line_while_the_ui_fills_the_terminal(&mut writer);
+        let before = out.0.lock().unwrap().len();
+        writer.set_size(20, 5);
+        drop(writer);
+        let bytes = out.0.lock().unwrap().clone();
+        let teardown = &bytes[before..];
+        assert!(
+            !contains_bytes(teardown, b"\x1b[J"),
+            "teardown after a resize must not erase: {teardown:?}"
+        );
+        let mut vt = vt_screen(&bytes, 20, 5);
+        let transcript = vt_transcript(&mut vt);
+        assert_eq!(log_rows(&transcript), ["held"]);
     }
 
     #[test]
