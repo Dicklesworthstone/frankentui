@@ -482,7 +482,9 @@ mod tests {
         for forbidden in ["\x1b[31m", "strip-title", "\x1b[2J", "\x1b[?1049h"] {
             assert!(!output.contains(forbidden), "strip leaked {forbidden:?}");
         }
-        assert!(output.contains("SGR:\x1b[32mgreen:done\x1b[0m\x1b8"));
+        // G48 transport framing: messages without a newline continue one open
+        // line (no per-message ESC 7 / ESC 8).
+        assert!(output.contains("SGR:\x1b[32mgreen:done\x1b[0mPLAIN:after"));
         for forbidden in ["sgr-title", "\x1b[3J", "\x1b[?2004h"] {
             assert!(!output.contains(forbidden), "SGR leaked {forbidden:?}");
         }
@@ -504,7 +506,11 @@ mod tests {
         assert!(rt.check_error().is_none());
 
         let output = String::from_utf8(tw.output()).unwrap();
-        assert!(output.contains("RAWCHUNK:one\r\ntwo\nbad:\u{fffd}:end\x1b8"));
+        // G48 transport framing: complete lines end with CR LF, and the
+        // trailing text stays open (no line break after it, no ESC 8).
+        assert!(output.contains("RAWCHUNK:one\r\ntwo\r\n"), "{output:?}");
+        let open = output.find("bad:\u{fffd}:end").expect("open text");
+        assert!(!output[open..].contains(['\r', '\n']), "{output:?}");
         assert!(!output.contains("\r\r\n"));
     }
 
