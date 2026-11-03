@@ -1099,7 +1099,9 @@ pub struct FrameBudgetConfig {
     pub total: Duration,
     /// Per-phase budgets.
     pub phase_budgets: PhaseBudgets,
-    /// Allow skipping frames entirely when severely over budget.
+    /// Allow skipping frames entirely once degradation reaches
+    /// [`DegradationLevel::SkipFrame`]. A frame that has been rendered is
+    /// always presented, even when it ran over budget.
     pub allow_frame_skip: bool,
     /// Frames to wait between degradation level changes.
     pub degradation_cooldown: u32,
@@ -1130,6 +1132,9 @@ impl FrameBudgetConfig {
     }
 
     /// Create a strict config that never skips frames.
+    ///
+    /// Every frame is rendered and presented, even at the deepest
+    /// degradation level; the budget still lowers rendering quality.
     pub fn strict(total: Duration) -> Self {
         Self {
             total,
@@ -1349,11 +1354,25 @@ impl RenderBudget {
 
     /// Check if the budget is exhausted.
     ///
-    /// Returns `true` if no time remains OR if at SkipFrame level.
+    /// Returns `true` if no time remains OR if at SkipFrame level (when frame
+    /// skipping is allowed). This is an advisory signal for work inside a
+    /// frame, such as a widget that can stop early. It does not decide whether
+    /// a frame is skipped or presented; see [`should_skip_frame`](Self::should_skip_frame).
     #[inline]
     pub fn exhausted(&self) -> bool {
-        self.remaining().is_zero()
-            || (self.degradation == DegradationLevel::SkipFrame && self.allow_frame_skip)
+        self.remaining().is_zero() || self.should_skip_frame()
+    }
+
+    /// Check if the next frame should be skipped entirely.
+    ///
+    /// Returns `true` only at [`DegradationLevel::SkipFrame`] with frame
+    /// skipping allowed. Running out of time is not a reason to skip: a frame
+    /// that was rendered late is still presented, and the budget only lowers
+    /// the quality of later frames (frankentui#104). With
+    /// [`FrameBudgetConfig::strict`] this is always `false`.
+    #[inline]
+    pub fn should_skip_frame(&self) -> bool {
+        self.degradation == DegradationLevel::SkipFrame && self.allow_frame_skip
     }
 
     /// Check if we should attempt to upgrade quality.
@@ -1755,6 +1774,49 @@ mod tests {
 
         // Should be exhausted even with time remaining
         assert!(budget.exhausted());
+    }
+
+    #[test]
+    fn should_skip_frame_only_at_skip_frame_when_allowed() {
+        let mut budget = RenderBudget::new(Duration::from_millis(1000));
+        for level in [
+            DegradationLevel::Full,
+            DegradationLevel::SimpleBorders,
+            DegradationLevel::NoStyling,
+            DegradationLevel::EssentialOnly,
+            DegradationLevel::Skeleton,
+        ] {
+            budget.set_degradation(level);
+            assert!(!budget.should_skip_frame(), "{level:?} must not skip");
+        }
+        budget.set_degradation(DegradationLevel::SkipFrame);
+        assert!(budget.should_skip_frame());
+
+        budget.allow_frame_skip = false;
+        assert!(
+            !budget.should_skip_frame(),
+            "SkipFrame must not skip when frame skips are disallowed"
+        );
+    }
+
+    #[test]
+    fn running_out_of_time_does_not_request_a_frame_skip() {
+        // frankentui#104: a frame that ran over budget is still presented;
+        // only a SkipFrame decision skips a frame.
+        let budget = RenderBudget::new(Duration::ZERO);
+        assert!(budget.exhausted(), "no time remains");
+        assert!(!budget.should_skip_frame());
+    }
+
+    #[test]
+    fn strict_config_never_requests_a_frame_skip() {
+        let mut budget =
+            RenderBudget::from_config(&FrameBudgetConfig::strict(Duration::from_millis(16)));
+        budget.set_degradation(DegradationLevel::SkipFrame);
+        assert!(
+            !budget.should_skip_frame(),
+            "strict() is documented to never skip frames"
+        );
     }
 
     #[test]

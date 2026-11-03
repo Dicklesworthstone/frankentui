@@ -1,6 +1,6 @@
 [package]
 name = "ftui-harness"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 # README documents `cargo run -p ftui-harness`; the crate also ships the
 # flicker_scan and pane_splitter_pty_harness binaries.
@@ -26,14 +26,14 @@ native-backend = ["ftui-runtime/native-backend"]
 workspace = true
 
 [dependencies]
-ftui-render = { path = "../ftui-render", version = "0.9.0", features = ["tracing"] }
-ftui-core = { path = "../ftui-core", version = "0.9.0" }
-ftui-runtime = { path = "../ftui-runtime", version = "0.9.0" }
-ftui-widgets = { path = "../ftui-widgets", version = "0.9.0" }
-ftui-style = { path = "../ftui-style", version = "0.9.0" }
-ftui-text = { path = "../ftui-text", version = "0.9.0", features = ["markup"] }
-ftui-layout = { path = "../ftui-layout", version = "0.9.0" }
-ftui-extras = { path = "../ftui-extras", version = "0.9.0", features = ["theme"] }
+ftui-render = { path = "../ftui-render", version = "0.10.0", features = ["tracing"] }
+ftui-core = { path = "../ftui-core", version = "0.10.0" }
+ftui-runtime = { path = "../ftui-runtime", version = "0.10.0" }
+ftui-widgets = { path = "../ftui-widgets", version = "0.10.0" }
+ftui-style = { path = "../ftui-style", version = "0.10.0" }
+ftui-text = { path = "../ftui-text", version = "0.10.0", features = ["markup"] }
+ftui-layout = { path = "../ftui-layout", version = "0.10.0" }
+ftui-extras = { path = "../ftui-extras", version = "0.10.0", features = ["theme"] }
 portable-pty = { version = "0.9.0", optional = true }
 serde_json = "1.0.151"
 blake3 = "1.6"
@@ -57,8 +57,8 @@ proptest = "1.7.0"
 # Enabling that feature from here turned the mismatch into a build error the
 # moment ftui-demo-showcase started depending on this crate at runtime, even
 # though ftui-showcase-wasm deliberately avoids both features itself.
-ftui-core = { path = "../ftui-core", version = "0.9.0", features = ["crossterm"] }
-ftui-runtime = { path = "../ftui-runtime", version = "0.9.0", features = ["crossterm-compat"] }
+ftui-core = { path = "../ftui-core", version = "0.10.0", features = ["crossterm"] }
+ftui-runtime = { path = "../ftui-runtime", version = "0.10.0", features = ["crossterm-compat"] }
 
 [dev-dependencies]
 # Path-only, deliberately without a `version`: `ftui` depends on `ftui-harness`,
@@ -67,7 +67,7 @@ ftui-runtime = { path = "../ftui-runtime", version = "0.9.0", features = ["cross
 # when packaging, which breaks the cycle. Same pattern as `ftui-layout` and
 # `ftui-runtime` use for their dev-dependency on `ftui-harness`.
 ftui = { path = "../ftui", default-features = false, features = ["runtime"] }
-ftui-a11y = { path = "../ftui-a11y", version = "0.9.0" }
-ftui-pty = { path = "../ftui-pty", version = "0.9.0" }
+ftui-a11y = { path = "../ftui-a11y", version = "0.10.0" }
+ftui-pty = { path = "../ftui-pty", version = "0.10.0" }
 portable-pty = "0.9.0"
 ratatui = "0.30.2"

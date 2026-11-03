@@ -330,8 +330,8 @@ Every component crate includes inline `#[cfg(test)]` unit tests alongside the im
 - Error conditions
 
 Cross-component integration tests live in each crate's own `tests/`
-directory -- <!-- fact:integration_test_files -->302<!-- /fact --> files across the workspace, the largest being `ftui-runtime`
-(<!-- fact:integration_tests_runtime -->51<!-- /fact -->), `ftui-harness` (<!-- fact:integration_tests_harness -->49<!-- /fact -->) and `ftui-demo-showcase` (<!-- fact:integration_tests_showcase -->46<!-- /fact -->).
+directory -- <!-- fact:integration_test_files -->303<!-- /fact --> files across the workspace, the largest being `ftui-runtime`
+(<!-- fact:integration_tests_runtime -->52<!-- /fact -->), `ftui-harness` (<!-- fact:integration_tests_harness -->49<!-- /fact -->) and `ftui-demo-showcase` (<!-- fact:integration_tests_showcase -->46<!-- /fact -->).
 
 **Not** in the repository-root `tests/`. That directory holds fixtures,
 baselines and captured artifacts, contains no `.rs` files, and could not run

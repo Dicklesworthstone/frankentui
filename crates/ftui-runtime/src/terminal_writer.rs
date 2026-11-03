@@ -326,18 +326,77 @@ struct InlineRegion {
     height: u16,
 }
 
-/// One complete, already-sanitized log line waiting for the overlay
-/// transport.
+/// One already-sanitized piece of log text waiting for the overlay
+/// transport: a complete line (`terminated`: its newline was received), or
+/// text without a newline yet, which the next piece continues on the same
+/// row.
 #[derive(Debug, Clone)]
 struct PendingLogLine {
     text: String,
     mode: SanitizeMode,
+    terminated: bool,
+}
+
+/// Where the overlay transport left an open log line (text streamed without
+/// a terminator): on the row directly above a `ui_height`-row UI (the
+/// bottom row when there is no UI) of a `term`-sized terminal, ending at
+/// 0-indexed column `col`. The next stream continues it only in that same
+/// geometry; otherwise the next text starts on a fresh row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverlayOpenLine {
+    col: u16,
+    term: (u16, u16),
+    ui_height: u16,
 }
 
 /// Overlay log batches are streamed early once they reach this many lines
 /// or bytes, bounding memory and latency when no frame is presented.
 const OVERLAY_LOG_BATCH_LINES: usize = 256;
 const OVERLAY_LOG_BATCH_BYTES: usize = 64 * 1024;
+
+/// Bound on overlay log lines held while no row is free to stream them
+/// (the UI fills the terminal until a resize or present frees one): four
+/// batches. Beyond it the oldest lines are dropped and counted, see
+/// [`TerminalWriter::dropped_log_lines`].
+const OVERLAY_LOG_QUEUE_MAX_LINES: usize = 4 * OVERLAY_LOG_BATCH_LINES;
+const OVERLAY_LOG_QUEUE_MAX_BYTES: usize = 4 * OVERLAY_LOG_BATCH_BYTES;
+
+/// Rows an open overlay log line advances and the 0-indexed column it ends
+/// at (`0..=width`; `width` means the next character wraps first), for
+/// text written from `start_col`: display width after sanitizing, autowrap
+/// at `width`, a CR returning to column 0. Like the DECSTBM column tracking
+/// this is an estimate for trusted raw text that moves the cursor itself.
+fn open_line_extent<'a>(
+    start_col: u16,
+    texts: impl IntoIterator<Item = &'a str>,
+    width: u16,
+) -> (u16, u16) {
+    let width = usize::from(width.max(1));
+    let mut col = usize::from(start_col).min(width);
+    let mut rows = 0usize;
+    for text in texts {
+        for (i, piece) in text.split('\r').enumerate() {
+            if i > 0 {
+                col = 0;
+            }
+            let piece_width = ftui_core::text_width::display_width(&sanitize(piece));
+            if piece_width == 0 {
+                continue;
+            }
+            if col >= width {
+                rows += 1;
+                col = 0;
+            }
+            let last = col + piece_width - 1;
+            rows += last / width;
+            col = last % width + 1;
+        }
+    }
+    (
+        u16::try_from(rows).unwrap_or(u16::MAX),
+        u16::try_from(col).unwrap_or(u16::MAX),
+    )
+}
 
 struct DiffDecision {
     #[allow(dead_code)] // reserved for future diff strategy introspection
@@ -657,11 +716,22 @@ pub struct TerminalWriter<W: Write> {
     strategy_fallback: Option<InlineStrategyFallback>,
     /// Last inline UI region for clearing on shrink.
     last_inline_region: Option<InlineRegion>,
-    /// Complete log lines batched for the overlay transport (bottom-anchored
-    /// UI without an active scroll region); see [`Self::flush_pending_logs`].
+    /// Log text batched for the overlay transport (bottom-anchored UI
+    /// without an active scroll region); see [`Self::flush_pending_logs`].
     pending_logs: Vec<PendingLogLine>,
     /// Text bytes held in `pending_logs`.
     pending_log_bytes: usize,
+    /// `pending_logs` held lines when the terminal was last resized, and no
+    /// log text was queued since. Until a frame is drawn at the new geometry
+    /// the bare [`Self::flush`] leaves them for the next present: the rows a
+    /// stream would erase hold the terminal's reflowed content, not UI rows.
+    /// Teardown streams them without erasing.
+    logs_held_across_resize: bool,
+    /// The open line the last overlay stream left (see [`OverlayOpenLine`]).
+    overlay_open: Option<OverlayOpenLine>,
+    /// Overlay log lines dropped at the queue bound (see
+    /// [`Self::dropped_log_lines`]).
+    dropped_log_lines: u64,
     /// Whether the rows under the bottom-anchored inline UI have been made
     /// room for below the shell's cursor (done once, before the first
     /// inline output).
@@ -860,6 +930,9 @@ impl<W: Write> TerminalWriter<W> {
             last_inline_region: None,
             pending_logs: Vec::new(),
             pending_log_bytes: 0,
+            logs_held_across_resize: false,
+            overlay_open: None,
+            dropped_log_lines: 0,
             inline_rows_reserved: false,
             last_ui_cursor: None,
             cursor_ui_row: None,
@@ -1126,6 +1199,7 @@ impl<W: Write> TerminalWriter<W> {
         // cursor's row within the UI stays: it is relative to the UI, which
         // the multiplexer moved together with the cursor.
         self.last_inline_region = None;
+        self.logs_held_across_resize = !self.pending_logs.is_empty();
         self.spare_buffer = None;
         self.clone_buf = None;
         self.reset_diff_on_resize();
@@ -1196,6 +1270,7 @@ impl<W: Write> TerminalWriter<W> {
         self.prev_buffer = None;
         self.stale_frame = None;
         self.log_floor = None;
+        self.overlay_open = None;
         self.last_inline_region = None;
         self.reset_diff_strategy();
     }
@@ -1389,6 +1464,19 @@ impl<W: Write> TerminalWriter<W> {
     /// Check if a scroll region is currently active.
     pub fn scroll_region_active(&self) -> bool {
         self.scroll_region_active
+    }
+
+    /// Overlay log lines dropped because the queue reached its bound (1,024
+    /// lines or 256 KiB) while no row above the UI was free to stream them;
+    /// the oldest lines go first.
+    pub fn dropped_log_lines(&self) -> u64 {
+        self.dropped_log_lines
+    }
+
+    /// Whether overlay log text is waiting for the next stream.
+    #[cfg(feature = "render-thread")]
+    pub(crate) fn has_pending_logs(&self) -> bool {
+        !self.pending_logs.is_empty()
     }
 
     /// The DECSTBM self-test verdict recorded by
@@ -2705,7 +2793,13 @@ impl<W: Write> TerminalWriter<W> {
     ///   from the UI's first row with ordinary CR LF, and lets the terminal
     ///   scroll the whole screen, so every line reaches scrollback exactly
     ///   once and in order; the UI is then repainted below them. Text without
-    ///   a trailing newline counts as a complete line.
+    ///   a trailing newline stays open: it is streamed without a line break
+    ///   on the row directly above the UI, and the next log text continues
+    ///   it there (as under DECSTBM), unless the terminal size or UI height
+    ///   changed in between or the open line no longer fits above the UI.
+    ///   Lines accepted while a row was free stay queued, not dropped, while
+    ///   the UI briefly fills the terminal (up to 1,024 lines or 256 KiB; see
+    ///   [`dropped_log_lines`](Self::dropped_log_lines)).
     ///
     /// - **Top-anchored UI without a region**: a whole-screen scroll would
     ///   push UI rows into history, so the newest line overwrites the bottom
@@ -2776,6 +2870,14 @@ impl<W: Write> TerminalWriter<W> {
             self.decstbm_row_occupied = true;
             self.decstbm_col = 0;
         }
+        if logical_line {
+            // A logical line starts on its own row in the overlay transport
+            // too: end open text instead of continuing it.
+            if let Some(last) = self.pending_logs.last_mut() {
+                last.terminated = true;
+            }
+            self.overlay_open = None;
+        }
         // Even publicly constructed Text variants must cross this boundary.
         let sanitized = sanitize_with(text, mode);
         let sanitized = if logical_line {
@@ -2834,6 +2936,9 @@ impl<W: Write> TerminalWriter<W> {
             if text.is_empty() {
                 return Ok(());
             }
+            // DECSTBM tracks its own open column; an open overlay line is
+            // not continued once logs went through the region.
+            self.overlay_open = None;
             let save_cursor = !self.cursor_saved;
             if save_cursor {
                 self.writer().write_all(CURSOR_SAVE)?;
@@ -2870,8 +2975,8 @@ impl<W: Write> TerminalWriter<W> {
         }
 
         if matches!(self.ui_anchor, UiAnchor::Bottom) {
-            // Overlay transport (G48): batch complete lines; they are
-            // streamed into scrollback by `flush_pending_logs`.
+            // Overlay transport (G48): batch the text; it is streamed into
+            // scrollback by `flush_pending_logs`.
             self.queue_overlay_log_lines(text, mode);
             if self.pending_logs.len() >= OVERLAY_LOG_BATCH_LINES
                 || self.pending_log_bytes >= OVERLAY_LOG_BATCH_BYTES
@@ -2986,10 +3091,9 @@ impl<W: Write> TerminalWriter<W> {
         };
     }
 
-    /// Split sanitized log text into complete lines and batch them for the
-    /// overlay transport. A trailing fragment without a newline is a line
-    /// too: a later write cannot resume a row the UI has been repainted
-    /// under.
+    /// Split sanitized log text into lines and batch them for the overlay
+    /// transport. A trailing fragment without a newline stays open: the
+    /// next text continues it (in the same piece when the mode matches).
     fn queue_overlay_log_lines(&mut self, text: &str, mode: SanitizeMode) {
         let normalized;
         let mut rest = if text.contains("\r\n") {
@@ -2998,15 +3102,59 @@ impl<W: Write> TerminalWriter<W> {
         } else {
             text
         };
+        if !rest.is_empty() {
+            // New text streams at the next flush, with what is held.
+            self.logs_held_across_resize = false;
+        }
         while !rest.is_empty() {
-            let (line, tail) = rest.split_once('\n').unwrap_or((rest, ""));
+            let (line, tail, terminated) = match rest.split_once('\n') {
+                Some((line, tail)) => (line, tail, true),
+                None => (rest, "", false),
+            };
             self.pending_log_bytes = self.pending_log_bytes.saturating_add(line.len());
-            self.pending_logs.push(PendingLogLine {
-                text: line.to_owned(),
-                mode,
-            });
+            match self.pending_logs.last_mut() {
+                Some(last) if !last.terminated && last.mode == mode => {
+                    last.text.push_str(line);
+                    last.terminated = terminated;
+                }
+                _ => self.pending_logs.push(PendingLogLine {
+                    text: line.to_owned(),
+                    mode,
+                    terminated,
+                }),
+            }
             rest = tail;
         }
+        self.bound_pending_logs();
+    }
+
+    /// Keep the overlay queue within its bound (it only grows past one batch
+    /// while no row is free to stream it): drop the oldest lines and count
+    /// them.
+    fn bound_pending_logs(&mut self) {
+        let mut excess = 0;
+        let mut bytes = self.pending_log_bytes;
+        while excess < self.pending_logs.len()
+            && (self.pending_logs.len() - excess > OVERLAY_LOG_QUEUE_MAX_LINES
+                || bytes > OVERLAY_LOG_QUEUE_MAX_BYTES)
+        {
+            bytes = bytes.saturating_sub(self.pending_logs[excess].text.len());
+            excess += 1;
+        }
+        if excess == 0 {
+            return;
+        }
+        self.pending_logs.drain(..excess);
+        self.pending_log_bytes = bytes;
+        self.dropped_log_lines = self.dropped_log_lines.saturating_add(excess as u64);
+        // The kept text no longer continues what the terminal shows.
+        self.overlay_open = None;
+        tracing::debug!(
+            target: crate::telemetry_schema::TARGET_RUNTIME_LOG,
+            dropped = excess,
+            total = self.dropped_log_lines,
+            "overlay log queue full: dropped the oldest lines"
+        );
     }
 
     /// Make room for a bottom-anchored inline UI before the first inline
@@ -3044,13 +3192,26 @@ impl<W: Write> TerminalWriter<W> {
     /// the caller is about to present a frame and must treat the diff
     /// baseline as gone.
     ///
+    /// Text without a terminator at the end of the batch is left open on
+    /// the row directly above the UI ([`Self::write_open_log_line`]), and a
+    /// stream in the same geometry continues it there.
+    ///
+    /// When no row is free (not inline, no height, or the UI fills the
+    /// screen) the lines stay queued for a later stream.
+    ///
     /// Returns whether anything was streamed.
     fn flush_pending_logs(&mut self, repaint: bool) -> io::Result<bool> {
+        self.stream_pending_logs(repaint, false)
+    }
+
+    /// [`Self::flush_pending_logs`]; with `without_ui` and no displayed
+    /// region, the lines are streamed as if no UI rows were reserved: from
+    /// the bottom row, nothing erased (teardown with lines held across a
+    /// resize).
+    fn stream_pending_logs(&mut self, repaint: bool, without_ui: bool) -> io::Result<bool> {
         if self.pending_logs.is_empty() {
             return Ok(false);
         }
-        let lines = std::mem::take(&mut self.pending_logs);
-        self.pending_log_bytes = 0;
         if !matches!(
             self.screen_mode,
             ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
@@ -3067,6 +3228,7 @@ impl<W: Write> TerminalWriter<W> {
                 let start = region.start.min(self.term_height);
                 (start, region.height.min(self.term_height - start))
             }
+            None if without_ui => (self.term_height, 0),
             None => {
                 let height = self.effective_ui_height().min(self.term_height);
                 // An earlier stream may have left lines below the pending UI
@@ -3077,9 +3239,28 @@ impl<W: Write> TerminalWriter<W> {
         };
         if height >= self.term_height {
             // The UI fills the screen: there is no row a log line could
-            // occupy without scrolling UI rows into history.
+            // occupy without scrolling UI rows into history. Keep the lines
+            // for a stream after the next resize or present.
             return Ok(false);
         }
+        let lines = std::mem::take(&mut self.pending_logs);
+        self.pending_log_bytes = 0;
+        self.logs_held_across_resize = false;
+        // Column of the line the previous stream left open, when this stream
+        // can continue it (same geometry, so it is still directly above the
+        // UI, or on the bottom row without one).
+        let resume = self
+            .overlay_open
+            .take()
+            .filter(|open| {
+                open.term == (self.term_width, self.term_height) && open.ui_height == height
+            })
+            .map(|open| open.col);
+        // The trailing run of unterminated text: one line, left open.
+        let open_from = lines
+            .iter()
+            .rposition(|line| line.terminated)
+            .map_or(0, |last| last + 1);
         self.reserve_inline_rows(height)?;
 
         let open_sync = repaint && self.capabilities.use_sync_output() && !self.in_sync_block;
@@ -3093,32 +3274,62 @@ impl<W: Write> TerminalWriter<W> {
         // scroll brings in.
         self.writer().write_all(SGR_RESET)?;
         self.reanchor_inline_cursor()?;
+        let bottom = self.term_height - 1;
         if height > 0 {
-            if start >= self.term_height {
-                // The newest line sits on the bottom row (a UI-less stream
-                // came first): open a fresh row below it.
-                self.move_to_row(self.term_height - 1, 0)?;
-                self.writer().write_all(b"\r\n")?;
-                start = self.term_height - 1;
+            if let Some(col) = resume {
+                // Continue the open line directly above the UI.
+                self.move_to_row(bottom - height, col)?;
+            } else {
+                if start >= self.term_height {
+                    // The newest line sits on the bottom row (a UI-less
+                    // stream came first): open a fresh row below it.
+                    self.move_to_row(bottom, 0)?;
+                    self.writer().write_all(b"\r\n")?;
+                    start = bottom;
+                }
+                self.move_to_row(start, 0)?;
             }
-            self.move_to_row(start, 0)?;
             self.writer().write_all(b"\x1b[J")?;
-            for line in &lines {
+            for line in &lines[..open_from] {
                 self.write_log_payload(&line.text, line.mode)?;
                 self.writer().write_all(b"\r\n")?;
             }
-            // `start >= term_height - height`, so these always scroll the
-            // screen far enough that the last line ends just above the UI.
-            for _ in 0..height - 1 {
-                self.writer().write_all(b"\r\n")?;
+            if open_from < lines.len() {
+                let resumed = if open_from == 0 { resume } else { None };
+                self.write_open_log_line(&lines[open_from..], resumed, height)?;
+            } else {
+                // `start >= term_height - height`, so these always scroll
+                // the screen far enough that the last line ends just above
+                // the UI.
+                for _ in 0..height - 1 {
+                    self.writer().write_all(b"\r\n")?;
+                }
             }
         } else {
             // No UI rows: the newest line lives on the bottom row, so each
-            // line starts with the scroll instead of ending with it.
-            self.move_to_row(self.term_height - 1, 0)?;
+            // line starts with the scroll instead of ending with it, and an
+            // open line is continued in place.
+            self.move_to_row(bottom, resume.unwrap_or(0))?;
+            let mut open = resume.is_some();
             for line in &lines {
-                self.writer().write_all(b"\r\n")?;
+                if !open {
+                    self.writer().write_all(b"\r\n")?;
+                }
                 self.write_log_payload(&line.text, line.mode)?;
+                open = !line.terminated;
+            }
+            if open {
+                let start_col = if open_from == 0 {
+                    resume.unwrap_or(0)
+                } else {
+                    0
+                };
+                let (_, end_col) = open_line_extent(
+                    start_col,
+                    lines[open_from..].iter().map(|line| line.text.as_str()),
+                    self.term_width,
+                );
+                self.record_open_log_line(end_col, 0);
             }
         }
         // The last line now ends just above the bottom `height` rows (or on
@@ -3150,6 +3361,84 @@ impl<W: Write> TerminalWriter<W> {
             }
         }
         Ok(true)
+    }
+
+    /// Stream the trailing unterminated run of a batch as one open line on
+    /// the row directly above a `height`-row UI, with no terminator after
+    /// it, and record where it ends so the next stream continues it.
+    ///
+    /// `resumed`: the cursor is on that row at this column, continuing the
+    /// previous open line. Otherwise the cursor is at the start of a fresh
+    /// row no higher than the UI's first row. Room for the UI is made
+    /// before the text is written: CR LFs over the blank rows below scroll
+    /// the screen until the line's first row is `height` rows, plus the rows
+    /// the line will wrap onto, above the last row; then the cursor returns
+    /// there. A line taller than the rows above the UI cannot stay open on
+    /// screen and is ended like a complete line.
+    fn write_open_log_line(
+        &mut self,
+        run: &[PendingLogLine],
+        resumed: Option<u16>,
+        height: u16,
+    ) -> io::Result<()> {
+        let bottom = self.term_height - 1;
+        let start_col = resumed.unwrap_or(0);
+        let (wraps, end_col) = open_line_extent(
+            start_col,
+            run.iter().map(|line| line.text.as_str()),
+            self.term_width,
+        );
+        let rows_up = height.saturating_add(wraps);
+        if rows_up > bottom {
+            for line in run {
+                self.write_log_payload(&line.text, line.mode)?;
+            }
+            for _ in 0..height {
+                self.writer().write_all(b"\r\n")?;
+            }
+            return Ok(());
+        }
+        match resumed {
+            Some(col) => {
+                // The line's row is `height` rows above the last row; scroll
+                // by the rows it will wrap onto.
+                if wraps > 0 {
+                    self.move_to_row(bottom, 0)?;
+                    for _ in 0..wraps {
+                        self.writer().write_all(b"\r\n")?;
+                    }
+                }
+                self.move_to_row(bottom - rows_up, col)?;
+            }
+            None => {
+                // From a row at or below `term_height - height`, `rows_up`
+                // CR LFs always reach the last row, leaving the fresh row
+                // exactly `rows_up` rows above it.
+                for _ in 0..rows_up {
+                    self.writer().write_all(b"\r\n")?;
+                }
+                self.move_to_row(bottom - rows_up, 0)?;
+            }
+        }
+        for line in run {
+            self.write_log_payload(&line.text, line.mode)?;
+        }
+        self.record_open_log_line(end_col, height);
+        // Leave the cursor on the UI's last row, as a complete stream does.
+        self.move_to_row(bottom, 0)
+    }
+
+    /// Remember an open overlay line ending at `end_col` for the next
+    /// stream. One that filled its last row exactly is complete: the next
+    /// character would wrap onto a fresh row anyway.
+    fn record_open_log_line(&mut self, end_col: u16, ui_height: u16) {
+        if end_col < self.term_width.max(1) {
+            self.overlay_open = Some(OverlayOpenLine {
+                col: end_col,
+                term: (self.term_width, self.term_height),
+                ui_height,
+            });
+        }
     }
 
     /// Redraw the last presented frame at `start` (after the overlay
@@ -3302,6 +3591,7 @@ impl<W: Write> TerminalWriter<W> {
         self.prev_buffer = None;
         self.stale_frame = None;
         self.log_floor = None;
+        self.overlay_open = None;
         self.decstbm_row_occupied = false;
         self.decstbm_col = 0;
         self.last_inline_region = None;
@@ -3388,8 +3678,18 @@ impl<W: Write> TerminalWriter<W> {
     /// repainted below them).
     pub fn flush(&mut self) -> io::Result<()> {
         let _output_guard = terminal_output_lock();
-        self.flush_pending_logs(true)?;
+        // Lines held across a resize wait for the next present (or new log
+        // text): a resize is not a log write, so it must not erase.
+        if !self.holding_logs_across_resize() {
+            self.flush_pending_logs(true)?;
+        }
         self.writer().flush()
+    }
+
+    /// Lines are held across a resize and no frame is drawn at the new
+    /// geometry yet (see `logs_held_across_resize`).
+    fn holding_logs_across_resize(&self) -> bool {
+        self.logs_held_across_resize && self.last_inline_region.is_none()
     }
 
     /// Get the grapheme pool for interning complex characters.
@@ -3561,7 +3861,10 @@ impl<W: Write> TerminalWriter<W> {
             return; // Presenter already taken (via into_inner)
         }
         if !std::thread::panicking() {
-            let _ = self.flush_pending_logs(true);
+            // Lines held across a resize go below what the screen shows:
+            // no UI is drawn at the new geometry, so nothing is erased.
+            let without_ui = self.holding_logs_across_resize();
+            let _ = self.stream_pending_logs(true, without_ui);
         }
         let bottom_inline = matches!(self.ui_anchor, UiAnchor::Bottom)
             && matches!(
@@ -5651,6 +5954,349 @@ mod tests {
         assert!(contains_bytes(&output, b"first\r\nsecond\r\n"));
     }
 
+    /// Log rows of a transcript: everything but blank and UI rows.
+    fn log_rows(transcript: &[String]) -> Vec<&str> {
+        transcript
+            .iter()
+            .map(String::as_str)
+            .filter(|row| !row.is_empty() && !row.starts_with("UI-row"))
+            .collect()
+    }
+
+    #[test]
+    fn overlay_logs_survive_a_resize_that_leaves_no_free_row() {
+        // G48 drop path: lines accepted while a row was free stay queued
+        // while a resize leaves the UI filling the terminal, and reach
+        // scrollback exactly once, in order, after the next resize frees a
+        // row again.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+        writer.write_log("kept-1\nkept-2\n").unwrap();
+        writer.set_size(80, 5);
+        writer.flush().unwrap();
+        assert_eq!(
+            writer.pending_logs.len(),
+            2,
+            "lines must stay queued while the UI fills the terminal"
+        );
+        assert!(!contains_bytes(writer.writer().inner().get_ref(), b"kept-"));
+
+        writer.set_size(80, 24);
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+        assert!(writer.pending_logs.is_empty());
+        let mut vt = vt_screen(writer.writer().inner().get_ref(), 80, 24);
+        let transcript = vt_transcript(&mut vt);
+        assert_eq!(log_rows(&transcript), ["kept-1", "kept-2"]);
+    }
+
+    /// Writes a line while an inline-auto UI fills the terminal, so the line
+    /// is held (proptest_flicker_invariants seed cc 6c8ea6c1, ops 0-4).
+    fn hold_a_log_line_while_the_ui_fills_the_terminal<W: Write>(writer: &mut TerminalWriter<W>) {
+        writer.set_size(20, 5);
+        writer.flush().unwrap();
+        writer.set_auto_ui_height(5);
+        writer.flush().unwrap();
+        let frame = marked_frame(20, writer.ui_height());
+        writer.present_ui(&frame, None, false).unwrap();
+        writer.flush().unwrap();
+        writer.set_auto_ui_height(1);
+        writer.flush().unwrap();
+        writer.write_log("held\n").unwrap();
+        writer.flush().unwrap();
+        assert!(
+            !writer.pending_logs.is_empty(),
+            "the line must be held while the displayed UI fills the terminal"
+        );
+    }
+
+    #[test]
+    fn overlay_held_logs_do_not_stream_on_the_flush_after_a_resize() {
+        // A resize is not a log write or a present: the flush after it must
+        // not erase. Nothing is drawn at the new geometry yet, so the rows the
+        // stream would vacate hold the terminal's reflowed content. The held
+        // line streams at the next present, once.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::InlineAuto {
+                min_height: 1,
+                max_height: 10,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        hold_a_log_line_while_the_ui_fills_the_terminal(&mut writer);
+        let before = writer.writer().inner().get_ref().len();
+        writer.set_size(20, 5);
+        writer.flush().unwrap();
+        let after_resize = writer.writer().inner().get_ref()[before..].to_vec();
+        assert!(
+            !contains_bytes(&after_resize, b"\x1b[J"),
+            "the flush after a resize must not erase: {after_resize:?}"
+        );
+        assert!(
+            !contains_bytes(&after_resize, b"held"),
+            "the held line must wait for the next present: {after_resize:?}"
+        );
+
+        let frame = marked_frame(20, writer.ui_height());
+        writer.present_ui(&frame, None, false).unwrap();
+        writer.flush().unwrap();
+        assert!(writer.pending_logs.is_empty());
+        let mut vt = vt_screen(writer.writer().inner().get_ref(), 20, 5);
+        let transcript = vt_transcript(&mut vt);
+        assert_eq!(log_rows(&transcript), ["held"]);
+    }
+
+    #[test]
+    fn overlay_held_logs_stream_without_erase_at_teardown_after_a_resize() {
+        // Teardown right after the resize: the held line is written, not
+        // lost, and nothing is erased (no UI is drawn at the new geometry).
+        #[derive(Clone, Default)]
+        struct SharedOut(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for SharedOut {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let out = SharedOut::default();
+        let mut writer = TerminalWriter::new(
+            out.clone(),
+            ScreenMode::InlineAuto {
+                min_height: 1,
+                max_height: 10,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        hold_a_log_line_while_the_ui_fills_the_terminal(&mut writer);
+        let before = out.0.lock().unwrap().len();
+        writer.set_size(20, 5);
+        drop(writer);
+        let bytes = out.0.lock().unwrap().clone();
+        let teardown = &bytes[before..];
+        assert!(
+            !contains_bytes(teardown, b"\x1b[J"),
+            "teardown after a resize must not erase: {teardown:?}"
+        );
+        let mut vt = vt_screen(&bytes, 20, 5);
+        let transcript = vt_transcript(&mut vt);
+        assert_eq!(log_rows(&transcript), ["held"]);
+    }
+
+    #[test]
+    fn overlay_log_queue_is_bounded_and_counts_dropped_lines() {
+        // While no row is free to stream them the queue keeps at most
+        // OVERLAY_LOG_QUEUE_MAX_LINES lines: the oldest are dropped and
+        // counted, the rest stream in order once a row is free.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::InlineAuto {
+                min_height: 1,
+                max_height: 24,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        writer.set_auto_ui_height(24);
+        writer
+            .present_ui(&marked_frame(80, 24), None, true)
+            .unwrap();
+        // A pending shrink leaves rows free for new log lines, but the
+        // displayed UI still fills the screen, so no stream can run yet.
+        writer.set_auto_ui_height(5);
+        let total = 2_000;
+        for i in 0..total {
+            writer.write_log(&format!("L{i:04}\n")).unwrap();
+        }
+        assert_eq!(writer.pending_logs.len(), OVERLAY_LOG_QUEUE_MAX_LINES);
+        let dropped = total - OVERLAY_LOG_QUEUE_MAX_LINES;
+        assert_eq!(writer.dropped_log_lines(), dropped as u64);
+
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+        writer.flush().unwrap();
+        assert!(writer.pending_logs.is_empty());
+        let mut vt = vt_screen(writer.writer().inner().get_ref(), 80, 24);
+        let transcript = vt_transcript(&mut vt);
+        let logs: Vec<&str> = log_rows(&transcript)
+            .into_iter()
+            .filter(|row| row.starts_with('L'))
+            .collect();
+        let expected: Vec<String> = (dropped..total).map(|i| format!("L{i:04}")).collect();
+        assert_eq!(logs, expected);
+    }
+
+    #[test]
+    fn overlay_partial_log_stays_open_and_is_continued_on_its_row() {
+        // G48: text without a newline is streamed with no line break after
+        // it, and the next text continues the same row across a flush and a
+        // present; complete lines still end with CR LF.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+        writer.write_log_raw("first\npart:").unwrap();
+        writer.flush().unwrap();
+        let output = writer.writer().inner().get_ref().clone();
+        assert!(contains_bytes(&output, b"first\r\n"));
+        assert!(contains_bytes(&output, b"part:"));
+        assert!(!contains_bytes(&output, b"part:\r"));
+        assert!(!contains_bytes(&output, b"part:\n"));
+
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+        writer.write_log_raw("ial").unwrap();
+        writer.flush().unwrap();
+        writer.write_log_raw(" done\nnext\n").unwrap();
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+
+        let mut vt = vt_screen(writer.writer().inner().get_ref(), 80, 24);
+        let transcript = vt_transcript(&mut vt);
+        assert_eq!(log_rows(&transcript), ["first", "part:ial done", "next"]);
+        let visible: Vec<String> = vt.screen().rows(0, 80).collect();
+        for y in 0..5 {
+            assert_eq!(visible[19 + y].trim_end(), format!("UI-row{y}"));
+        }
+    }
+
+    #[test]
+    fn overlay_open_log_line_wraps_and_continues_above_the_ui() {
+        // An open line that wraps keeps its rows above the UI, and its
+        // continuation can wrap further.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 3 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(10, 12);
+        writer.present_ui(&marked_frame(10, 3), None, true).unwrap();
+        writer.write_log("abcdefghijklm").unwrap();
+        writer.flush().unwrap();
+        writer.write_log("nopqrstuvwxyz\nend\n").unwrap();
+        writer.flush().unwrap();
+
+        let mut vt = vt_screen(writer.writer().inner().get_ref(), 10, 12);
+        let transcript = vt_transcript(&mut vt);
+        assert_eq!(
+            log_rows(&transcript),
+            ["abcdefghij", "klmnopqrst", "uvwxyz", "end"]
+        );
+        let visible: Vec<String> = vt.screen().rows(0, 10).collect();
+        for y in 0..3 {
+            assert_eq!(visible[9 + y].trim_end(), format!("UI-row{y}"));
+        }
+    }
+
+    #[test]
+    fn overlay_open_log_line_is_not_continued_after_a_resize() {
+        // A resize moves rows the writer cannot track: the next text starts
+        // on a fresh row instead of continuing the open one.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+        writer.write_log("open").unwrap();
+        writer.flush().unwrap();
+        assert!(writer.overlay_open.is_some());
+        writer.set_size(80, 20);
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+        let resized_at = writer.writer().inner().get_ref().len();
+        writer.write_log("fresh\n").unwrap();
+        writer.flush().unwrap();
+        let output = writer.writer().inner().get_ref()[resized_at..].to_vec();
+        // The stream starts on the UI's first row, at column 1.
+        assert!(contains_bytes(
+            &output,
+            b"\x1b[9999;1H\x1b[4A\x1b[Jfresh\r\n"
+        ));
+    }
+
+    #[test]
+    fn overlay_open_log_line_taller_than_the_free_rows_is_ended() {
+        // An open line that would need more rows than the screen has above
+        // the UI cannot stay open: it is ended like a complete line.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(10, 8);
+        writer.present_ui(&marked_frame(10, 5), None, true).unwrap();
+        let long = "x".repeat(40);
+        writer.write_log(&long).unwrap();
+        writer.flush().unwrap();
+        assert!(writer.overlay_open.is_none());
+        let mut expected = long.into_bytes();
+        expected.extend_from_slice(b"\r\n");
+        assert!(contains_bytes(writer.writer().inner().get_ref(), &expected));
+    }
+
+    #[test]
+    fn overlay_logical_line_after_open_text_starts_its_own_row() {
+        // A logical line (a model log command) never continues open text.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        writer.present_ui(&marked_frame(80, 5), None, true).unwrap();
+        writer.write_log("open").unwrap();
+        writer
+            .write_log_line_with_mode("line", SanitizeMode::Strip)
+            .unwrap();
+        writer.flush().unwrap();
+        assert!(contains_bytes(
+            writer.writer().inner().get_ref(),
+            b"open\r\nline\r\n"
+        ));
+        assert!(writer.overlay_open.is_none());
+    }
+
+    #[test]
+    fn overlay_open_log_line_without_ui_rows_continues_on_the_bottom_row() {
+        // No UI rows: the newest line lives on the bottom row and open text
+        // is continued there.
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 0 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(20, 6);
+        writer.write_log("ab").unwrap();
+        writer.flush().unwrap();
+        writer.write_log("cd\n").unwrap();
+        writer.flush().unwrap();
+        writer.write_log("ef\n").unwrap();
+        writer.flush().unwrap();
+
+        let mut vt = vt_screen(writer.writer().inner().get_ref(), 20, 6);
+        let transcript = vt_transcript(&mut vt);
+        assert_eq!(log_rows(&transcript), ["abcd", "ef"]);
+    }
+
     #[test]
     fn write_log_after_present_ui_works_correctly() {
         // A log written after a present is streamed above the UI and the
@@ -6643,7 +7289,10 @@ mod tests {
                         match (anchor, scroll_region) {
                             (_, true) => assert!(output.contains("\x1b[0m\r\nsecond\x1b[0m")),
                             (UiAnchor::Bottom, false) => {
-                                assert!(output.contains("\x1b[0msecond\x1b[0m\r\n"));
+                                // "second" has no newline, so it stays open:
+                                // only cursor addressing follows it.
+                                let open = output.find("\x1b[0msecond\x1b[0m").unwrap();
+                                assert!(!output[open..].contains(['\r', '\n']), "{output:?}");
                             }
                             (UiAnchor::Top, false) => {
                                 assert!(output.ends_with("\x1b[0m\x1b8"));
@@ -6673,7 +7322,10 @@ mod tests {
         assert_eq!(output.matches('x').count(), 200);
         assert!(output.contains("\x1b[38:2::255:0:0m"));
         assert!(output.contains(&format!("{}\x1b[0m\r\n", "x".repeat(200))));
-        assert!(output.contains("\x1b[0mtail\x1b[0m\r\n"));
+        // "tail" has no newline: it stays open, followed by cursor
+        // addressing rather than a line break.
+        assert!(output.contains("\x1b[0mtail\x1b[0m\x1b["), "{output:?}");
+        assert!(!output.contains("tail\x1b[0m\r\n"));
         let mut vt = vt_screen(output.as_bytes(), 80, 24);
         let joined = vt_transcript(&mut vt).concat();
         assert!(joined.contains(&format!("{}tail", "x".repeat(200))));

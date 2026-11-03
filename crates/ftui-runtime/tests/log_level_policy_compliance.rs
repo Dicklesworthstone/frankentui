@@ -968,7 +968,7 @@ fn performance_diagnostics_stay_at_debug() {
         );
         tracing::debug!(
             degradation = 2u32,
-            "frame skipped: budget exhausted before render"
+            "frame skipped: degradation at SkipFrame before render"
         );
     });
 
@@ -1034,7 +1034,7 @@ fn event_messages_follow_verb_convention() {
         // Descriptive for decisions
         tracing::debug!(
             degradation = 2u32,
-            "frame skipped: budget exhausted before render"
+            "frame skipped: degradation at SkipFrame before render"
         );
     });
 

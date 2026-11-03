@@ -7911,8 +7911,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             conformal_prediction = Some(prediction);
         }
 
-        // Early skip if budget says to skip this frame entirely
-        if self.budget.exhausted() {
+        // Early skip only when degradation has reached SkipFrame and the
+        // config allows frame skips. Running out of time is not a reason to
+        // skip: a late frame is rendered and presented, and the budget lowers
+        // the quality of later frames instead (frankentui#104).
+        if self.budget.should_skip_frame() {
             self.budget.record_frame_time(Duration::ZERO);
             let load_snapshot =
                 self.update_load_governor_snapshot(frame_idx, 0.0, conformal_prediction.as_ref());
@@ -7924,13 +7927,13 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 &load_snapshot,
             );
             crate::debug_trace!(
-                "frame skipped: budget exhausted (degradation={})",
+                "frame skipped: degradation at SkipFrame (degradation={})",
                 self.budget.degradation().as_str()
             );
             debug!(
                 target: crate::telemetry_schema::TARGET_RUNTIME,
                 degradation = self.budget.degradation().as_str(),
-                "frame skipped: budget exhausted before render"
+                "frame skipped: degradation at SkipFrame before render"
             );
             // Keep dirty=true: the UI update was never presented, so a
             // future frame must still pick it up.
@@ -8025,8 +8028,6 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         self.process_a11y_frame();
         self.update_widget_refresh_plan(frame_idx);
         let render_elapsed = render_start.elapsed();
-        let mut present_elapsed = Duration::ZERO;
-        let mut presented = false;
 
         // Check if render phase overspent its budget
         let render_budget = self.budget.phase_budgets().render;
@@ -8046,59 +8047,62 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         }
 
         // --- Present phase ---
-        if !self.budget.exhausted() {
-            let shadow_checksum = if self.rollout_policy.is_shadow() && self.evidence_sink.is_some()
-            {
-                Some(ftui_render::buffer::buffer_checksum(&buffer))
-            } else {
-                None
-            };
-            let present_start = Instant::now();
-            {
-                let _present_span =
-                    debug_span!(crate::telemetry_schema::span::RENDER_PRESENT).entered();
-                self.presenter
-                    .present_ui_owned(buffer, cursor, cursor_visible)?;
-            }
-            presented = true;
-            present_elapsed = present_start.elapsed();
-
-            if let (Some(checksum), Some(sink)) = (shadow_checksum, self.evidence_sink.as_ref()) {
-                let frame = self.shadow_frame_idx;
-                self.shadow_frame_idx = self.shadow_frame_idx.saturating_add(1);
-                let ts_ns = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos();
-                let evidence = ShadowFrameEvidence {
-                    frame,
-                    checksum,
-                    lane: self.resolved_lane.label(),
-                    requested_lane: self.requested_lane.label(),
-                    rollout_policy: self.rollout_policy.label(),
-                    task_backend: self.task_executor.kind_name_for_logs(),
-                    cols: self.width,
-                    rows: frame_height,
-                    ts_ns,
-                };
-                let _ = sink.write_jsonl(&evidence.to_jsonl());
-            }
-
-            let present_budget = self.budget.phase_budgets().present;
-            if present_elapsed > present_budget {
-                debug!(
-                    target: crate::telemetry_schema::TARGET_RUNTIME,
-                    present_ms = present_elapsed.as_millis() as u32,
-                    budget_ms = present_budget.as_millis() as u32,
-                    "present phase exceeded budget"
-                );
-            }
-        } else {
+        // A rendered frame is always presented, even when it ran over budget.
+        // Dropping it would leave the terminal on an older frame, and with
+        // steadily slow frames nothing would ever be presented again
+        // (frankentui#104). The budget acts on later frames instead: through
+        // the degradation level, and at SkipFrame through the skip before
+        // render.
+        if self.budget.remaining().is_zero() {
             debug!(
                 target: crate::telemetry_schema::TARGET_RUNTIME,
                 degradation = self.budget.degradation().as_str(),
                 elapsed_ms = self.budget.elapsed().as_millis() as u32,
-                "frame present skipped: budget exhausted after render"
+                "frame presented over budget"
+            );
+        }
+        let shadow_checksum = if self.rollout_policy.is_shadow() && self.evidence_sink.is_some() {
+            Some(ftui_render::buffer::buffer_checksum(&buffer))
+        } else {
+            None
+        };
+        let present_start = Instant::now();
+        {
+            let _present_span =
+                debug_span!(crate::telemetry_schema::span::RENDER_PRESENT).entered();
+            self.presenter
+                .present_ui_owned(buffer, cursor, cursor_visible)?;
+        }
+        let present_elapsed = present_start.elapsed();
+
+        if let (Some(checksum), Some(sink)) = (shadow_checksum, self.evidence_sink.as_ref()) {
+            let frame = self.shadow_frame_idx;
+            self.shadow_frame_idx = self.shadow_frame_idx.saturating_add(1);
+            let ts_ns = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let evidence = ShadowFrameEvidence {
+                frame,
+                checksum,
+                lane: self.resolved_lane.label(),
+                requested_lane: self.requested_lane.label(),
+                rollout_policy: self.rollout_policy.label(),
+                task_backend: self.task_executor.kind_name_for_logs(),
+                cols: self.width,
+                rows: frame_height,
+                ts_ns,
+            };
+            let _ = sink.write_jsonl(&evidence.to_jsonl());
+        }
+
+        let present_budget = self.budget.phase_budgets().present;
+        if present_elapsed > present_budget {
+            debug!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
+                present_ms = present_elapsed.as_millis() as u32,
+                budget_ms = present_budget.as_millis() as u32,
+                "present phase exceeded budget"
             );
         }
 
@@ -8106,15 +8110,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             let update_us = self.last_update_us.unwrap_or(0);
             let render_us = render_elapsed.as_micros() as u64;
             let present_us = present_elapsed.as_micros() as u64;
-            let diff_us = if presented {
-                self.presenter
-                    .take_last_present_timings()
-                    .map(|timings| timings.diff_us)
-                    .unwrap_or(0)
-            } else {
-                let _ = self.presenter.take_last_present_timings();
-                0
-            };
+            let diff_us = self
+                .presenter
+                .take_last_present_timings()
+                .map(|timings| timings.diff_us)
+                .unwrap_or(0);
             let total_us = update_us
                 .saturating_add(render_us)
                 .saturating_add(present_us);
@@ -8163,12 +8163,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             &load_snapshot,
         );
 
-        // Only clear dirty when the frame was actually presented.
-        // If present was skipped (budget exhausted after render), the UI
-        // update was never shown and must be retried on the next frame.
-        if presented {
-            self.dirty = false;
-        }
+        // The frame was presented, so the UI is up to date. (A frame skipped
+        // before render returns early above and keeps dirty set.)
+        self.dirty = false;
 
         // Deliver the accessibility hook after the dirty reset so a model
         // that changes state in response gets one more frame.
@@ -15035,6 +15032,141 @@ mod tests {
         assert_eq!(program.frame_idx, 1);
     }
 
+    // frankentui#104: a frame that ran over its budget is still presented,
+    // an explicit SkipFrame still skips, and `FrameBudgetConfig::strict` never
+    // skips. These use only API that predates the fix, so they also run on the
+    // commit before the fix, where the defect makes them fail (the SkipFrame pin
+    // passes there too).
+
+    /// A model whose view takes `cost` and counts its draws.
+    struct SlowViewModel {
+        cost: Duration,
+        draws: Arc<AtomicUsize>,
+    }
+
+    #[derive(Debug)]
+    enum SlowViewMsg {
+        Noop,
+    }
+
+    impl From<Event> for SlowViewMsg {
+        fn from(_: Event) -> Self {
+            SlowViewMsg::Noop
+        }
+    }
+
+    impl Model for SlowViewModel {
+        type Message = SlowViewMsg;
+
+        fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+            Cmd::none()
+        }
+
+        fn view(&self, frame: &mut Frame) {
+            std::thread::sleep(self.cost);
+            frame.buffer.set_raw(0, 0, Cell::from_char('X'));
+            self.draws.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn slow_view_program(
+        cost: Duration,
+        config: ProgramConfig,
+    ) -> (
+        Program<SlowViewModel, HeadlessEventSource, TerminalPresenter<Vec<u8>>>,
+        Arc<AtomicUsize>,
+    ) {
+        let draws = Arc::new(AtomicUsize::new(0));
+        let model = SlowViewModel {
+            cost,
+            draws: Arc::clone(&draws),
+        };
+        let mut program = headless_program_with_config(model, config);
+        program.dirty = true;
+        (program, draws)
+    }
+
+    #[test]
+    fn over_budget_rendered_frame_is_presented() {
+        // 1 ms budget, 5 ms view: every frame runs over budget after render.
+        for governor in [true, false] {
+            let mut config = ProgramConfig::default()
+                .with_budget(FrameBudgetConfig::with_total(Duration::from_millis(1)));
+            if !governor {
+                config = config.without_load_governor();
+            }
+            let (mut program, draws) = slow_view_program(Duration::from_millis(5), config);
+            program.render_frame().expect("render over-budget frame");
+
+            assert_eq!(
+                draws.load(Ordering::SeqCst),
+                1,
+                "the frame was rendered (governor={governor})"
+            );
+            assert!(
+                program.budget.remaining().is_zero(),
+                "precondition: the frame ran over its budget (governor={governor})"
+            );
+            assert!(
+                !program.dirty,
+                "an over-budget frame that rendered must be presented (governor={governor})"
+            );
+            assert!(
+                program.presenter.last_diff_strategy().is_some(),
+                "the presenter must have run (governor={governor})"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_skip_frame_still_skips_before_render() {
+        // Legacy budget, so no controller decision can move the level; the
+        // level was just set, so the upgrade cooldown holds it for this frame.
+        let (mut program, draws) = slow_view_program(
+            Duration::ZERO,
+            ProgramConfig::default().without_load_governor(),
+        );
+        program.budget.set_degradation(DegradationLevel::SkipFrame);
+        program.render_frame().expect("render at SkipFrame");
+
+        assert_eq!(
+            draws.load(Ordering::SeqCst),
+            0,
+            "SkipFrame with frame skips allowed must skip before render"
+        );
+        assert!(
+            program.dirty,
+            "a skipped frame keeps the update pending for a later frame"
+        );
+        assert!(program.presenter.last_diff_strategy().is_none());
+    }
+
+    #[test]
+    fn strict_budget_never_skips_a_frame() {
+        // strict(): frame skips disallowed. Even at SkipFrame and over budget,
+        // the frame is rendered and presented, as its documentation says.
+        let (mut program, draws) = slow_view_program(
+            Duration::from_millis(5),
+            ProgramConfig::default()
+                .without_load_governor()
+                .with_budget(FrameBudgetConfig::strict(Duration::from_millis(1))),
+        );
+        program.budget.set_degradation(DegradationLevel::SkipFrame);
+        program.render_frame().expect("render strict frame");
+
+        assert_eq!(
+            draws.load(Ordering::SeqCst),
+            1,
+            "strict() must not skip before render"
+        );
+        assert!(
+            program.budget.remaining().is_zero(),
+            "precondition: the frame ran over its budget"
+        );
+        assert!(!program.dirty, "strict() must present the rendered frame");
+        assert!(program.presenter.last_diff_strategy().is_some());
+    }
+
     /// CONTRACT (bd-1za0z F2): when a guardrail alert fires during
     /// render_frame, a `guardrail_snapshot` evidence row is exported through
     /// the configured sink — GuardrailSnapshot::to_jsonl is live production
@@ -17470,7 +17602,12 @@ mod tests {
     }
 
     #[test]
-    fn headless_render_frame_skips_when_budget_exhausted() {
+    fn headless_render_frame_presents_when_budget_exhausted() {
+        // frankentui#104: a budget with no time left at frame start used to
+        // skip the frame before render, so a zero budget never showed
+        // anything. Running out of time is not a reason to skip: the frame is
+        // rendered and presented. Only an explicit SkipFrame degradation
+        // skips (explicit_skip_frame_still_skips_before_render).
         let config = ProgramConfig {
             budget: FrameBudgetConfig::with_total(Duration::ZERO),
             ..Default::default()
@@ -17480,9 +17617,12 @@ mod tests {
         program.dirty = true;
         program.render_frame().expect("render frame");
 
-        // Dirty state is preserved when frame is skipped — the UI update
-        // was never presented and must be retried.
-        assert!(program.dirty);
+        assert!(program.budget.remaining().is_zero());
+        assert!(
+            !program.dirty,
+            "a zero budget must still render and present the frame"
+        );
+        assert!(program.presenter.last_diff_strategy().is_some());
         assert_eq!(program.frame_idx, 1);
     }
 

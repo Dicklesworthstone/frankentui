@@ -169,7 +169,7 @@ Each screen is also a snapshot test target. `BLESS=1 cargo test -p ftui-demo-sho
 
 ## Minimal API Example
 
-This example targets FrankenTUI 0.9.0 with the default features enabled. See
+This example targets FrankenTUI 0.10.0 with the default features enabled. See
 [installation](#installation) for version and local checkout dependencies.
 
 ```rust
@@ -343,10 +343,10 @@ The workspace provides 17 library crates (the `ftui` facade plus
 
 ```toml
 [dependencies]
-ftui = "=0.9.0"
+ftui = "=0.10.0"
 ```
 
-These dependency examples target **0.9.0**. To work from a local checkout, use
+These dependency examples target **0.10.0**. To work from a local checkout, use
 the path dependency above instead.
 
 The default features are `runtime`, `extras`, and `backend`. `App::run()` selects
@@ -356,7 +356,7 @@ disable the defaults:
 
 ```toml
 [dependencies]
-ftui = { version = "=0.9.0", default-features = false, features = ["runtime"] }
+ftui = { version = "=0.10.0", default-features = false, features = ["runtime"] }
 ```
 
 Without a compiled terminal backend, `App::run()` returns an `Unsupported`
@@ -2350,7 +2350,7 @@ These modules compile only with `--features experimental` on the crate that owns
 Sections below that describe an experimental module each carry a **Where it runs** line, so you do not have to cross-reference this table to find out whether a feature is connected. Checked 2026-09-19 by resolving `use ftui_runtime::<module>` across every crate's `src/`. (One trap if you check this yourself: `ftui-render/src/presenter.rs` declares its own private `mod cost_model` for ANSI cursor-move costs, which is unrelated to `ftui_runtime::cost_model` and makes a bare grep for `cost_model::` look like a hit.)
 
 ```toml
-ftui-runtime = { version = "0.9", features = ["experimental"] }
+ftui-runtime = { version = "0.10", features = ["experimental"] }
 ```
 
 | Crate | Module | What it is | Status |

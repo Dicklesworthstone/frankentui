@@ -763,12 +763,10 @@ fn cancellation_race_shutdown_bounded_and_well_formed() {
 /// thread injecting bytes — would break this.
 ///
 /// This deliberately uses `ZeroWatermarks` (governor pinned at `Degraded`
-/// with a meetable frame budget) rather than `DegradationStorm`: the gauntlet
-/// pinned down that an unmeetable budget suppresses presentation entirely via
-/// the post-render present-skip path — zero bytes are emitted even with
-/// `allow_frame_skip = false` — so a storm run has no present path to compare.
-/// That suppression semantics is itself pinned by
-/// `unmeetable_budget_suppresses_presentation_but_preserves_input`.
+/// with a meetable frame budget) rather than `DegradationStorm`, so the
+/// comparison does not depend on how an unmeetable budget degrades. Since
+/// frankentui#104 an unmeetable budget still presents every rendered frame;
+/// that is pinned by `unmeetable_budget_still_presents_and_preserves_input`.
 #[test]
 fn terminal_mode_safety_preserved_under_always_degraded_governor() {
     let inline = run_gauntlet(
@@ -800,14 +798,15 @@ fn terminal_mode_safety_preserved_under_always_degraded_governor() {
     );
 }
 
-/// Pinned discovery: when the frame budget is unmeetable, the runtime
-/// suppresses presentation entirely (the post-render present-skip fires every
-/// frame, regardless of `allow_frame_skip`). The user-visible contract under
-/// that extreme is exactly the strict floor this gauntlet enforces: zero
-/// presented bytes is an acceptable degraded-mode outcome, but dropped or
-/// reordered scripted input never is, and shutdown stays bounded.
+/// When the frame budget is unmeetable and frame skips are disallowed
+/// (`DegradationStorm`: a 1 ns budget with `allow_frame_skip = false`), every
+/// rendered frame is still presented. Until frankentui#104 the post-render
+/// present-skip fired on every such frame, regardless of `allow_frame_skip`,
+/// and nothing was ever presented: a steadily slow view froze the UI. The
+/// strict floor holds as before: no dropped or reordered scripted input, a
+/// well-formed stream, and bounded shutdown.
 #[test]
-fn unmeetable_budget_suppresses_presentation_but_preserves_input() {
+fn unmeetable_budget_still_presents_and_preserves_input() {
     for mode in [INLINE, ALT] {
         let outcome = run_gauntlet(
             mode,
@@ -821,10 +820,9 @@ fn unmeetable_budget_suppresses_presentation_but_preserves_input() {
             &format!("unmeetable budget, mode {mode:?}"),
         );
         assert!(
-            outcome.terminal_output.is_empty(),
-            "an unmeetable budget suppresses presentation via the present-skip path; \
-             if this starts presenting, the degraded-mode contract changed and both \
-             this pin and the operator docs must be revisited (mode {mode:?})"
+            !outcome.terminal_output.is_empty(),
+            "an unmeetable budget with frame skips disallowed must still present \
+             rendered frames (frankentui#104, mode {mode:?})"
         );
     }
 }

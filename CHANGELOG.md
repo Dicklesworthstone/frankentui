@@ -6,9 +6,9 @@ All notable changes to [FrankenTUI](https://github.com/Dicklesworthstone/franken
 **Crate:** `ftui` (facade) plus 19 workspace crates
 **License:** MIT + OpenAI/Anthropic Rider
 
-Scope window: initial development on 2026-01-31 through the 0.9.0 release
-published on 2026-10-03. The latest published GitHub Release is
-[v0.9.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.9.0).
+Scope window: initial development on 2026-01-31 through the 0.10.0 release
+published on 2026-11-03. The latest published GitHub Release is
+[v0.10.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.10.0).
 `Release` below means a published GitHub Release; `Tag` means a git tag with
 no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
 For pre-release verification and publication steps, see
@@ -18,6 +18,7 @@ For pre-release verification and publication steps, see
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
+| [v0.10.0] | Release | 2026-11-03 | Late frames presented (#104), inline scrollback under multiplexers, PTY child mode, RustSec lock updates |
 | [v0.9.0] | Release | 2026-10-03 | SIMD width kernels, OSC 52 clipboard, paragraph editing, bidi `Paragraph`, unified teardown, first crates.io publish since 0.7.0 |
 | [v0.8.0] | Release | 2026-09-13 | Browser showcase parity, driven guided tour, touch navigation, clipboard |
 | [v0.7.0] | Release | 2026-09-08 | Default backends, keymaps, runtime accessibility, widgets, terminal fixes |
@@ -36,6 +37,463 @@ Release dates use GitHub's publication timestamp. Tag-only dates use the
 tag's recorded timezone; the internal milestone uses its commit date.
 
 ---
+
+## [v0.10.0] -- 2026-11-03 (GitHub Release)
+
+164 commits since v0.9.0.
+
+**Slow views stay live, and inline logs reach scrollback.** A frame that runs
+past its budget is now presented instead of dropped, so an application with a
+steadily slow `view()` no longer looks frozen
+([#104](https://github.com/Dicklesworthstone/frankentui/issues/104)). Inline-mode
+log lines now reach the terminal's history under tmux, GNU screen and zellij,
+and survive resizes. This release has breaking API changes, listed under
+**Changed**; read them before upgrading.
+
+### Added
+
+- **PTY child mode for subprocesses (Unix): `ProcessSubscription::pty(true)` and
+  `agent_shell --pty`.** The child runs on a pseudo-terminal instead of pipes,
+  so `isatty` holds and colour, line buffering and prompts behave as in a
+  terminal; stdout and stderr both arrive as `Stdout`, and closing input sends
+  one VEOF. The child leads a new session with no controlling terminal and the
+  run owns its process group: `ProcessControl::request_interrupt` sends SIGINT
+  to the group, the group is swept with SIGKILL before the leader is reaped,
+  and `ProcessControl::request_resize` sets the PTY size and sends SIGWINCH. In
+  `agent_shell --pty` the PTY follows terminal resizes and the status row shows
+  `pty`.
+- **Pixel mouse, cell size and terminal replies in the input parser.**
+  `ProgramConfig::with_pixel_mouse(true)` enables SGR-Pixels (`?1016h`)
+  reporting when mouse capture is on: `MouseEvent::pixel` carries the pixel
+  position, and cell coordinates use the cell size from an XTWINOPS
+  `CSI 6 ; height ; width t` reply (`InputParser::set_cell_size_px`). DCS
+  replies are captured as
+  `Event::TerminalResponse(TerminalResponse::Dcs { payload, truncated })`,
+  capped at 8 KiB; APC is captured only after `InputParser::set_capture_apc(true)`
+  and otherwise still reads as an Alt-modified key. `Program` consumes these
+  replies itself unless `ProgramConfig::with_deliver_terminal_responses(true)`
+  forwards them to `Model::update`.
+- **Hierarchical accessibility for `Tree`, and one focus owner per frame.**
+  `Tree` publishes nested `List`/`ListItem` nodes with a "level N" description
+  and an `expanded` state, under IDs that stay stable across layout moves
+  (`Tree::with_accessibility_id`, `Tree::accessibility_item_id`).
+  `FocusManager::sync_to_frame` (through the new `Frame::set_a11y_focused`)
+  makes the manager's current node, or the focused or selected item inside a
+  container it names, the only focused node in the built tree, and clears
+  focus while the host window is unfocused. `Block::render_with_children`
+  renders children inside the block's accessibility group, and
+  `ftui_extras::forms::FormState` gains panel focus (`with_panel_focused`,
+  `set_panel_focused`) so an inactive form no longer claims screen-reader focus.
+- **Variable-height lists remeasure on a policy and fill unmeasured rows by
+  category.** `Virtualized::with_remeasure_policy` and
+  `VirtualizedListState::with_remeasure_policy` take a `RemeasurePolicy`
+  (Beta-VOI) that decides when rendered rows are measured again and writes
+  `voi_sample` evidence. Rows not measured yet take their category's predicted
+  height (`VariableHeightsFenwick::set_categories`,
+  `refresh_category_predictions`). `LogViewer` measures wrapped lines into
+  Fenwick-backed offsets (`LogViewer::measure_heights`, `set_wrap_mode`,
+  `offset_of_item`). In the showcase, Virtualized Search gives every fourth row
+  a second preview line, and Log Search measures wrapped lines once wrapping is
+  on (`w`).
+- **`TableTheme` spacing reaches `Table` and Markdown tables.** `Table` takes
+  its column spacing from `TableTheme::column_gap` unless
+  `Table::column_spacing(..)` overrides it, and `Table::use_theme_padding(true)`
+  or `Table::cell_padding(..)` insets cell content and widens measured columns.
+  `MarkdownRenderer` applies `MarkdownTheme.table_theme.padding` to the tables
+  it draws.
+- **Help and hints from the live key map.** `ContextId` and `Dispatch` join
+  `KeyMap` and `KeyDispatcher` in `ftui::prelude`, `KeybindingHints::from_keymap`
+  builds hints from the bindings that win in the active contexts, and the help
+  registry's `Keybinding` converts from any `&Binding<A>`. The showcase routes
+  its global keys, the editor's `Ctrl+x Ctrl+s` and Log Search's `g g` through
+  shared key maps, derives its help overlay from them, and writes key-dispatch
+  records as JSONL when `FTUI_DEMO_KEY_JSONL` names a file (or `-` for stderr).
+- **Smaller additions.** `LogViewer::scroll_offset()` reports the current
+  viewport offset, filtered or not, without leaking the follow-to-bottom
+  sentinel. `TextPreset::name()` and `TextPreset::description()` describe the
+  `ftui-extras` text presets, and the showcase's Visual Effects Presets tab now
+  renders that library instead of a placeholder. `BocpdDetector::seed_event_time`
+  and `BocpdDetector::recommended_delay_after_idle` expose BOCPD timing for
+  idle-aware delays.
+- **DOM text host for the WASM showcase.**
+  `crates/ftui-showcase-wasm/sdk/showcase-host.js` (with `showcase-host.css`)
+  mounts `ShowcaseRunner` in a `<pre>` of `<span>` cells without the
+  WebGPU/Canvas2D renderer bundle: it decodes `takeFlatPatches()`, encodes
+  keyboard, mouse, wheel, paste and focus input, and repaints fully on DPR or
+  zoom changes. It draws one code point per cell, with U+25A1 standing in for
+  multi-code-point graphemes, and its unit tests run with `node --test`.
+- **Headless stepping and shadow-run comparison.** `Program::new_headless`,
+  `init_headless`, `step_headless_event`, `step_headless_frame` and
+  `drain_headless_tasks` drive the budget, render, present and evidence path
+  without a terminal. Under `RolloutPolicy::Shadow` with an `EvidenceSink`,
+  every presented frame writes a `shadow_frame` row carrying an FNV-1a buffer
+  checksum (`Buffer::checksum`), and `ftui_harness::ShadowRun::compare_recorded`
+  or the `shadow_compare` binary compares two recorded runs.
+- **More runtime evidence.** `ResizeCoalescer` and `Program` shutdown write
+  resize decisions, regime changes and cycle-time percentiles as JSONL
+  evidence, every runtime tracing macro names an explicit target, and
+  `docs/spec/telemetry-events.md` documents the evidence events, now 30 in
+  `ALL_EVIDENCE_EVENTS`. `budget_decision` rows add `eprocess_lambda`, and the
+  `inline_strategy` row adds `log_transport`.
+- **Windows: `ftui-tty` refuses cleanly off Unix, and cross-builds are
+  checked.** `ftui-tty` now compiles on non-Unix targets with
+  `ftui_tty::BACKEND_AVAILABLE == false`, where `TtyBackend::open` returns
+  `ErrorKind::Unsupported` and points at `crossterm-compat`, which the `ftui`
+  facade selects by default on Windows. When the terminal session cannot be
+  opened and stdin or stdout is redirected, `Program::with_config` and
+  `App::run` over Crossterm return `Unsupported` with a plain message instead
+  of an opaque backend error, and `FTUI_EXIT_AFTER_MS=<ms>` makes interactive
+  binaries exit cleanly after a deadline for smoke tests. Clippy covers the
+  whole workspace for `x86_64-pc-windows-gnu`, and the `ftui` examples and two
+  test binaries are built for it, by cross-compilation. A run on a native
+  Windows console is still pending.
+
+### Changed
+
+- **A late frame is presented, not dropped
+  ([#104](https://github.com/Dicklesworthstone/frankentui/issues/104)).**
+  `Program` now presents every frame it renders, however long it took. The
+  frame budget skips a frame before rendering only at
+  `DegradationLevel::SkipFrame` with `allow_frame_skip`. If you relied on
+  over-budget frames being dropped, frames are now skipped only through that
+  degradation level; `RenderBudget::exhausted()` still reports a spent budget,
+  as an advisory signal for work inside a frame.
+- **Breaking API changes.** Found with cargo-semver-checks 0.51.0 against the
+  published 0.9.0 crates, plus two it cannot see: `ActionMapper::map` (no lint
+  for a changed return type) and `terminal_output_lock` (`#[doc(hidden)]` in
+  0.9.0). The tool checked its default feature set, which is every feature
+  except `unstable`, `nightly`, `bench`, `no_std` and names starting with `_`
+  or `unstable`. Other combinations, such as builds without `crossterm`, were
+  not checked.
+  - **Auto traits.** `ftui_runtime::ProgramSimulator` and
+    `ftui_harness::LabSession` are no longer `Sync`. `ftui_runtime::WasmRunner`,
+    `ftui_web::StepProgram` and `ftui_web::SessionRecorder` are no longer
+    `Sync`, `UnwindSafe` or `RefUnwindSafe`. They now hold an optional
+    `Box<dyn TickStrategy>`, and `TickStrategy` requires `Send` but not
+    `Sync`. Code that shares one of these across threads (for example in an
+    `Arc`) or moves it into `std::panic::catch_unwind` without
+    `AssertUnwindSafe` no longer compiles.
+  - **New enum variants** (exhaustive `match` needs an arm):
+    `ftui_core::event::Event::TerminalResponse`, `ftui::agent_shell::Msg::Resize`,
+    and `CmdRecord::{SaveState, RestoreState, SetTickStrategy}` in
+    `ftui_runtime::simulator`. `TraceRecord::Mouse` gains a `pixel` field.
+  - **New public fields** (struct literals need them): `MouseEvent::pixel`
+    (`MouseEvent::new` sets it) and `SessionOptions::pixel_mouse` in
+    `ftui-core`; `TtySessionOptions::pixel_mouse` in `ftui-tty`;
+    `ProgramConfig::{pixel_mouse, deliver_terminal_responses}` in
+    `ftui-runtime`; `BudgetTelemetry::eprocess_lambda`,
+    `RenderCertificateInputs::{span_dirty_rows, baseline_valid}` and
+    `EProcessConfig::{adaptive_lambda, grapa_eta, lambda_min, lambda_max}` in
+    `ftui-render`; `LogViewerState::list_state` in `ftui-widgets`.
+  - **`ftui_core::keybinding::ActionMapper::map` returns `Vec<Action>`.** It
+    returned `Option<Action>` and lost a key that interrupted a pending Esc;
+    it now returns the Esc's action (when it has one) followed by the key's
+    own, in order.
+  - **`ftui_core::session_teardown::install_chained_panic_hook` takes a third
+    argument**, `session_live: fn() -> bool`; passing `|| false` keeps the old
+    behaviour.
+  - **The output lock moved to `ftui_core::session_teardown`.**
+    `TerminalOutputGuard` and `terminal_output_lock` are no longer importable
+    from `ftui_core::terminal_session`. The lock is now compiled in every
+    build, wasm32 included, and the no-op `terminal_session` stub module for
+    builds without `crossterm` is gone.
+- **`FrameArena` moved to `ftui-core`.** It lives in `ftui_core::arena` and is
+  re-exported from `ftui_render::arena`, so existing imports keep working;
+  `ftui-core` now depends on `bumpalo`.
+- **Budget controller: adaptive e-process, and a floor for the conformal gate.**
+  The frame-budget e-process now adapts its betting fraction each frame
+  (`EProcessConfig::adaptive_lambda`, on by default) instead of using a fixed
+  λ = 0.5. The conformal risk gate now respects the controller's
+  `degradation_floor` (`SimpleBorders` by default) through the new
+  `RenderBudget::degrade_respecting_floor`; before, it could step past the
+  floor on its own.
+- **Terminal probes need interactive stdio.** On Unix, capability queries and
+  the scroll-region self-test are skipped, and `/dev/tty` is not opened for
+  them, when stdin or stdout is redirected; the capability fallback applies
+  instead.
+- **Diagnostics stay off the UI terminal.** `FTUI_DEBUG_TRACE` and
+  `DiagnosticLog::with_stderr` write nothing while stderr is a terminal, and an
+  `EvidenceSink` refuses a stdout destination while stdout is the UI terminal.
+  Redirect stderr, or write evidence to a file, to capture them.
+- **The render hot path stops allocating.** `FrameArena` now backs
+  `ftui_text::wrap` (`wrap_text_in` and its siblings), `Flex::split_in`,
+  `Paragraph`, `Table` and `TextInput`, and `Tabs` draws its labels without
+  allocating them. With the arena, the 80×24 ASCII dashboard benchmark makes no
+  heap allocations per frame (1,397 without it) and the Unicode one makes 3
+  (661 without). `Paragraph` defers its min-width scan until a measure asks
+  for it, styled char and word-char wrapping is linear, and the conformal
+  frame-time quantile uses a stack buffer and selection instead of a heap sort
+  (11% lower p50 frame time in the headless 80×24 benchmark with the gate on).
+- **The default diff scans dirty spans and checks its witness.** On the
+  default `DirtyRows` path the certified diff compares only each dirty row's
+  dirty spans, after checking a generation-stamped witness that the buffer's
+  dirty state matches the previous frame; a stale or disagreeing witness falls
+  back to a full diff. Before, the certificate could never fail and every
+  dirty row was scanned whole; the paired benchmark measures 1.7× to 16.2×
+  faster on sparse and over-marked frames.
+- **Build and release scripts identify as FrankenTUI.** `build-wasm.sh`,
+  `scripts/release_publish_crates.sh` and the capture-tool installer send
+  `frankentui-build`, `frankentui-release` and `frankentui-capture-tools`
+  User-Agent strings with the repository URL instead of a borrowed third-party
+  crawler string, and local test requests to DevTools and OTLP endpoints send
+  `frankentui-test`.
+
+### Fixed
+
+- **A steadily slow view no longer freezes the UI
+  ([#104](https://github.com/Dicklesworthstone/frankentui/issues/104)).** A
+  frame whose update and render ran past `FrameBudgetConfig::total` was
+  rendered and then not presented, so with a steadily slow view every frame was
+  dropped: the terminal kept its last frame, and keys reached the model but
+  were never echoed, while the application kept running. Every rendered frame
+  is now presented, and the frame budget skips a frame before rendering only at
+  `DegradationLevel::SkipFrame` with `allow_frame_skip`, as decided by the new
+  `RenderBudget::should_skip_frame()`. `RenderBudget::exhausted()` keeps its
+  behaviour and is documented as advisory. Under `FrameBudgetConfig::strict()`
+  the budget never skips a frame; a memory-guardrail emergency drop still can.
+- **Inline log lines reach scrollback under multiplexers.** The overlay
+  strategy, which every multiplexer and a failed DECSTBM self-test select,
+  erased and rewrote one row per log line, so in tmux `agent_shell -- seq 1 500`
+  left none of its 500 lines in history. `TerminalWriter` now batches log
+  lines and streams them above the UI at the next present, flush or teardown
+  (the render thread also flushes logs that arrive without a frame), ending
+  each complete line with CR LF and letting the terminal scroll them into
+  history. Text without a trailing newline is streamed without a line break,
+  and the next log text continues that row, as under DECSTBM. Lines accepted
+  while a row was free are kept, not dropped, when a resize leaves the UI
+  filling the terminal, and are streamed once a row is free again; at most
+  1,024 lines or 256 KiB wait, and beyond that the oldest are dropped and
+  counted by the new `TerminalWriter::dropped_log_lines()`. The first frame no
+  longer draws over the shell's last lines, teardown keeps the final frame with
+  the cursor parked below it, and `Program` draws one final inline frame after
+  a quit. With `agent_shell` under tmux, GNU screen and zellij, every line
+  now reaches history in every mode tested, against none in v0.9.0.
+- **Inline mode survives resizes.** A resize during streaming lost log lines
+  (105 for one resize, about 1,900 over a 50-resize storm) and leaked UI rows
+  into history, because absolute cursor rows missed the UI once the terminal
+  had resized ahead of the writer. The bottom-anchored UI is now addressed from
+  the terminal's last row and re-anchored before each erase or frame, a live
+  DECSTBM session switches to that addressing when a resize arrives, and UI
+  rows are written without trailing blank cells, so the tmux width-resize
+  journey no longer finds reflowed UI fragments in history. The event loop
+  also waits for a coalescing resize before it renders and applies a resize
+  still pending at exit before the final inline frame, and `agent_shell` caps
+  its inline chrome at 80 columns.
+- **DECSTBM inline logging.** The first log line written after the scroll
+  region is set no longer overwrites the line already on the region's last
+  row, newlines are normalized to CRLF in every log mode, and raw logs under
+  `UiAnchor::Top` are clamped to one status row. Trailing blank cells that
+  carry style flags are kept instead of being trimmed as padding, and
+  `SgrOnly` logging resets SGR after restoring the cursor, so a saved
+  rendition cannot come back after the payload's own reset.
+- **PTY children: progress bars, long lines and restarts.** In PTY mode,
+  carriage-return progress output (from `cargo`, `curl` and similar tools) is
+  rewound instead of piling up until the 64 KiB line limit killed the child,
+  input lines longer than the kernel's 4,095-byte canonical buffer are
+  delivered in chunks flushed with VEOF, and an `agent_shell` restart with F5
+  starts the new child at the current terminal size instead of 80×24.
+  `ProcessControl::pending_resize` reports a resize not yet applied (before
+  spawn, the size the PTY will start at).
+- **Commands and guards that did nothing now act.** The web `StepProgram`,
+  `WasmRunner` and `ProgramSimulator` handle `Cmd::SaveState`,
+  `Cmd::RestoreState` and `Cmd::SetTickStrategy` instead of ignoring them
+  (`with_registry` attaches a `StateRegistry`, `with_tick_strategy` a tick
+  strategy), and the render thread applies `SetMode` to the writer and drops a
+  queued frame made stale by a resize or mode switch. The input fairness guard
+  now fires while input waits (latency of 50 ms or more, three
+  resize-dominated cycles, or Jain's index below 0.8 while resize work exceeds
+  input work) and defers the pending coalesced resize for that cycle so the
+  input and its frame go first; before, input was cleared before the check, so
+  it rarely fired. Long presses fire without a tick rate, and the effect queue
+  enforces `max_queue_depth` when a task is submitted instead of letting a long
+  task back up an unbounded channel.
+- **Chords and Esc keep their order.** `KeyDispatcher` now expires an overdue
+  chord prefix before it handles the next press, so a late key starts fresh
+  instead of extending a chord that already timed out. A key pressed inside
+  the Esc window is no longer lost (`ActionMapper`) or dispatched ahead of the
+  Esc (`KeyDispatcher::feed`), and Ctrl+C/D/Q resolve a pending Esc first; the
+  showcase's editor and Log Search time their chords with `web_time::Instant`,
+  so no `std::time::Instant` crosses the WASM boundary.
+- **Emoji width in CJK mode.** With CJK width enabled, multi-code-point emoji
+  (ZWJ families, skin-tone modifiers, flags) were measured as the sum of their
+  code points, 4 or 8 cells, and are now 2; East Asian Ambiguous symbols such
+  as `●`, `—` and `→` still widen to 2. `display_width` now routes every
+  non-ASCII cluster through the S3-FIFO width cache, which the paired
+  benchmark measured at 1.18× to 1.86× faster than computing widths directly.
+- **Recovered panics no longer print into the UI.** A task panic the runtime
+  recovered from printed its report to the terminal twice, between frames and
+  in raw mode. While a session is live, the chained panic hook now keeps such
+  reports (up to 16) and both backends write them to stderr once the terminal
+  is restored; the executor's extra `eprintln!` is gone. `ftui-runtime` built
+  with only `native-backend` now compiles as a library.
+- **Native backend teardown takes the output lock.** `ftui-tty`, which
+  `ftui::App::run` uses on Unix, never took the one-writer lock, so its
+  signal-path teardown (`?1049l`, mouse and paste disables, cursor show) could
+  interleave with a frame the render thread was writing. It now takes
+  `terminal_output_lock` for every emission batch: signal and panic cleanup,
+  session open, feature toggles, suspend/resume and drop.
+- **Command palette scoring for non-ASCII titles.** Word-boundary scoring
+  indexed title bytes with character positions, so `Café Open` missed the
+  boundary before `Open`; it now counts characters, and ASCII scores are
+  unchanged.
+- **Showcase fixes.** Custom key bindings appear in the help overlay's
+  Navigation group instead of a late Global group that the overlay's height
+  could cut off, and the Mermaid mega showcase no longer debounces a sample
+  change, which could draw the new sample with the previous diagram's cached
+  layout.
+- **The `getting_started` example keeps its viewer state.** It rendered with a
+  fresh clone of its `LogViewerState` every frame, so changes made while
+  rendering were thrown away; the state now lives in a `RefCell`, Up and Down
+  scroll, and `q` quits as well as Ctrl+C.
+- **The `--all-features` rustdoc build is green again.**
+  `cargo doc --workspace --all-features --no-deps` with `-D warnings` failed on
+  seven broken intra-doc links in the experimental `alpha_investing` module,
+  where rustdoc read the expectations `E[V]` and `E[R]` as links; the brackets
+  are now escaped. The default-feature doc build never compiles that module.
+- **Documentation.** The README says how the nightly pinned in
+  `rust-toolchain.toml` is selected for the demo, and no longer suggests
+  installing the latest nightly
+  ([#110](https://github.com/Dicklesworthstone/frankentui/issues/110)). The
+  getting-started guide's version pins are now checked by a test, README widget
+  and table claims that the code did not back are corrected, and the
+  agent-harness tutorial (`docs/tutorials/agent-harness.md`) describes `--pty`
+  process-group cleanup with a `ProcessSubscription::pty` example.
+- **`doctor_frankentui`: no fixed machine paths, no silent passes, no
+  placeholder code.** Project and showcase-binary paths come from
+  `DOCTOR_FRANKENTUI_PROJECT_DIR`, `FTUI_PROJECT_DIR`,
+  `DOCTOR_FRANKENTUI_BINARY`, `FTUI_DEMO_SHOWCASE_BIN` or the enclosing
+  checkout. The real-capture E2E scripts fail (exit 2) when `vhs`, `ffmpeg` or
+  `ffprobe` is missing unless `DOCTOR_E2E_ALLOW_MISSING_TOOLS=1` asks for the
+  old skip, and code generation reports unresolved props, invalid fixed sizes
+  and untranslated commands as error diagnostics instead of emitting
+  `/* TODO */` placeholders or `Fixed(0)`. Docker VHS capture now mounts the
+  configured capture root (a wider writable mount than the single run
+  directory), and semantic policies are validated.
+
+### Dependencies
+
+- **Lockfile moved past RustSec advisories.** One `cargo update` within the
+  existing requirements moves rustls to 0.23.46 (RUSTSEC-2026-0346, -0347,
+  -0348, -0349), rustls-webpki to 0.103.16 (RUSTSEC-2026-0382),
+  webpki-root-certs to 1.0.11 (RUSTSEC-2026-0383), ctutils to 0.4.7
+  (RUSTSEC-2026-0385) and tokio to 1.54.1 (RUSTSEC-2026-0386, an unsoundness
+  advisory), and replaces the yanked yoke-derive 0.8.3 with 0.8.4. The release
+  binary never linked any of these crates. rustls and tokio are reached only
+  through `doctor_frankentui`, which is not published.
+- **wasm-bindgen stays at 0.2.128 (pinned with the archived renderer lock and
+  CLI).** `build-wasm.sh` checks the wasm-bindgen CLI against both
+  `Cargo.lock` and `crates/ftui-showcase-wasm/renderer.lock` before it
+  compiles, so the wasm-bindgen family moves only together with the renderer
+  lock and the CLI.
+- **Version bumps since v0.9.0.** Manifest requirements: vt100 0.16.2 → 0.18.1
+  (an `ftui-extras` dev-dependency, whose emulator-backed tests now build
+  screens with 0.18's `NonZeroU16` sizes; `ftui-runtime` adds vt100 0.18.1 as a
+  new dev-dependency), lru 0.18 → 0.19.0 (`ftui-text`) and fastapi-output
+  0.4 → 0.5.0 (`doctor_frankentui`). Notable lockfile-only updates: serde_json
+  1.0.154, sha2 0.11.1, proptest 1.12.0, libc 0.2.191, trybuild 1.0.122,
+  opentelemetry, opentelemetry_sdk and opentelemetry-otlp 0.33.1, arc-swap
+  1.9.3, unicode-normalization 0.1.26, signal-hook 0.4.6, smallvec 1.16.4,
+  pulldown-cmark 0.13.6, toml 1.1.8, rustix 1.1.6, sqlmodel-console 0.5.1,
+  unicode-width 0.2.3 and unicodeit 0.2.2.
+- **Dependency edges.** `ftui-core` now depends on `bumpalo` (it came with
+  `FrameArena`), `ftui-runtime` enables rustix's `pty` and `termios` features
+  for PTY mode, and `doctor_frankentui` depends on `ftui-harness` only with its
+  `experimental` feature. asupersync stays pinned at `=0.5.0`.
+
+### Known issues
+
+- **Without the load governor, a slow view can still lose its text.** With
+  `LoadGovernorConfig::disabled()`, the frame budget lowers quality on every
+  over-budget frame, down through `DegradationLevel::Skeleton`, where
+  `Paragraph` content is blank, to `SkipFrame`, where most frames are skipped
+  before rendering. With the governor on (the default), the same steadily slow
+  view stays at `SimpleBorders`, because the conformal gate now respects the
+  degradation floor (see **Changed**). When the cost is in the application's
+  own `view()`, no lower level makes a frame cheaper. Tracked as `bd-9gb22`; a
+  frame budget the view never exceeds (for example `FrameBudgetConfig::strict`
+  with a one-hour total) avoids it.
+- **A resize storm can drop scrollback lines on the scroll-region path.** In
+  inline mode, terminals outside tmux, GNU screen and zellij use the
+  scroll-region (DECSTBM) transport by default. In a stress test that streams
+  10,000 lines through 50 resizes 20 ms apart, some runs lost between 0.7% and
+  3.9% of the lines from scrollback. The test uses tmux's emulator as the
+  terminal, with the multiplexer identity hidden, so it is not yet known
+  whether native terminals show it. It is not new in this release: the same
+  build without this release's inline-log fixes fails at a similar or higher
+  rate. Under tmux and GNU screen, which use the overlay transport, the same
+  stress test lost no lines. It did not reproduce in the release gate, whose
+  run of the same test kept all 10,000 lines. Tracked as `bd-d5lro`.
+- **A top-anchored inline UI can lose its top row** when a log line's grapheme
+  width is measured differently by the clamp and the terminal (e.g. U+0600 +
+  space). The log-write path for this case is unchanged from v0.9.0, so v0.9.0
+  is likely affected too (not verified). Tracked as `bd-ojjqa`.
+- **A log line written right after a resize can erase reflowed rows.** With
+  the overlay transport and a bottom-anchored UI (the default), a log line
+  written after a resize and before the next frame is streamed, together with
+  any lines still waiting, after erasing from the UI's first row to the end of
+  the screen. Until that frame, those rows hold what the terminal reflowed
+  during the resize, not the UI. Switching to the alternate screen while log
+  lines wait erases the same way. It comes with the new batched overlay
+  transport, which before this release's inline-log fixes did the same for
+  every waiting line. A follow-up is planned.
+- **A locale test fails beside the other locale tests under plain `cargo test`
+  ([#103](https://github.com/Dicklesworthstone/frankentui/issues/103)).**
+  `ftui-runtime`'s `locale::tests::set_direction_override_wins_and_bumps_version`
+  fails when it runs in parallel with the other locale tests
+  (`cargo test -p ftui-runtime --lib locale::`) and passes alone or with
+  `--test-threads=1`; nextest runs each test in its own process and does not
+  hit it. It is a test-isolation problem, not a product defect.
+- **Process-global theme.** The `ftui-extras` theme is process-global, and
+  dropping a `ScopedThemeLock` does not restore the previous theme.
+- **Visual bidi caret affinity
+  ([#102](https://github.com/Dicklesworthstone/frankentui/issues/102)).** The
+  opt-in visual bidi caret (`CursorNavigator::with_visual_bidi(true)`) still
+  lacks caret affinity at direction changes: each logical position has one
+  caret stop, so the caret does not keep the edge it arrived from.
+- **Unmaintained shaping dependencies.** rustybuzz 0.20.1 (RUSTSEC-2026-0206)
+  and ttf-parser 0.25.1 (RUSTSEC-2026-0192) are flagged unmaintained. They are
+  reached only through `ftui-text`'s optional `shaping` feature.
+- **nix 0.28.0.** nix 0.28.0 comes in through portable-pty 0.9.0 and triggers a
+  future-incompatibility warning from the compiler.
+
+### Internal
+
+Most of the remaining commits are verification, tracking and documentation
+work with no change to shipped behaviour:
+
+- **Tests.** The inline-scrollback suite reads an independent vt100 emulator's
+  scrollback instead of grepping output bytes, with a random-interleaving
+  property test. E2E journeys drive `agent_shell` in real tmux, GNU screen and
+  zellij (100,000 streamed lines with resize storms, interrupt and F5 restart)
+  and in a plain PTY with and without cursor-position replies; new suites cover
+  chord routing through a real PTY, the one-writer rule, accessibility
+  proptests and PTY focus transitions, `ShowcaseRunner` on wasm32 and its
+  documented export contract, pane-strategy parity across Layout Lab, the PTY
+  harness and the web host, `ClusterMap`'s zero-width and end-of-text contract
+  (from the fuzz campaign), SIMD lane boundaries, and Windows key, capability
+  and resize cases. E2E scripts that compiled zero tests and reported PASS now
+  fail, wall-clock bounds scale with `FTUI_TEST_TIME_SCALE`, load-sensitive
+  tests wait for readiness instead of sleeping, and resize-storm seeds default
+  to a fixed value.
+- **Benchmarks and gates.** Five benchmark suites and 28 SLO thresholds in
+  `tests/baseline.json` (11 of them new), enforced by
+  `scripts/perf_regression_gate.sh`, plus paired diff-path, effect-backend and
+  render-frame benchmarks; a stricter README claims gate, a new `repo_facts`
+  truth gate and stricter module-reachability rules; a fail-closed
+  `scripts/release_preflight.sh` with `docs/release-checklist.md`; CI
+  capture-tool and toolchain-pin contracts; and tracker-staleness alerts.
+- **DSR lanes** pin the toolchain from `rust-toolchain.toml` and run cargo
+  directly. New lanes cover the full gate set under parallel load, inline
+  scrollback, all features, release performance budgets, fuzzing, release
+  preflight, Windows cross-builds, the performance gate, doctor verification
+  and the vision scorecard, and the wasm build matrix lane is extended.
+- **Docs and tracking.** ADR-004 (Windows v1 scope) and ADR-006 (untrusted
+  output) are accepted; README sections on the budget controller, diff engine,
+  input fairness, telemetry and the experimental math modules were reconciled
+  with the code; the experimental `ivm` module documents the API it actually
+  has; the showcase gains an experimental Action Timeline aggregate pane and
+  ranks Command Palette Evidence Lab help with `Help::register_with_ranker`.
+  The rest update the issue tracker, the claims ledger and planning notes.
 
 ## [v0.9.0] -- 2026-10-03 (GitHub Release)
 
@@ -1115,6 +1573,7 @@ its full feature list should not be attributed to the earlier 0.1.1 package.
 
 ---
 
+[v0.10.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.10.0
 [v0.9.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.9.0
 [v0.8.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.8.0
 [v0.7.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.7.0

@@ -226,7 +226,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.11.1",
- "signal-hook 0.4.5",
+ "signal-hook 0.4.6",
  "slab",
  "smallvec",
  "socket2",
@@ -990,9 +990,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.2"
+version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
+checksum = "a2376ffd6f96d8a9db59875b4b6b0237d6900b5baf64279714e05493ce64828a"
 dependencies = [
  "cmov",
 ]
@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "doctor_frankentui"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1420,7 +1420,7 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "ftui"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ftui-a11y",
  "ftui-core",
@@ -1438,7 +1438,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-a11y"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ahash",
  "ftui-core",
@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-backend"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ftui-core",
  "ftui-render",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -1472,7 +1472,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
- "signal-hook 0.4.5",
+ "signal-hook 0.4.6",
  "stats_alloc",
  "tempfile",
  "toml",
@@ -1487,7 +1487,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-demo-showcase"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "criterion",
@@ -1519,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-extras"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "base64 0.23.1",
  "bytemuck",
@@ -1555,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-harness"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "ftui",
@@ -1579,14 +1579,14 @@ dependencies = [
 
 [[package]]
 name = "ftui-i18n"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "ftui-layout"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "criterion",
@@ -1603,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-pty"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "frankenterm-core",
  "ftui-core",
@@ -1617,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-render"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ahash",
  "bitflags 2.13.2",
@@ -1642,7 +1642,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-runtime"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "arc-swap",
  "asupersync",
@@ -1680,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-showcase-wasm"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ftui-core",
  "ftui-demo-showcase",
@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-simd"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "proptest",
@@ -1704,7 +1704,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-style"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-text"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "ftui-core",
@@ -1743,7 +1743,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-tty"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ftui-backend",
  "ftui-core",
@@ -1752,12 +1752,12 @@ dependencies = [
  "portable-pty",
  "proptest",
  "rustix",
- "signal-hook 0.4.5",
+ "signal-hook 0.4.6",
 ]
 
 [[package]]
 name = "ftui-web"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "ftui-a11y",
@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-widgets"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ahash",
  "bitflags 2.13.2",
@@ -4111,9 +4111,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -4174,9 +4174,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -4337,9 +4337,9 @@ dependencies = [
 
 [[package]]
 name = "serde_spanned"
-version = "1.1.1"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
 dependencies = [
  "serde_core",
 ]
@@ -4456,9 +4456,9 @@ dependencies = [
 
 [[package]]
 name = "signal-hook"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b29ffa27d3d59a049bb328258de100f8012848d1b08d444e08bbc02ac468435e"
+checksum = "49f7447afd772ca79ad17ae0a3972a6b0df0cb4b80990fd82707593e9e012a74"
 dependencies = [
  "libc",
  "signal-hook-registry",
@@ -4587,9 +4587,9 @@ dependencies = [
 
 [[package]]
 name = "sqlmodel-console"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1074b2defe875f7793be8976900fc3760aa3c1fca74cd69bc93baeed0029acbd"
+checksum = "d6a100f3d7c399a7d7b31dc4b59294b20936dcb3a28530f6910c987675b0af1f"
 dependencies = [
  "serde",
  "serde_json",
@@ -4733,7 +4733,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -4933,9 +4933,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "bytes",
  "libc",
@@ -4957,9 +4957,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.1.6+spec-1.1.0"
+version = "1.1.8+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
+checksum = "20489e00e4d8741d6be680764cc12e270655e375a20d1011e844a9c3379e678d"
 dependencies = [
  "indexmap",
  "serde_core",
@@ -4972,9 +4972,9 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "1.1.1+spec-1.1.0"
+version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
+checksum = "2b86d767906c6c42421dcba507eb9d203e779497710a47782a224bb871653053"
 dependencies = [
  "serde_core",
 ]
@@ -4993,18 +4993,18 @@ dependencies = [
 
 [[package]]
 name = "toml_parser"
-version = "1.1.3+spec-1.1.0"
+version = "1.1.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
+checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
 dependencies = [
  "winnow",
 ]
 
 [[package]]
 name = "toml_writer"
-version = "1.1.2+spec-1.1.0"
+version = "1.1.3+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
+checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tower"
@@ -5613,9 +5613,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.9"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+checksum = "e49d0e65abc00c142e8f9428da991da9f1a250c39be97459901eb12b9b49f62a"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -6177,9 +6177,9 @@ dependencies = [
 
 [[package]]
 name = "yoke-derive"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33811428bee40dbceb6d545e95754741d17a6aef9a4849f0fd62e2ba4f412a78"
+checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
 dependencies = [
  "proc-macro2",
  "quote",
