@@ -15,7 +15,7 @@ path to a working inline (scrollback-preserving) UI.
 ## Stability Notes
 
 - Expect breaking API changes: this is pre-1.0 and moving fast.
-- These examples target 0.9.0. Use the version dependency below, or a local
+- These examples target 0.10.0. Use the version dependency below, or a local
   checkout when developing against repository source.
 - The facade's default features compile a terminal backend (native `ftui-tty`
   on Unix, Crossterm elsewhere) so `App::run()` works without configuration.
@@ -228,11 +228,11 @@ Do **not** embed xterm.js as a fallback for this integration path.
 
 ## Add The Dependency
 
-The examples in this guide target 0.9.0 through the `ftui` facade:
+The examples in this guide target 0.10.0 through the `ftui` facade:
 
 ```toml
 [dependencies]
-ftui = "=0.9.0"
+ftui = "=0.10.0"
 ```
 
 To use a local checkout instead, replace that dependency with a path. Adjust
@@ -266,10 +266,10 @@ If you only want a small slice, you can depend on individual crates directly:
 
 ```toml
 [dependencies]
-ftui-core = "=0.9.0"
-ftui-runtime = "=0.9.0"
-ftui-render = "=0.9.0"
-ftui-widgets = "=0.9.0"
+ftui-core = "=0.10.0"
+ftui-runtime = "=0.10.0"
+ftui-render = "=0.10.0"
+ftui-widgets = "=0.10.0"
 ```
 
 For local development, replace each version with a path to its directory under

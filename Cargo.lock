@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "doctor_frankentui"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1420,7 +1420,7 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "ftui"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ftui-a11y",
  "ftui-core",
@@ -1438,7 +1438,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-a11y"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ahash",
  "ftui-core",
@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-backend"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ftui-core",
  "ftui-render",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -1487,7 +1487,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-demo-showcase"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "criterion",
@@ -1519,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-extras"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "base64 0.23.1",
  "bytemuck",
@@ -1555,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-harness"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "ftui",
@@ -1579,14 +1579,14 @@ dependencies = [
 
 [[package]]
 name = "ftui-i18n"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "ftui-layout"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "criterion",
@@ -1603,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-pty"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "frankenterm-core",
  "ftui-core",
@@ -1617,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-render"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ahash",
  "bitflags 2.13.2",
@@ -1642,7 +1642,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-runtime"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "arc-swap",
  "asupersync",
@@ -1680,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-showcase-wasm"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ftui-core",
  "ftui-demo-showcase",
@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-simd"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "proptest",
@@ -1704,7 +1704,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-style"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-text"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "ftui-core",
@@ -1743,7 +1743,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-tty"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ftui-backend",
  "ftui-core",
@@ -1757,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-web"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "ftui-a11y",
@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "ftui-widgets"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ahash",
  "bitflags 2.13.2",
