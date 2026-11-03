@@ -40,7 +40,7 @@ tag's recorded timezone; the internal milestone uses its commit date.
 
 ## [v0.10.0] -- 2026-11-03 (GitHub Release)
 
-162 commits since v0.9.0.
+164 commits since v0.9.0.
 
 **Slow views stay live, and inline logs reach scrollback.** A frame that runs
 past its budget is now presented instead of dropped, so an application with a
@@ -412,6 +412,30 @@ and survive resizes. This release has breaking API changes, listed under
   own `view()`, no lower level makes a frame cheaper. Tracked as `bd-9gb22`; a
   frame budget the view never exceeds (for example `FrameBudgetConfig::strict`
   with a one-hour total) avoids it.
+- **A resize storm can drop scrollback lines on the scroll-region path.** In
+  inline mode, terminals outside tmux, GNU screen and zellij use the
+  scroll-region (DECSTBM) transport by default. In a stress test that streams
+  10,000 lines through 50 resizes 20 ms apart, some runs lost between 0.7% and
+  3.9% of the lines from scrollback. The test uses tmux's emulator as the
+  terminal, with the multiplexer identity hidden, so it is not yet known
+  whether native terminals show it. It is not new in this release: the same
+  build without this release's inline-log fixes fails at a similar or higher
+  rate. Under tmux and GNU screen, which use the overlay transport, the same
+  stress test lost no lines. It did not reproduce in the release gate, whose
+  run of the same test kept all 10,000 lines. Tracked as `bd-d5lro`.
+- **A top-anchored inline UI can lose its top row** when a log line's grapheme
+  width is measured differently by the clamp and the terminal (e.g. U+0600 +
+  space). The log-write path for this case is unchanged from v0.9.0, so v0.9.0
+  is likely affected too (not verified). Tracked as `bd-ojjqa`.
+- **A log line written right after a resize can erase reflowed rows.** With
+  the overlay transport and a bottom-anchored UI (the default), a log line
+  written after a resize and before the next frame is streamed, together with
+  any lines still waiting, after erasing from the UI's first row to the end of
+  the screen. Until that frame, those rows hold what the terminal reflowed
+  during the resize, not the UI. Switching to the alternate screen while log
+  lines wait erases the same way. It comes with the new batched overlay
+  transport, which before this release's inline-log fixes did the same for
+  every waiting line. A follow-up is planned.
 - **A locale test fails beside the other locale tests under plain `cargo test`
   ([#103](https://github.com/Dicklesworthstone/frankentui/issues/103)).**
   `ftui-runtime`'s `locale::tests::set_direction_override_wins_and_bumps_version`
