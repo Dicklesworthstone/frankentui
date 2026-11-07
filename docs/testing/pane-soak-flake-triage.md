@@ -70,7 +70,8 @@ invariants.
 Every scenario is driven by a **fixed-seed deterministic LCG** with no
 wall-clock, floating-point, or `any::<u64>()` randomness. Therefore:
 
-- A failure is **byte-for-byte reproducible from the seed alone**.
+- The generated operation sequence is **byte-for-byte reproducible from the
+  seed alone**.
 - On the first invariant violation the soak loop writes a **minimized repro
   bundle** (when `PANE_SOAK_ARTIFACT_DIR` is set) and panics with a message that
   contains the seed, the failing step, the exact violation, and a ready-to-paste
@@ -91,18 +92,22 @@ When `PANE_SOAK_ARTIFACT_DIR` is set:
 | `repro_<scenario>_seed<seed>.json` | failure repro metadata: `{scenario, seed, failing_step, applied_ops, message}` (schema `pane-soak-repro-v1`) |
 | `repro_<scenario>_seed<seed>.journal` | the full ordered operation journal up to (and including) the failing step |
 
-The journal + seed are a complete, deterministic replay of the failure — no
-ad-hoc rerun or bisection is required.
+The journal + seed reconstruct the operation sequence. For failures involving
+rendering or scheduling, also retain the relevant settings and execution
+conditions described below.
 
 ## Triage & quarantine process
 
-1. **Reproduce from the seed first.** Run the printed `reproduce:` command. A
-   genuine engine bug reproduces deterministically every time.
-2. **If it does NOT reproduce deterministically**, the bug is in the *test
-   environment*, not the engine — a real non-determinism source (parallelism,
-   shared mutable state, env leakage). Do not quarantine; file a bug against the
-   harness and fix the non-determinism. The suite is designed to have none, so
-   this is itself a defect.
+1. **Reproduce from the seed first.** Run the printed `reproduce:` command.
+   Keep the operation history fixed while recording execution and rendering
+   inputs; a scheduling-dependent engine defect may still need a controlled
+   interleaving to reproduce.
+2. **If it does NOT reproduce deterministically**, investigate the engine and
+   its inputs before attributing the failure to the test environment. Shared
+   mutable state, clocks, environment-dependent settings, and incomplete
+   checkpoint restoration can all produce intermittent failures. Use a
+   controlled schedule to distinguish changed inputs from different outputs
+   for identical inputs. Do not quarantine or weaken the failing assertion.
 3. **If it reproduces**, you have a minimal deterministic repro (seed +
    journal). File a `br` bug with:
    - the seed, scenario, failing step, and violation message,
@@ -116,6 +121,72 @@ ad-hoc rerun or bisection is required.
    track (`bd-a46q1`). Cross-host parity failures route to the parity runner
    (`pane_cross_host_parity.rs`, bd-a46q1.5); pure core-engine failures route to
    pane-core (`bd-1qkzq`).
+
+## Showcase frame and ANSI parity (#115)
+
+The full Layout Lab parity trace compares checkpointed, persistent,
+conservative, and adaptive execution through real input, undo/redo,
+mid-history migration, branch replacement, retention, and rollback. It is the
+rendering evidence cited by `bd-g00-root-epic-ewths.44.2`. Keep its state-hash,
+snapshot, journal, cursor, frame-checksum, ANSI-byte, and execution-counter
+assertions together: passing the state comparisons does not establish frame
+equivalence.
+
+The [kernel plan](../planning/plan-to-create-frankentui-codex.md) requires the
+same **model state, size, and theme** to produce the same frame. Layout Lab
+resolves the process-wide theme repeatedly while rendering, and its style
+helpers also read accessibility settings. Theme setters synchronize with
+`ScopedThemeLock`; ordinary color-token reads do not acquire that lock.
+Therefore, another showcase test can change colors or attributes between
+equivalent policy lanes, or within a single unguarded frame, without changing
+the pane tree or journal.
+
+`assert_pane_showcase_parity` pins these inputs with the existing
+`ScopedRenderLock` **before constructing any lane**, and holds that guard
+through the entire trace and presentation. Only users of the shared theme and
+accessibility state contend for these locks; the Rust suite keeps its normal
+parallel execution. Presenter capabilities and viewport dimensions remain
+explicit. Mismatches retain the original checksum assertion and include the
+first differing cell and pinned input settings, followed by exact cell and
+ANSI comparisons.
+
+The focused regressions distinguish separate questions:
+
+- `pane_render_interference_from_concurrent_theme_changes` uses acknowledged
+  channel messages to change the theme and large-text setting from another
+  thread while equivalent, off-head migrated pane states remain unchanged.
+  It checks that cell content/geometry and semantic state match, that changed
+  rendering inputs alter styles/checksums/ANSI, and that restoring the inputs
+  restores the exact original frame and bytes. There are no sleeps or
+  scheduler-dependent success conditions.
+- `pane_showcase_parity_with_concurrent_theme_writers` starts competing
+  full-trace workers with different pinned themes and retains all original
+  assertions, including migration, pruning, rollback, and subsequent input.
+- `pane_render_and_ansi_parity_survives_latency_fallback` injects a latency
+  violation into one engine and a non-violating observation into its control.
+  It proves that conservative fallback really occurs, that persistent and
+  conservative execution remain semantically and visually equivalent with
+  diagnostic overlays hidden, and that real edit/undo/redo input still works.
+
+Run the focused regressions and vary the libtest thread count when checking
+the full showcase suite. Use the pinned toolchain and the repository's DSR
+verification workflow; these are the underlying Cargo invocations:
+
+```bash
+cargo test -p ftui-demo-showcase --lib --locked pane_render_ -- --nocapture
+cargo test -p ftui-demo-showcase --lib --locked pane_showcase_parity_with_concurrent_theme_writers
+cargo test -p ftui-demo-showcase --lib --locked -- --exact \
+  screens::layout_lab::tests::pane_full_showcase_render_and_ansi_present_parity_across_policies_and_rollback
+cargo test -p ftui-demo-showcase --lib --locked -- --test-threads=1
+cargo test -p ftui-demo-showcase --lib --locked -- --test-threads=16
+cargo test -p ftui-demo-showcase --lib --locked -- --test-threads=64
+```
+
+Record available CPUs separately from the requested test-thread count. A
+64-thread run on a smaller host exercises concurrency but does not reproduce
+the reporter's 64-core hardware. A passing focused run alone does not establish
+that the original full-suite scheduling failure has been reproduced or fixed
+on that hardware.
 
 ## Relationship to the rest of the validation pyramid
 

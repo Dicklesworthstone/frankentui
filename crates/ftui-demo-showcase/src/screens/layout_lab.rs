@@ -4560,12 +4560,369 @@ mod tests {
         assert!(!lab.pane_workspace_wants_mouse(0, 0));
     }
 
-    #[test]
-    fn pane_full_showcase_render_and_ansi_present_parity_across_policies_and_rollback() {
+    fn first_frame_difference(
+        left: &ftui_render::buffer::Buffer,
+        right: &ftui_render::buffer::Buffer,
+    ) -> String {
+        if (left.width(), left.height()) != (right.width(), right.height()) {
+            return format!(
+                "dimensions: {}x{} vs {}x{}",
+                left.width(),
+                left.height(),
+                right.width(),
+                right.height()
+            );
+        }
+        left.cells()
+            .iter()
+            .zip(right.cells())
+            .enumerate()
+            .find(|(_, (a, b))| a != b)
+            .map_or_else(
+                || "no differing cell".to_string(),
+                |(index, (a, b))| {
+                    let width = usize::from(left.width());
+                    format!(
+                        "cell ({}, {}): {a:?} vs {b:?}",
+                        index % width,
+                        index / width
+                    )
+                },
+            )
+    }
+
+    fn render_pane_frame_and_ansi(lab: &LayoutLab) -> (ftui_render::buffer::Buffer, u64, Vec<u8>) {
         use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
         use ftui_render::buffer::Buffer;
         use ftui_render::diff::BufferDiff;
         use ftui_render::presenter::Presenter;
+
+        let mut pool = GraphemePool::new();
+        let (buffer, checksum) = {
+            let mut frame = Frame::new(140, 40, &mut pool);
+            lab.view(&mut frame, Rect::new(0, 0, 140, 40));
+            let checksum = checksum_frame(&frame);
+            (frame.buffer, checksum)
+        };
+        let mut previous = Buffer::new(140, 40);
+        previous.clear_dirty();
+        let mut diff = BufferDiff::new();
+        diff.compute_dirty_into(&previous, &buffer);
+        let caps = TerminalCapabilities::builder()
+            .color_depth(ColorDepth::TrueColor)
+            .osc8_hyperlinks(true)
+            .build();
+        let mut ansi = Vec::new();
+        Presenter::new(&mut ansi, caps)
+            .present_with_pool(&buffer, &diff, Some(&pool), None)
+            .expect("present controlled showcase frame");
+        (buffer, checksum, ansi)
+    }
+
+    #[test]
+    fn pane_render_interference_from_concurrent_theme_changes() {
+        use std::sync::mpsc;
+
+        // Hold the real shared lock in a different thread. Acknowledged changes
+        // reproduce another test changing an unguarded reader's inputs, without
+        // sleeps or relying on the scheduler to hit a narrow race window.
+        std::thread::scope(|scope| {
+            let initial = (theme::ThemeId::CyberpunkAurora, false);
+            let (change_tx, change_rx) = mpsc::channel::<(theme::ThemeId, bool)>();
+            let (applied_tx, applied_rx) = mpsc::channel();
+            let writer = scope.spawn(move || {
+                let _guard = theme::ScopedRenderLock::new(initial.0, initial.1, 1.0);
+                if applied_tx.send(initial).is_err() {
+                    return;
+                }
+                while let Ok((theme_id, large_text)) = change_rx.recv() {
+                    theme::set_theme(theme_id);
+                    theme::set_large_text(large_text);
+                    if applied_tx.send((theme_id, large_text)).is_err() {
+                        break;
+                    }
+                }
+            });
+            assert_eq!(applied_rx.recv().expect("initial render inputs"), initial);
+
+            let budget = PaneRetentionPolicy::bounded(0, 64);
+            let mut labs = [LayoutLab::new(), LayoutLab::new()];
+            for (lab, (before, after)) in labs.iter_mut().zip([
+                (
+                    PaneMemoryStrategy::Checkpointed,
+                    PaneMemoryStrategy::Persistent,
+                ),
+                (
+                    PaneMemoryStrategy::Persistent,
+                    PaneMemoryStrategy::Checkpointed,
+                ),
+            ]) {
+                lab.pane_set_execution_policy(
+                    PaneExecutionPolicy::adaptive(budget).forcing(before),
+                )
+                .expect("initial policy");
+                for key in ['c', 'n', 'k', 'u', 'u'] {
+                    lab.update(&press(KeyCode::Char(key)));
+                }
+                let timeline = lab.pane_timeline.timeline();
+                assert!(timeline.cursor > 0 && timeline.cursor < timeline.entries.len());
+                lab.pane_set_execution_policy(PaneExecutionPolicy::adaptive(budget).forcing(after))
+                    .expect("off-head migration");
+                lab.pane_execution_details = false;
+            }
+
+            let snapshot = labs[0].pane_tree.to_snapshot();
+            let state_hash = labs[0].pane_tree.state_hash();
+            let histories = labs
+                .each_ref()
+                .map(|lab| lab.pane_timeline.timeline().clone());
+            assert_eq!(histories[0].entries, histories[1].entries);
+            assert_eq!(histories[0].cursor, histories[1].cursor);
+            let capture = || {
+                let frames = labs.each_ref().map(render_pane_frame_and_ansi);
+                for (lab, history) in labs.iter().zip(&histories) {
+                    assert_eq!(lab.pane_tree.state_hash(), state_hash);
+                    assert_eq!(lab.pane_tree.to_snapshot(), snapshot);
+                    assert_eq!(lab.pane_timeline.timeline(), history);
+                }
+                assert!(
+                    frames[0].0 == frames[1].0,
+                    "fixed-input policy parity: {}",
+                    first_frame_difference(&frames[0].0, &frames[1].0)
+                );
+                assert_eq!(frames[0].1, frames[1].1);
+                assert_eq!(frames[0].2, frames[1].2);
+                frames
+            };
+            let baseline = capture();
+            for changed in [
+                (theme::ThemeId::LumenLight, false),
+                (theme::ThemeId::CyberpunkAurora, true),
+            ] {
+                change_tx.send(changed).expect("request input change");
+                assert_eq!(applied_rx.recv().expect("applied input change"), changed);
+                let altered = capture();
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "test": "pane_render_input_interference",
+                        "state_hash": state_hash,
+                        "theme": format!("{:?}", changed.0),
+                        "large_text": changed.1,
+                        "before_checksum": baseline[0].1,
+                        "after_checksum": altered[1].1,
+                        "first_difference": first_frame_difference(&baseline[0].0, &altered[1].0),
+                    })
+                );
+                for (before, after) in baseline.iter().zip(&altered) {
+                    assert_eq!(before.0.width(), after.0.width());
+                    assert_eq!(before.0.height(), after.0.height());
+                    for (a, b) in before.0.cells().iter().zip(after.0.cells()) {
+                        assert_eq!(a.content, b.content, "input change must preserve geometry");
+                    }
+                    let color_changed = before
+                        .0
+                        .cells()
+                        .iter()
+                        .zip(after.0.cells())
+                        .any(|(a, b)| a.fg != b.fg || a.bg != b.bg);
+                    let attrs_changed = before
+                        .0
+                        .cells()
+                        .iter()
+                        .zip(after.0.cells())
+                        .any(|(a, b)| a.attrs != b.attrs);
+                    assert_eq!(color_changed, changed.0 != initial.0);
+                    assert_eq!(attrs_changed, changed.1);
+                    assert_ne!(
+                        before.1, after.1,
+                        "changed input must reach the frame checksum"
+                    );
+                    assert_ne!(before.2, after.2, "changed input must reach ANSI output");
+                }
+
+                change_tx.send(initial).expect("restore render inputs");
+                assert_eq!(applied_rx.recv().expect("restored render inputs"), initial);
+                let restored = capture();
+                for (before, after) in baseline.iter().zip(&restored) {
+                    assert!(
+                        before.0 == after.0,
+                        "restored inputs: {}",
+                        first_frame_difference(&before.0, &after.0)
+                    );
+                    assert_eq!(before.1, after.1);
+                    assert_eq!(before.2, after.2);
+                }
+            }
+            // These channels are owned inside the scope callback, so they also
+            // disconnect during unwinding before scope waits for the writer.
+            drop(change_tx);
+            writer.join().expect("controlled input writer");
+        });
+    }
+
+    #[test]
+    fn pane_render_and_ansi_parity_survives_latency_fallback() {
+        use ftui_layout::{PaneAssumption, PaneExecutionSample};
+
+        let _render_guard =
+            theme::ScopedRenderLock::new(theme::ThemeId::CyberpunkAurora, false, 1.0);
+        let policy = PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(0, 64))
+            .forcing(PaneMemoryStrategy::Persistent);
+        let mut labs = [LayoutLab::new(), LayoutLab::new()];
+        for (lab, elapsed_ns) in labs.iter_mut().zip([2, 0]) {
+            lab.pane_set_execution_policy(policy)
+                .expect("install persistent policy");
+            lab.pane_timeline.set_latency_envelope_ns(1);
+            // Neither engine has sampled the real clock yet. Only the latency
+            // differs between treatment and control, not state or policy.
+            lab.pane_timeline
+                .observe(
+                    &lab.pane_tree,
+                    PaneExecutionSample {
+                        timestamp_ns: 0,
+                        elapsed_ns,
+                        local: false,
+                    },
+                )
+                .expect("inject controlled latency observation");
+            // Keep subsequent real input independent of scheduler delays. This
+            // disables new observations' threshold, not the existing fallback latch.
+            lab.pane_timeline.set_latency_envelope_ns(0);
+            lab.pane_execution_details = false;
+        }
+
+        assert_eq!(
+            labs[0].pane_timeline.policy(),
+            labs[1].pane_timeline.policy()
+        );
+        assert_eq!(
+            labs[0].pane_execution_strategy(),
+            PaneMemoryStrategy::Checkpointed
+        );
+        assert!(labs[0].pane_execution_status().conservative);
+        assert_eq!(labs[0].pane_execution_status().fallbacks, 1);
+        let violation = labs[0]
+            .pane_execution_status()
+            .last_monitor
+            .as_ref()
+            .expect("latency fallback verdict");
+        assert_eq!(violation.assumption, PaneAssumption::LatencyEnvelope);
+        assert!(violation.status.is_violation());
+        assert_eq!(
+            labs[1].pane_execution_strategy(),
+            PaneMemoryStrategy::Persistent
+        );
+        assert!(!labs[1].pane_execution_status().conservative);
+        assert_eq!(labs[1].pane_execution_status().fallbacks, 0);
+
+        let assert_parity = |labs: &[LayoutLab; 2], step: &str| {
+            assert_eq!(
+                labs[0].pane_tree.state_hash(),
+                labs[1].pane_tree.state_hash()
+            );
+            assert_eq!(
+                labs[0].pane_tree.to_snapshot(),
+                labs[1].pane_tree.to_snapshot(),
+                "{step}: fallback changed the canonical tree"
+            );
+            assert_eq!(
+                labs[0].pane_timeline.timeline().entries,
+                labs[1].pane_timeline.timeline().entries,
+                "{step}: fallback changed journal entries"
+            );
+            assert_eq!(
+                labs[0].pane_timeline.timeline().cursor,
+                labs[1].pane_timeline.timeline().cursor,
+                "{step}: fallback changed the history cursor"
+            );
+            let (fallback_buffer, fallback_checksum, fallback_ansi) =
+                render_pane_frame_and_ansi(&labs[0]);
+            let (control_buffer, control_checksum, control_ansi) =
+                render_pane_frame_and_ansi(&labs[1]);
+            assert_eq!(
+                fallback_checksum,
+                control_checksum,
+                "{step}: latency fallback changed the rendered Frame; {}",
+                first_frame_difference(&fallback_buffer, &control_buffer)
+            );
+            assert!(fallback_buffer == control_buffer, "{step}: rendered cells");
+            assert_eq!(
+                fallback_ansi, control_ansi,
+                "{step}: latency fallback changed presented ANSI"
+            );
+        };
+
+        assert_parity(&labs, "after_latency_fallback");
+        let initial = labs[0].pane_tree.to_snapshot();
+        for lab in &mut labs {
+            lab.update(&press(KeyCode::Char('c')));
+        }
+        let edited = labs[0].pane_tree.to_snapshot();
+        assert_ne!(edited, initial, "continued input must perform a real edit");
+        assert_parity(&labs, "edit_after_fallback");
+        for (key, step, expected) in [
+            ('u', "undo_after_fallback", &initial),
+            ('y', "redo_after_fallback", &edited),
+        ] {
+            for lab in &mut labs {
+                lab.update(&press(KeyCode::Char(key)));
+            }
+            assert_eq!(&labs[0].pane_tree.to_snapshot(), expected);
+            assert_parity(&labs, step);
+        }
+        assert!(labs[0].pane_execution_status().conservative_applies > 0);
+        assert_eq!(labs[0].pane_execution_status().persistent_applies, 0);
+        assert!(labs[1].pane_execution_status().persistent_applies > 0);
+        assert_eq!(labs[1].pane_execution_status().conservative_applies, 0);
+        assert!(
+            labs[0]
+                .pane_execution_status()
+                .last_maintenance_error
+                .is_none()
+        );
+        assert!(
+            labs[1]
+                .pane_execution_status()
+                .last_maintenance_error
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pane_full_showcase_render_and_ansi_present_parity_across_policies_and_rollback() {
+        assert_pane_showcase_parity(theme::ThemeId::CyberpunkAurora);
+    }
+
+    #[test]
+    fn pane_showcase_parity_with_concurrent_theme_writers() {
+        let start = std::sync::Barrier::new(3);
+        std::thread::scope(|scope| {
+            for theme_id in [theme::ThemeId::LumenLight, theme::ThemeId::HighContrast] {
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    assert_pane_showcase_parity(theme_id);
+                });
+            }
+            start.wait();
+        });
+    }
+
+    fn assert_pane_showcase_parity(theme_id: theme::ThemeId) {
+        use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
+        use ftui_render::buffer::Buffer;
+        use ftui_render::diff::BufferDiff;
+        use ftui_render::presenter::Presenter;
+
+        // Frame parity requires identical theme and accessibility inputs as well
+        // as identical pane state. Other showcase tests change these globals.
+        // Pin them before construction and through every render/present step;
+        // the existing resource locks leave unrelated tests free to run.
+        let _render_guard = theme::ScopedRenderLock::new(theme_id, false, 1.0);
+        assert_eq!(theme::current_theme(), theme_id);
+        assert!(!theme::large_text_enabled());
+        assert_eq!(theme::motion_scale(), 1.0);
 
         struct Lane {
             name: &'static str,
@@ -4672,9 +5029,23 @@ mod tests {
                     step_timelines[0].0, step_timelines[i].0
                 );
                 assert_eq!(
-                    step_frame_checksums[0].1, step_frame_checksums[i].1,
-                    "{step_label}: rendered Frame checksum mismatch between {} and {}",
-                    step_frame_checksums[0].0, step_frame_checksums[i].0
+                    step_frame_checksums[0].1,
+                    step_frame_checksums[i].1,
+                    "{step_label}: rendered Frame checksum mismatch between {} and {}; \
+                     theme={:?}, large_text={}, motion_scale={}; {}",
+                    step_frame_checksums[0].0,
+                    step_frame_checksums[i].0,
+                    theme::current_theme(),
+                    theme::large_text_enabled(),
+                    theme::motion_scale(),
+                    first_frame_difference(&lanes[0].prev, &lanes[i].prev)
+                );
+                assert!(
+                    lanes[0].prev == lanes[i].prev,
+                    "{step_label}: rendered cells mismatch between {} and {}; {}",
+                    lanes[0].name,
+                    lanes[i].name,
+                    first_frame_difference(&lanes[0].prev, &lanes[i].prev)
                 );
                 assert_eq!(
                     step_ansi[0].1, step_ansi[i].1,
