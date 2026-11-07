@@ -931,6 +931,24 @@ pub struct AsyncTaskManager {
 /// Environment variable that overrides [`AsyncTaskManager::watch_path`].
 pub const WATCH_FILE_ENV: &str = "FTUI_DEMO_WATCH_FILE";
 
+/// Default watch-file name used when `WATCH_FILE_ENV` is unset.
+const WATCH_FILE_NAME: &str = "ftui-demo-async-tasks-watch.log";
+
+/// The default [`AsyncTaskManager::watch_path`] when `WATCH_FILE_ENV` is unset.
+///
+/// Native builds place it in the temp dir; the browser (wasm32) build keeps the
+/// bare file name, because `std::env::temp_dir()` panics on a target with no
+/// filesystem and the file is never opened there (writing is native-only).
+#[cfg(not(target_arch = "wasm32"))]
+fn default_watch_path() -> PathBuf {
+    std::env::temp_dir().join(WATCH_FILE_NAME)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn default_watch_path() -> PathBuf {
+    PathBuf::from(WATCH_FILE_NAME)
+}
+
 impl Default for AsyncTaskManager {
     fn default() -> Self {
         Self::new()
@@ -963,10 +981,8 @@ impl AsyncTaskManager {
             layout_task_list_inner: StdCell::new(Rect::default()),
             layout_details: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
-            watch_path: std::env::var_os(WATCH_FILE_ENV).map_or_else(
-                || std::env::temp_dir().join("ftui-demo-async-tasks-watch.log"),
-                PathBuf::from,
-            ),
+            watch_path: std::env::var_os(WATCH_FILE_ENV)
+                .map_or_else(default_watch_path, PathBuf::from),
             watch_writes: 0,
         };
 
@@ -1418,7 +1434,8 @@ impl AsyncTaskManager {
 
     /// The file the app's `file_watcher` subscription polls while this
     /// screen is shown: `$FTUI_DEMO_WATCH_FILE`, or a fixed name in the
-    /// temp dir. Nothing writes it until `w` is pressed.
+    /// temp dir (the browser build keeps the bare name, since wasm has no
+    /// temp dir). Nothing writes it until `w` is pressed.
     pub fn watch_path(&self) -> &Path {
         &self.watch_path
     }
