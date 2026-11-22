@@ -164,7 +164,7 @@ build_package() {
   [[ "$target_dir" == /* ]] || fail 'CARGO_TARGET_DIR must be absolute'
   (
     cd "$source"
-    cargo -Zchecksum-freshness --config 'profile.release.package.ftui-extras.opt-level="z"' \
+    cargo -Zchecksum-freshness --config 'profile.release.opt-level="z"' \
       build --locked --release --lib --target wasm32-unknown-unknown \
       --target-dir "$target_dir" -p "$package"
   )

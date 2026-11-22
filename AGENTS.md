@@ -126,20 +126,15 @@ GitHub Actions was disabled in the repository settings on 2026-09-06; keep it di
 
 ### Release Profile
 
-The release build optimizes for size (lean binary for distribution):
+The release build optimizes for runtime performance (WASM builds override `profile.release.opt-level="z"` via `build-wasm.sh` to stay within browser size budgets):
 
 ```toml
 [profile.release]
-opt-level = "z"     # Optimize for size
+opt-level = 3       # Optimize for speed (SIMD, loop unrolling, aggressive inlining)
 lto = true          # Link-time optimization
 codegen-units = 1   # Single codegen unit for better optimization
 panic = "abort"     # Smaller binary, no unwinding overhead
 strip = true        # Remove debug symbols
-
-# VFX-heavy crate: prefer speed over binary size so the rasterizer
-# inner loops benefit from SIMD, loop unrolling, and aggressive inlining.
-[profile.release.package.ftui-extras]
-opt-level = 3
 ```
 
 ---
@@ -330,8 +325,8 @@ Every component crate includes inline `#[cfg(test)]` unit tests alongside the im
 - Error conditions
 
 Cross-component integration tests live in each crate's own `tests/`
-directory -- <!-- fact:integration_test_files -->303<!-- /fact --> files across the workspace, the largest being `ftui-runtime`
-(<!-- fact:integration_tests_runtime -->52<!-- /fact -->), `ftui-harness` (<!-- fact:integration_tests_harness -->49<!-- /fact -->) and `ftui-demo-showcase` (<!-- fact:integration_tests_showcase -->46<!-- /fact -->).
+directory -- <!-- fact:integration_test_files -->304<!-- /fact --> files across the workspace, the largest being `ftui-runtime`
+(<!-- fact:integration_tests_runtime -->53<!-- /fact -->), `ftui-harness` (<!-- fact:integration_tests_harness -->49<!-- /fact -->) and `ftui-demo-showcase` (<!-- fact:integration_tests_showcase -->46<!-- /fact -->).
 
 **Not** in the repository-root `tests/`. That directory holds fixtures,
 baselines and captured artifacts, contains no `.rs` files, and could not run
@@ -539,7 +534,7 @@ frankentui/
 │   ├── ftui-backend/                  # Backend abstraction
 │   ├── ftui-core/                     # Terminal lifecycle, events, capabilities
 │   ├── ftui-demo-showcase/            # Reference app + screen snapshots
-│   ├── ftui-extras/                   # Feature-gated add-ons (VFX, opt-level=3)
+│   ├── ftui-extras/                   # Feature-gated add-ons (VFX, charts, markdown)
 │   ├── ftui-harness/                  # Test utilities + snapshot framework
 │   ├── ftui-i18n/                     # Internationalization support
 │   ├── ftui-layout/                   # Flex + Grid solvers
@@ -617,7 +612,7 @@ contains them.
 - **Elm/Bubbletea architecture** — Model trait with init/update/view/subscriptions
 - **Inline mode first** — preserve scrollback while keeping chrome stable
 - **Deterministic output** — buffer diffs and explicit presentation over ad-hoc writes
-- **ftui-extras at opt-level=3** — VFX rasterizer inner loops need SIMD, loop unrolling, and aggressive inlining
+- **Workspace release profile at opt-level=3** — render diff, presenter, layout, and VFX inner loops benefit from SIMD, loop unrolling, and aggressive inlining (WASM overrides `opt-level="z"` in `build-wasm.sh`)
 
 ---
 

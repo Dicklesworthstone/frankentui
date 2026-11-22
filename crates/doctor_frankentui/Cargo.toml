@@ -1,6 +1,6 @@
 [package]
 name = "doctor_frankentui"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 publish = false
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
@@ -19,7 +19,7 @@ experimental = ["dep:ftui-harness"]
 workspace = true
 
 [dependencies]
-clap = { version = "4.6.4", features = ["derive"] }
+clap = { version = "4.6.9", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # Archived comparison inputs must retain the exact floating-point samples/config.
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
@@ -31,11 +31,11 @@ pathdiff = "0.2.3"
 v_htmlescape = "1.0.0"
 which = "8.0.6"
 fastapi-output = { version = "0.5.0", default-features = false }
-sqlmodel-console = "0.5.0"
+sqlmodel-console = "0.5.1"
 sha2 = "0.11.0"
 regex-lite = "0.1.6"
-ftui-runtime = { path = "../ftui-runtime", version = "0.10.0", default-features = false }
-ftui-harness = { path = "../ftui-harness", version = "0.10.0", optional = true }
+ftui-runtime = { path = "../ftui-runtime", version = "0.11.0", default-features = false }
+ftui-harness = { path = "../ftui-harness", version = "0.11.0", optional = true }
 
 [dev-dependencies]
 proptest = "1.7.0"

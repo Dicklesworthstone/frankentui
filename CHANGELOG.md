@@ -6,9 +6,9 @@ All notable changes to [FrankenTUI](https://github.com/Dicklesworthstone/franken
 **Crate:** `ftui` (facade) plus 19 workspace crates
 **License:** MIT + OpenAI/Anthropic Rider
 
-Scope window: initial development on 2026-01-31 through the 0.10.0 release
-published on 2026-11-03. The latest published GitHub Release is
-[v0.10.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.10.0).
+Scope window: initial development on 2026-01-31 through the 0.11.0 release
+published on 2026-11-21. The latest published GitHub Release is
+[v0.11.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.11.0).
 `Release` below means a published GitHub Release; `Tag` means a git tag with
 no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
 For pre-release verification and publication steps, see
@@ -18,6 +18,7 @@ For pre-release verification and publication steps, see
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
+| [v0.11.0] | Release | 2026-11-21 | Release profile `opt-level = 3`, `asupersync` 0.7.0, `nix` 0.32.0, RustSec QUIC fixes, pane parity & locale tracing isolation (#115, #103) |
 | [v0.10.0] | Release | 2026-11-03 | Late frames presented (#104), inline scrollback under multiplexers, PTY child mode, RustSec lock updates |
 | [v0.9.0] | Release | 2026-10-03 | SIMD width kernels, OSC 52 clipboard, paragraph editing, bidi `Paragraph`, unified teardown, first crates.io publish since 0.7.0 |
 | [v0.8.0] | Release | 2026-09-13 | Browser showcase parity, driven guided tour, touch navigation, clipboard |
@@ -35,6 +36,27 @@ For pre-release verification and publication steps, see
 
 Release dates use GitHub's publication timestamp. Tag-only dates use the
 tag's recorded timezone; the internal milestone uses its commit date.
+
+---
+
+## [v0.11.0] -- 2026-11-21 (GitHub Release)
+
+**Performance-first native release profile, updated dependencies, and deterministic test isolation.** Native release builds now compile the full workspace with `opt-level = 3` (while WASM builds continue overriding `opt-level = "z"` in `build-wasm.sh` to stay within browser size budgets). All three RustSec advisories in the lockfile (`quinn-proto` / `quinn-udp`) are resolved, the optional `asupersync` executor is upgraded to `0.7.0`, `ftui-tty` upgrades `nix` to `0.32.0`, and test flakiness in showcase pane parity and runtime locale tracing is fixed.
+
+### Changed
+
+- **Performance-optimized `[profile.release]` (`opt-level = 3`).** Root workspace `[profile.release]` now sets `opt-level = 3` instead of `opt-level = "z"` so render diffing, ANSI presentation, layout solving, text wrapping, and showcase binaries ship speed-optimized by default. `build-wasm.sh` passes `--config 'profile.release.opt-level="z"'` so `ftui-showcase-wasm` retains size optimization.
+- **Dependency and security updates.**
+  - Resolved `RUSTSEC-2026-0523`, `RUSTSEC-2026-0524` (`quinn-proto` `0.11.18` -> `0.11.19`), and `RUSTSEC-2026-0538` (`quinn-udp` `0.5.15` -> `0.5.16`), bringing `cargo audit` to 0 vulnerabilities.
+  - Upgraded optional `ftui-runtime` executor dependency `asupersync` from `=0.5.0` to `0.7.0` (and its `franken-*` / `asupersync-macros` family to `0.7.0`).
+  - Upgraded `ftui-tty` Unix dependency `nix` from `0.31` to `0.32.0`, and `doctor_frankentui` dependency `v_htmlescape` from `0.17` to `1.0.0`.
+  - Updated direct workspace dependencies to current compatible releases (`bumpalo` `3.20.4`, `clap` `4.6.9`, `lru` `0.19.1`, `pollster` `1.0.3`, `rand` `0.10.4`, `regex` `1.13.2`, `smallvec` `1.16.6`, `sqlmodel-console` `0.5.1`, `time` `0.3.55`, `toml` `1.2.2`, `trybuild` `1.0.125`, `wgpu` `30.0.2`).
+
+### Fixed
+
+- **Showcase pane parity determinism ([#115](https://github.com/Dicklesworthstone/frankentui/issues/115)).** `layout_lab` pane parity tests now hold the shared theme and accessibility guard across the entire checkpointed vs. persistent render trace, eliminating nondeterministic checksum mismatches under high-core parallel test execution.
+- **WASM async-tasks watch path.** Default the `async-tasks` showcase watch path without calling `std::env::temp_dir()` on `wasm32` targets.
+- **Runtime locale tracing test isolation ([#103](https://github.com/Dicklesworthstone/frankentui/issues/103)).** Moved the `LocaleContext::set_direction` tracing-event assertion into a dedicated integration test binary (`crates/ftui-runtime/tests/locale_direction_tracing.rs`) so concurrent unit tests cannot poison `tracing`'s callsite interest cache.
 
 ---
 
@@ -1573,6 +1595,7 @@ its full feature list should not be attributed to the earlier 0.1.1 package.
 
 ---
 
+[v0.11.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.11.0
 [v0.10.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.10.0
 [v0.9.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.9.0
 [v0.8.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.8.0
