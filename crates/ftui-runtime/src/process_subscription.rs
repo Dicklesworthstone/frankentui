@@ -531,17 +531,17 @@ trait ProcessEndpoint: Send + 'static {}
 #[cfg(not(unix))]
 impl<T: Send + 'static> ProcessEndpoint for T {}
 
-/// Maximum bytes written to a canonical PTY before flushing with `VEOF` so
-/// the kernel's 4095-byte canonical buffer advances `canon_head` and applies
-/// normal flow control instead of discarding bytes.
-const PTY_CANONICAL_CHUNK_BYTES: usize = 2048;
+/// Maximum bytes written to a canonical PTY before flushing with `VEOF`.
+/// Stay below Darwin's 1024-byte canonical input limit, with room for the
+/// delimiter, so the reader can drain pending input before it is truncated.
+const PTY_CANONICAL_CHUNK_BYTES: usize = 512;
 
 /// Write queued lines, then `end_of_input` once input is closed.
 ///
 /// A pipe signals EOF by closing, so its `end_of_input` is empty. A PTY has no
 /// write side to close: EOF is the VEOF byte (Ctrl-D) at the start of a line,
 /// and intermediate `VEOF` flushes on a non-empty canonical buffer deliver
-/// lines longer than the 4095-byte kernel canonical line limit without newline.
+/// lines longer than the platform's canonical line limit without adding newlines.
 fn write_process_input<W: Write + ProcessEndpoint>(
     stdin: W,
     receiver: mpsc::Receiver<Box<str>>,
@@ -1483,8 +1483,8 @@ impl<M: Send + 'static> ProcessSubscription<M> {
     /// preview rather than accumulating across frames. With
     /// [`stdin`](Self::stdin), stdin is the PTY as well, each line is written
     /// as typed input (chunked with canonical `VEOF` flushes so lines up to
-    /// [`MAX_PROCESS_LINE_BYTES`] are not truncated by the kernel's 4095-byte
-    /// canonical buffer), and closing input sends one end-of-file (Ctrl-D).
+    /// [`MAX_PROCESS_LINE_BYTES`] are not truncated by the kernel's canonical
+    /// input buffer), and closing input sends one end-of-file (Ctrl-D).
     /// Without it, stdin is `/dev/null`. Echo is off and LF is not translated
     /// to CRLF; a child may change that.
     ///
@@ -5632,25 +5632,115 @@ os._exit(7)
 
     #[test]
     #[cfg(unix)]
+    fn pty_input_flushes_before_darwin_canonical_limit() {
+        // Inspect the real writer's byte stream so Linux also catches chunks
+        // that would overflow Darwin's 1024-byte canonical input buffer.
+        let lines = [
+            String::new(),
+            "a".repeat(12_000),
+            format!("{}\n\n{}\n", "b".repeat(1_024), "c".repeat(1_025)),
+            format!("{}🦀{}", "x".repeat(511), "y".repeat(513)),
+        ];
+        let input = ProcessInput::new();
+        let mut expected = Vec::new();
+        for line in lines {
+            expected.extend_from_slice(line.as_bytes());
+            expected.push(b'\n');
+            input.try_send_line(line).unwrap();
+        }
+        input.close();
+        let (_guard, receiver) = input.claim().unwrap();
+        let (writer, mut reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (stop, trigger) = StopSignal::new();
+        let handle = thread::spawn(move || write_process_input(writer, receiver, stop, b"\x04"));
+        let mut wire = Vec::new();
+        let read = reader.read_to_end(&mut wire);
+        trigger.stop();
+        handle.join().unwrap().unwrap();
+        read.unwrap();
+
+        let mut delivered = Vec::new();
+        let mut pending = 0;
+        let mut eof_count = 0;
+        for (index, &byte) in wire.iter().enumerate() {
+            match byte {
+                b'\x04' => {
+                    if pending == 0 {
+                        eof_count += 1;
+                        assert_eq!(index + 1, wire.len(), "premature EOF at byte {index}");
+                    }
+                    pending = 0;
+                }
+                b'\n' => {
+                    delivered.push(byte);
+                    pending = 0;
+                }
+                _ => {
+                    pending += 1;
+                    assert!(pending < 1_024, "no room for a delimiter at byte {index}");
+                    delivered.push(byte);
+                }
+            }
+        }
+        assert_eq!(eof_count, 1, "close must send exactly one final EOF");
+        assert_eq!(delivered, expected);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_input_preserves_canonical_boundaries_unicode_and_empty_lines() {
+        let input = ProcessInput::new();
+        let mut lines: Vec<_> = [
+            0,
+            511,
+            512,
+            513,
+            1_023,
+            1_024,
+            1_025,
+            MAX_PROCESS_LINE_BYTES,
+        ]
+        .into_iter()
+        .map(|length| "x".repeat(length))
+        .collect();
+        // The UTF-8 character crosses a 512-byte chunk boundary.
+        lines.push(format!("{}🦀{}", "a".repeat(511), "b".repeat(513)));
+        lines.push(format!("{}\n\n{}\n", "c".repeat(1_025), "d".repeat(512)));
+        let mut expected = Vec::new();
+        for line in lines {
+            expected.extend(
+                line.split('\n')
+                    .map(|line| ProcessEvent::Stdout(line.to_owned())),
+            );
+            input.try_send_line(line).unwrap();
+        }
+        input.close();
+        expected.extend(stdout(&["eof"]));
+        expected.push(ProcessEvent::Exited(0));
+        assert_eq!(
+            run_to_end(pty_shell("cat; echo eof").stdin(input)),
+            expected
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn pty_input_delivers_lines_over_4095_bytes_without_canonical_truncation() {
         let input = ProcessInput::new();
         let long_line = format!("{}{}", "a".repeat(6_000), "b".repeat(6_000));
-        let script = "python3 -u -c 'import sys; \
-            line = sys.stdin.readline().rstrip(\"\\n\"); \
-            print(f\"len={len(line)} head={line[:4]} mid={line[5998:6002]} tail={line[-4:]}\"); \
-            print(f\"eof={sys.stdin.read() == \"\"}\")'";
-        let (events, _trigger, handle) = start_process(pty_shell(script).stdin(input.clone()));
-        input.try_send_line(long_line).unwrap();
+        input.try_send_line(long_line.clone()).unwrap();
         input.close();
         assert_eq!(
-            events_until(&events, is_terminal_event),
-            [
-                stdout(&["len=12000 head=aaaa mid=aabb tail=bbbb", "eof=True"]),
-                vec![ProcessEvent::Exited(0)]
+            run_to_end(pty_shell("cat; echo eof").stdin(input)),
+            vec![
+                ProcessEvent::Stdout(long_line),
+                ProcessEvent::Stdout("eof".to_owned()),
+                ProcessEvent::Exited(0),
             ]
-            .concat()
         );
-        handle.join().unwrap();
     }
 
     #[test]
