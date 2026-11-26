@@ -532,8 +532,9 @@ mod tests {
         // The first deadline also covers starting `sh`, which a loaded host can
         // stretch past 50 ms. A read returns as soon as its first chunk
         // arrives, so a long deadline costs nothing when the shell is quick.
-        // The pause between the two parts scales too, so a reader thread that
-        // is slow to wake does not see both parts in its first read.
+        // The pause between the two parts scales too, so a late wake-up of the
+        // reader thread or of this test on a loaded host does not merge both
+        // parts into the first read.
         let scale = ftui_core::cx::test_time_scale();
         let deadline = Duration::from_secs(2) * scale;
         let pause_ms = 200 * scale;
