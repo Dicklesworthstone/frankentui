@@ -109,7 +109,10 @@ run_case() {
     local case_id="inline_story_${cols}x${rows}_ui${ui_height}"
     local prefix="SB_${cols}x${rows}_ui${ui_height}_"
     local pre_lines=$((rows + 4))
-    local expected_visible=$((rows - ui_height))
+    # Final layout since v0.10.0: the UI keeps its last frame in the
+    # ui_height rows just above the bottom row, where teardown parks the
+    # cursor, so rows - ui_height - 1 rows of shell output stay above it.
+    local expected_visible=$((rows - ui_height - 1))
 
     LOG_FILE="$E2E_LOG_DIR/${case_id}.log"
     local output_file="$E2E_LOG_DIR/${case_id}.pty"
@@ -220,24 +223,46 @@ PY
         fi
     fi
 
+    # Preservation oracle. The first inline frame must not draw over the
+    # shell's last lines (fixed in v0.10.0; before that the UI overwrote the
+    # bottom ui_height rows): the terminal scrolls the shell output up, so the
+    # rows above the final UI must be exactly the last rows of the pre-UI
+    # screen content, in order, with none overwritten or repeated.
     local scrollback_visible=0
+    local pre_ui_content="" expected_above="" actual_above=""
     if [[ "$status" == "passed" ]]; then
-        scrollback_visible=$(grep -c "^${prefix}" "$canonical_file" || true)
-        if [[ "$scrollback_visible" -ne "$expected_visible" ]]; then
+        # Pre-UI screen content without the blank rows below the cursor. When
+        # the startup bytes do not end with a newline, the last row is the
+        # unfinished cursor row (typically PTY_SEND keys the terminal echoed
+        # before the app switched to raw mode); it is not a printed line, and
+        # the UI may start on it.
+        local drop_partial=0
+        if [[ "$(tail -c 1 "$pre_ui_file" | od -An -tx1 | tr -d ' \n')" != "0a" ]]; then
+            drop_partial=1
+        fi
+        pre_ui_content="$(awk -v drop="$drop_partial" '{ line[NR] = $0 } END { n = NR; while (n > 0 && line[n] ~ /^[[:space:]]*$/) n--; if (drop) n--; for (i = 1; i <= n; i++) print line[i] }' "$pre_ui_canonical")"
+        if [[ "$(printf '%s\n' "$pre_ui_content" | grep -c "^${prefix}" || true)" -lt "$expected_visible" ]]; then
             status="failed"
-            error="scrollback_count_${scrollback_visible}_expected_${expected_visible}"
+            error="pre_ui_screen_not_full"
         fi
     fi
 
     if [[ "$status" == "passed" ]]; then
-        if [[ "$(head -n "$expected_visible" "$canonical_file")" != "$(head -n "$expected_visible" "$pre_ui_canonical")" ]]; then
+        expected_above="$(printf '%s\n' "$pre_ui_content" | tail -n "$expected_visible")"
+        actual_above="$(head -n "$expected_visible" "$canonical_file")"
+        scrollback_visible=$(printf '%s\n' "$actual_above" | grep -c "^${prefix}" || true)
+        if [[ "$actual_above" != "$expected_above" ]]; then
             status="failed"
             error="scrollback_region_changed"
+            log_error "  rows above the UI do not match the last ${expected_visible} pre-UI rows"
+            log_error "  expected first/last: $(printf '%s\n' "$expected_above" | head -n 1) / $(printf '%s\n' "$expected_above" | tail -n 1)"
+            log_error "  actual first/last:   $(printf '%s\n' "$actual_above" | head -n 1) / $(printf '%s\n' "$actual_above" | tail -n 1)"
         fi
     fi
 
     if [[ "$status" == "passed" ]]; then
-        if tail -n "$ui_height" "$canonical_file" | grep -q "^${prefix}"; then
+        # The UI rows and the parked-cursor row below them hold no shell output.
+        if tail -n +"$((expected_visible + 1))" "$canonical_file" | grep -q "^${prefix}"; then
             status="failed"
             error="ui_height_overlap"
         fi
