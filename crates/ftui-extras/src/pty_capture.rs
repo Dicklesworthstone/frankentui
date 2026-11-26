@@ -767,12 +767,48 @@ mod tests {
         // and well below the background sleep, so a Drop that waited for the
         // descendant to close the PTY still fails, while spawning the shell on
         // a loaded host no longer counts against it.
+        //
+        // The background sleep must really keep the PTY open, or a Drop that
+        // joined the reader would pass as well: the reader would see EOF at
+        // once. So the sleep holds the slave as stdout and stderr (a
+        // non-interactive sh gives an asynchronous command /dev/null as
+        // stdin), it ignores the SIGHUP sent to the terminal's process group
+        // when sh, the session leader, exits, and the drop waits until sh
+        // reports that the sleep is running. Dropped any earlier, Drop's own
+        // SIGHUP can end sh before it starts the sleep.
         let scale = ftui_core::cx::test_time_scale();
         let window = Duration::from_secs(2) * scale;
         let background_secs = 3 * window.as_secs();
         let mut cmd = CommandBuilder::new("/bin/sh");
-        cmd.args(["-c", &format!("sleep {background_secs} >/dev/null 2>&1 &")]);
-        let capture = PtyCapture::spawn(PtyCaptureConfig::default(), cmd).unwrap();
+        cmd.args([
+            "-c",
+            &format!("trap '' HUP; sleep {background_secs} & echo background-started"),
+        ]);
+        let mut capture = PtyCapture::spawn(PtyCaptureConfig::default(), cmd).unwrap();
+
+        let mut output = Vec::new();
+        let ready_deadline = Instant::now() + window;
+        while !output
+            .windows(b"background-started".len())
+            .any(|w| w == b"background-started")
+            && Instant::now() < ready_deadline
+        {
+            output.extend(
+                capture
+                    .read_available_with_timeout(Duration::from_millis(100))
+                    .unwrap(),
+            );
+            if capture.is_eof() {
+                break;
+            }
+        }
+        assert!(
+            output
+                .windows(b"background-started".len())
+                .any(|w| w == b"background-started"),
+            "sh did not report the background sleep within {window:?}: {:?}",
+            String::from_utf8_lossy(&output)
+        );
 
         let (done_tx, done_rx) = mpsc::channel();
         let started = Instant::now();
