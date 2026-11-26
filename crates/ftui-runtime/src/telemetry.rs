@@ -1627,7 +1627,11 @@ mod tests {
         use std::io::Write as _;
         use std::time::Instant;
 
-        const RUNS: usize = 40;
+        // 200 samples per mode, so p95 is the 11th slowest and p99 the third
+        // slowest. With 20 per mode p99 was the single slowest sample, and
+        // one preempted call failed it on a loaded host (1,104,719 ns
+        // against a 400,000 ns bound). A slower parse still moves p95.
+        const RUNS: usize = 400;
         let mut jsonl = Vec::new();
         let mut disabled = Vec::with_capacity(RUNS / 2 + 1);
         let mut enabled = Vec::with_capacity(RUNS / 2 + 1);
