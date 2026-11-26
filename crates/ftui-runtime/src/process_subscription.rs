@@ -5606,8 +5606,11 @@ os._exit(7)
 
         // 2. Real PTY child emitting >100 KiB of CR-delimited progress updates
         // before LF completes normally without LineTooLong termination.
+        // %-formatting, not an f-string: reusing `"` inside an f-string's
+        // braces needs Python 3.12 (PEP 701), and macOS's /usr/bin/python3 is
+        // 3.9, where the child died with a SyntaxError instead of printing.
         let script = "python3 -u -c 'import sys; \
-            [sys.stdout.write(f\"step {i:04d}-{\"x\"*20}\\r\") for i in range(1, 4001)]; \
+            [sys.stdout.write(\"step %04d-%s\\r\" % (i, \"x\" * 20)) for i in range(1, 4001)]; \
             sys.stdout.write(\"step 4000-done\\r\\n\")'";
         let events = run_to_end(pty_shell(script).partial_output(true));
         assert!(

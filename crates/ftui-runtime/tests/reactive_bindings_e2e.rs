@@ -1076,17 +1076,27 @@ mod bloodstream_roundtrip {
             }
         });
 
-        let single_row_latency_us = Rc::new(Cell::new(0_u64));
-        let single_row_latency_clone = Rc::clone(&single_row_latency_us);
+        // Several single-row updates, judged by their median: one wall-clock
+        // sample failed the budget whenever the host preempted that one
+        // insert (4.2-9.3 ms seen at load 73-107), while a slower propagation
+        // path slows every sample and still fails.
+        const SINGLE_ROW_SAMPLES: usize = 9;
+        let single_row_latencies_us = Rc::new(RefCell::new(Vec::with_capacity(SINGLE_ROW_SAMPLES)));
+        let single_row_latencies_clone = Rc::clone(&single_row_latencies_us);
         let (spans, durations_us) = capture_trace(|| {
-            let single_row_start = Instant::now();
-            materialized_view.insert_rows(&[(42, 4_242)]);
-            single_row_latency_clone.set(single_row_start.elapsed().as_micros() as u64);
-            assert_eq!(
-                render_stats.borrow().propagation_count,
-                1,
-                "single-row update should propagate without polling"
-            );
+            for sample in 0..SINGLE_ROW_SAMPLES {
+                let id = 42 + sample as u64;
+                let single_row_start = Instant::now();
+                materialized_view.insert_rows(&[(id, (id as i64) * 101)]);
+                single_row_latencies_clone
+                    .borrow_mut()
+                    .push(single_row_start.elapsed().as_micros() as u64);
+                assert_eq!(
+                    render_stats.borrow().propagation_count,
+                    sample + 1,
+                    "single-row update should propagate without polling"
+                );
+            }
 
             let ten_row_delta: Vec<(u64, i64)> = (100_u64..110_u64)
                 .map(|id| (id, (id as i64) * 10))
@@ -1096,12 +1106,14 @@ mod bloodstream_roundtrip {
 
         let stats = render_stats.borrow();
         assert_eq!(
-            stats.propagation_count, 2,
-            "expected two propagation passes for two inserts"
+            stats.propagation_count,
+            SINGLE_ROW_SAMPLES + 1,
+            "expected one propagation pass per insert"
         );
+        let mut expected_rows_rendered = vec![1; SINGLE_ROW_SAMPLES];
+        expected_rows_rendered.push(10);
         assert_eq!(
-            stats.rows_rendered_per_update,
-            vec![1, 10],
+            stats.rows_rendered_per_update, expected_rows_rendered,
             "render cost must scale with the changed row delta"
         );
         assert_eq!(
@@ -1112,24 +1124,14 @@ mod bloodstream_roundtrip {
 
         let latency_budget_us =
             1_000_u64.saturating_mul(u64::from(ftui_core::cx::test_time_scale()));
-        // Sample multiple single-row propagations and check the median so one
-        // OS preemption on a busy multi-core host does not flake the test while
-        // any real per-row regression still fails loudly (bd-jwxgb).
-        let mut samples_us = Vec::with_capacity(9);
-        samples_us.push(single_row_latency_us.get());
-        for idx in 0..8_u64 {
-            let start = Instant::now();
-            materialized_view.insert_rows(&[(500 + idx, (500 + idx) as i64 * 10)]);
-            samples_us.push(start.elapsed().as_micros() as u64);
-        }
-        samples_us.sort_unstable();
-        let median_us = samples_us[samples_us.len() / 2];
+        let mut single_row_latencies_us = single_row_latencies_us.borrow().clone();
+        single_row_latencies_us.sort_unstable();
+        let median_latency_us = single_row_latencies_us[SINGLE_ROW_SAMPLES / 2];
         assert!(
-            median_us <= latency_budget_us,
-            "single-row propagation median target is sub-millisecond (budget {}us), got median {}us (samples={:?})",
-            latency_budget_us,
-            median_us,
-            samples_us
+            median_latency_us <= latency_budget_us,
+            "single-row propagation target is sub-millisecond (budget {latency_budget_us}us), \
+             got a median of {median_latency_us}us over {SINGLE_ROW_SAMPLES} updates \
+             (sorted samples {single_row_latencies_us:?})"
         );
 
         assert!(

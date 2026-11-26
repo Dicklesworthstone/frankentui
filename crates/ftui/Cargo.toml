@@ -18,6 +18,10 @@ categories = ["command-line-interface", "gui"]
 # headless, WASM, or custom-backend builds.
 default = ["runtime", "extras", "backend", "bidi"]
 # Compiles internal research modules not reachable from the public API. Not supported. See README.
+# Forwards to ftui-runtime's feature of the same name (when `runtime` is on),
+# plus ftui-render, ftui-layout, and ftui-widgets, so `ftui/experimental`
+# exposes `ftui::runtime::lens` and the other gated modules instead of silently
+# enabling nothing.
 experimental = [
     "ftui-runtime?/experimental",
     "ftui-render/experimental",
