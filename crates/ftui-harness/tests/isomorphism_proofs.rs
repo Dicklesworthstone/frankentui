@@ -822,11 +822,13 @@ fn proof_performance_budget() {
     let p95 = percentile(95);
     let p99 = percentile(99);
 
-    // Scaled like the other wall-clock bounds in this workspace
-    // (FTUI_TEST_TIME_SCALE: 1 by default, 4 in DSR gates).
+    // Deliberately NOT multiplied by FTUI_TEST_TIME_SCALE (4 in release
+    // gates). Judging on p95 already absorbs a few preempted iterations, and
+    // p95 on loaded hosts stays far below 5ms. A scaled 20ms bar would let a
+    // consistent multi-millisecond slowdown of every cycle pass on a quiet
+    // host. The scale is logged only, so the JSONL shows the gate context.
     let scale = u64::from(ftui_core::cx::test_time_scale());
-    let base_budget_us = if coverage { 50_000 } else { 5_000 };
-    let budget_us = base_budget_us * scale;
+    let budget_us: u64 = if coverage { 50_000 } else { 5_000 };
 
     log_jsonl(
         "perf",
