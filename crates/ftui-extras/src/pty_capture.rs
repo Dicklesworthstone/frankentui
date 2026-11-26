@@ -529,19 +529,48 @@ mod tests {
 
     #[test]
     fn pty_capture_partial_reads_across_calls() {
+        // The first deadline also covers starting `sh`, which a loaded host can
+        // stretch past 50 ms. A read returns as soon as its first chunk
+        // arrives, so a long deadline costs nothing when the shell is quick.
+        // The pause between the two parts scales too, so a reader thread that
+        // is slow to wake does not see both parts in its first read.
+        let scale = ftui_core::cx::test_time_scale();
+        let deadline = Duration::from_secs(2) * scale;
+        let pause_ms = 200 * scale;
         let mut cmd = CommandBuilder::new("sh");
-        cmd.args(["-c", "printf part-1; sleep 0.2; printf part-2"]);
+        cmd.args([
+            "-c",
+            &format!(
+                "printf part-1; sleep {}.{:03}; printf part-2",
+                pause_ms / 1000,
+                pause_ms % 1000
+            ),
+        ]);
         let mut capture = PtyCapture::spawn(PtyCaptureConfig::default(), cmd).unwrap();
 
-        let first = capture
-            .read_available_with_timeout(Duration::from_millis(50))
-            .unwrap();
-        assert!(!first.is_empty(), "expected first chunk");
+        let contains =
+            |haystack: &[u8], needle: &[u8]| haystack.windows(needle.len()).any(|w| w == needle);
 
-        std::thread::sleep(Duration::from_millis(250));
-        let second = capture
-            .read_available_with_timeout(Duration::from_millis(200))
-            .unwrap();
+        let first = capture.read_available_with_timeout(deadline).unwrap();
+        assert!(!first.is_empty(), "expected first chunk");
+        assert!(
+            !contains(&first, b"part-2"),
+            "the first read must return before the child prints part-2: {:?}",
+            String::from_utf8_lossy(&first)
+        );
+
+        let mut second = Vec::new();
+        let second_deadline = Instant::now() + deadline;
+        while !contains(&second, b"part-2") && Instant::now() < second_deadline {
+            second.extend(
+                capture
+                    .read_available_with_timeout(Duration::from_millis(200))
+                    .unwrap(),
+            );
+            if capture.is_eof() {
+                break;
+            }
+        }
         assert!(!second.is_empty(), "expected second chunk");
 
         let mut combined = Vec::new();
@@ -732,19 +761,30 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pty_capture_drop_does_not_block_when_background_process_keeps_pty_open() {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        // Only the drop is timed. The window sits above Drop's own worst case
+        // (about 200 ms in portable_pty's kill plus 250 ms in reap_after_kill)
+        // and well below the background sleep, so a Drop that waited for the
+        // descendant to close the PTY still fails, while spawning the shell on
+        // a loaded host no longer counts against it.
+        let scale = ftui_core::cx::test_time_scale();
+        let window = Duration::from_secs(2) * scale;
+        let background_secs = 3 * window.as_secs();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", &format!("sleep {background_secs} >/dev/null 2>&1 &")]);
+        let capture = PtyCapture::spawn(PtyCaptureConfig::default(), cmd).unwrap();
+
         let (done_tx, done_rx) = mpsc::channel();
+        let started = Instant::now();
         let drop_thread = thread::spawn(move || {
-            let mut cmd = CommandBuilder::new(&shell);
-            cmd.args(["-c", "sleep 1 >/dev/null 2>&1 &"]);
-            let capture = PtyCapture::spawn(PtyCaptureConfig::default(), cmd).unwrap();
             drop(capture);
             done_tx.send(()).expect("signal drop completion");
         });
 
         assert!(
-            done_rx.recv_timeout(Duration::from_millis(400)).is_ok(),
-            "PtyCapture drop should not wait for background descendants to close the PTY"
+            done_rx.recv_timeout(window).is_ok(),
+            "PtyCapture drop should not wait for background descendants to close the PTY \
+             (still running after {:?}, window {window:?}, background sleep {background_secs}s)",
+            started.elapsed()
         );
         drop_thread.join().expect("drop thread join");
     }
