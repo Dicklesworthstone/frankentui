@@ -169,7 +169,7 @@ Each screen is also a snapshot test target. `BLESS=1 cargo test -p ftui-demo-sho
 
 ## Minimal API Example
 
-This example targets FrankenTUI 0.11.0 with the default features enabled. See
+This example targets FrankenTUI 0.11.1 with the default features enabled. See
 [installation](#installation) for version and local checkout dependencies.
 
 ```rust
@@ -343,10 +343,10 @@ The workspace provides 17 library crates (the `ftui` facade plus
 
 ```toml
 [dependencies]
-ftui = "=0.11.0"
+ftui = "=0.11.1"
 ```
 
-These dependency examples target **0.11.0**. To work from a local checkout, use
+These dependency examples target **0.11.1**. To work from a local checkout, use
 the path dependency above instead.
 
 The default features are `runtime`, `extras`, and `backend`. `App::run()` selects
@@ -356,7 +356,7 @@ disable the defaults:
 
 ```toml
 [dependencies]
-ftui = { version = "=0.11.0", default-features = false, features = ["runtime"] }
+ftui = { version = "=0.11.1", default-features = false, features = ["runtime"] }
 ```
 
 Without a compiled terminal backend, `App::run()` returns an `Unsupported`

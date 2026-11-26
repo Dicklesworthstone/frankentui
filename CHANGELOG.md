@@ -6,9 +6,9 @@ All notable changes to [FrankenTUI](https://github.com/Dicklesworthstone/franken
 **Crate:** `ftui` (facade) plus 19 workspace crates
 **License:** MIT + OpenAI/Anthropic Rider
 
-Scope window: initial development on 2026-01-31 through the 0.11.0 release
-published on 2026-11-21. The latest published GitHub Release is
-[v0.11.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.11.0).
+Scope window: initial development on 2026-01-31 through the 0.11.1 release
+published on 2026-11-26. The latest published GitHub Release is
+[v0.11.1](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.11.1).
 `Release` below means a published GitHub Release; `Tag` means a git tag with
 no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
 For pre-release verification and publication steps, see
@@ -18,6 +18,7 @@ For pre-release verification and publication steps, see
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
+| [v0.11.1] | Release | 2026-11-26 | macOS PTY input truncation (#120), inline-mode resize and render-buffer fixes, `ftui/experimental` forwarding, widget accessibility nodes, `url` 2.5.9 |
 | [v0.11.0] | Release | 2026-11-21 | Release profile `opt-level = 3`, `asupersync` 0.7.0, `nix` 0.32.0, RustSec QUIC fixes, pane parity & locale tracing isolation (#115, #103) |
 | [v0.10.0] | Release | 2026-11-03 | Late frames presented (#104), inline scrollback under multiplexers, PTY child mode, RustSec lock updates |
 | [v0.9.0] | Release | 2026-10-03 | SIMD width kernels, OSC 52 clipboard, paragraph editing, bidi `Paragraph`, unified teardown, first crates.io publish since 0.7.0 |
@@ -36,6 +37,45 @@ For pre-release verification and publication steps, see
 
 Release dates use GitHub's publication timestamp. Tag-only dates use the
 tag's recorded timezone; the internal milestone uses its commit date.
+
+---
+
+## [v0.11.1] -- 2026-11-26 (GitHub Release)
+
+**Long PTY input lines on macOS, inline-mode and render correctness, and an `ftui/experimental` feature that enables what it names.** Input queued to a PTY child is no longer truncated on macOS ([#120](https://github.com/Dicklesworthstone/frankentui/issues/120)). Inline mode no longer erases rows it does not own after a resize, the render buffer no longer accepts a fresh buffer as a dirty baseline, more widgets publish accessibility nodes, and `url` moves to 2.5.9 for RUSTSEC-2026-0592. There are no breaking API changes; the new methods below are additions.
+
+### Fixed
+
+- **PTY input lines longer than 1 KiB on macOS ([#120](https://github.com/Dicklesworthstone/frankentui/issues/120)).** In PTY mode (`ProcessSubscription::pty(true)`) queued input is now flushed in 512-byte chunks, each ended by VEOF, instead of 2048-byte chunks. Every chunk stays under Darwin's 1024-byte canonical input limit, which truncated longer lines. The bytes the child receives on Linux are unchanged, and closing input still sends one end-of-file.
+- **`ftui/experimental` was empty.** The facade's `experimental` feature enabled nothing, so `ftui::runtime::lens` and the other gated modules stayed out of the build. It now forwards to `ftui-runtime/experimental` (only when `runtime` is on), `ftui-render/experimental`, `ftui-layout/experimental` and `ftui-widgets/experimental`. `ftui-runtime/tracing` now also turns on `ftui-core/tracing` and `ftui-render/tracing`, and `ftui-runtime/telemetry` turns on `tracing`.
+- **Render buffer dirty baseline.** A fresh, empty `Buffer` after `clear_dirty()` no longer counts as a valid dirty baseline for the previous frame, so the certified diff falls back to a full diff instead of skipping rows that still hold stale content.
+- **Inline mode after resizes and screen-mode switches.**
+  - After a resize, until a frame is drawn at the new size, standalone log flushes and the switch to `AltScreen` no longer emit `ESC [ J` over rows the terminal reflowed. Presenting the UI still erases its own stale rows.
+  - Leaving inline mode while a full-screen UI is displayed erases the UI rows and still delivers the held log lines.
+  - A log write that ends exactly at the terminal width (deferred wrap) on the bottom log row is no longer overwritten by the next write inside the scroll region.
+  - The `INLINE_ACTIVE_WIDGETS` gauge no longer leaks or underflows across Inline and `AltScreen` switches.
+  - The top-anchored overlay width clamp now bounds both the grapheme width and the per-scalar width, so Prepend, control-bearing and ZWJ clusters cannot wrap the bottom row on terminals that advance per scalar.
+  - Terminal feature initialization runs under the process-wide terminal output lock, so it cannot interleave with signal teardown.
+- **Render budget and runtime.**
+  - A `RenderBudget` with no controller attached degrades to a configurable floor: `RenderBudget::with_degradation_floor` and `set_degradation_floor` (the default stays `SkipFrame`).
+  - The budget controller treats a non-finite error (a zero frame-time target) as no measurement instead of feeding NaN or infinity into the PID state.
+  - The first frame resets the budget instead of timing from construction, and an emergency frame drop records its own work time, so idle wait before the next frame is not counted as frame time.
+  - `Program::with_native_backend` no longer opens the evidence sink twice.
+- **Widgets and accessibility.**
+  - `TableState::with_hover_stabilizer` routes table hover through `HoverStabilizer`, as `ListState` already could.
+  - `Table`, `Tabs`, `Scrollbar`, `VirtualizedList` and the `ftui-extras` `ConfirmDialog` publish scoped, stateful accessibility nodes, for example one `TableRow` per row with its selected state.
+  - `Block` and `Table` read the degradation level from `frame.buffer.degradation`, as the other widgets do.
+- **Web.** `StepProgram` bounds its clipboard request queue at 64 entries, and `StepProgram::shutdown()` runs `Model::on_shutdown` once, however often it is called. The browser showcase's `ShowcaseRunner::destroy()`, a no-op before, now shuts its `StepProgram` down that way.
+
+### Changed
+
+- **Dependencies.** `url` 2.5.8 -> 2.5.9 and `form_urlencoded` 1.2.2 -> 1.2.3 in `Cargo.lock`, for RUSTSEC-2026-0592 (stack overflow in `Url::origin()`). `cargo audit` reports 0 vulnerabilities. No manifest changes: crates that depend on FrankenTUI resolve `url` themselves.
+
+### Testing
+
+- Timing checks that one preempted sample could fail now judge a median, a p95 or the best of several rounds: the isomorphism proof asserts its unscaled 5 ms render + diff bar on p95 ([#96](https://github.com/Dicklesworthstone/frankentui/issues/96)); the reactive bloodstream single-row latency uses the median of nine updates; the agent shell's plain-PTY echo check uses the median against 50 ms plus a 200 ms (times `FTUI_TEST_TIME_SCALE`) bound on the slowest echo, and its keystroke dispatch check the best of three rounds with a p95 tail; the telemetry config budget takes 200 samples per mode.
+- `PtyCapture`'s read and drop deadlines no longer count shell startup, and the drop test now holds the PTY open, so a `Drop` that blocks fails it.
+- The PTY progress test's child script runs on Python 3.9, the inline story E2E checks the v0.10.0 inline layout, and the metaballs GPU parity test skips without a wgpu adapter unless `FTUI_REQUIRE_GPU=1` is set.
 
 ---
 
@@ -1595,6 +1635,7 @@ its full feature list should not be attributed to the earlier 0.1.1 package.
 
 ---
 
+[v0.11.1]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.11.1
 [v0.11.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.11.0
 [v0.10.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.10.0
 [v0.9.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.9.0
