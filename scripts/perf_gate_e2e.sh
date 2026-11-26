@@ -40,6 +40,18 @@ fi
 
 SCHEMA_FILE="$PROJECT_ROOT/tests/perf/regression_report_schema.json"
 REPORT_FILE="$PROJECT_ROOT/target/regression-gate/regression_report.jsonl"
+BASELINE_JSON="$PROJECT_ROOT/tests/baseline.json"
+
+# The gate's SUMMARY total counts every top-level baseline key that does not start
+# with "_" (its own `to_entries[] | select(.key | startswith("_") | not)` walk).
+# Count the rows the same way rather than hardcoding the number: a literal went
+# stale when the baseline grew a row, and phases 2-3 then never ran. The checks
+# below stay exact: total and passed must both equal this count.
+BENCH_TOTAL="$(jq -r '[to_entries[] | select(.key | startswith("_") | not)] | length' "$BASELINE_JSON")"
+if [[ ! "$BENCH_TOTAL" =~ ^[1-9][0-9]*$ ]]; then
+    echo "perf_gate_e2e: cannot count the bench rows in $BASELINE_JSON (got '$BENCH_TOTAL')" >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Phase 1: Clean pass
@@ -69,9 +81,9 @@ if [[ "$PHASE1_RC" -ne 0 ]]; then
     exit 1
 fi
 
-if ! grep -q "SUMMARY total=27 passed=27 failed=0 skipped=0 incomplete=0" "$PHASE1_STDOUT"; then
+if ! grep -q "SUMMARY total=${BENCH_TOTAL} passed=${BENCH_TOTAL} failed=0 skipped=0 incomplete=0" "$PHASE1_STDOUT"; then
     DURATION_MS=$(( $(e2e_now_ms) - START_MS ))
-    log_test_fail "perf_gate_clean_pass" "unexpected SUMMARY line" "$DURATION_MS"
+    log_test_fail "perf_gate_clean_pass" "unexpected SUMMARY line (expected total=${BENCH_TOTAL} passed=${BENCH_TOTAL})" "$DURATION_MS"
     record_result "perf_gate_clean_pass" "failed" "$DURATION_MS" "$PHASE1_STDOUT" "unexpected SUMMARY"
     cat "$PHASE1_STDOUT" >&2
     exit 1
@@ -93,7 +105,7 @@ START_MS="$(e2e_now_ms)"
 log_test_start "perf_gate_injected_regression"
 
 TIGHTENED_BASELINE="$WORK_DIR/baseline_tightened.json"
-jq '.present_80x24_sparse.p99_ns = 1' "$PROJECT_ROOT/tests/baseline.json" > "$TIGHTENED_BASELINE"
+jq '.present_80x24_sparse.p99_ns = 1' "$BASELINE_JSON" > "$TIGHTENED_BASELINE"
 
 PHASE2_STDOUT="$WORK_DIR/phase2_stdout.log"
 PHASE2_STDERR="$WORK_DIR/phase2_stderr.log"
@@ -112,9 +124,9 @@ if [[ "$PHASE2_RC" -ne 1 ]]; then
     exit 1
 fi
 
-if ! grep -q "SUMMARY total=27 passed=26 failed=1 skipped=0 incomplete=0" "$PHASE2_STDOUT"; then
+if ! grep -q "SUMMARY total=${BENCH_TOTAL} passed=$((BENCH_TOTAL - 1)) failed=1 skipped=0 incomplete=0" "$PHASE2_STDOUT"; then
     DURATION_MS=$(( $(e2e_now_ms) - START_MS ))
-    log_test_fail "perf_gate_injected_regression" "expected failed=1 incomplete=0 in SUMMARY" "$DURATION_MS"
+    log_test_fail "perf_gate_injected_regression" "expected total=${BENCH_TOTAL} passed=$((BENCH_TOTAL - 1)) failed=1 incomplete=0 in SUMMARY" "$DURATION_MS"
     record_result "perf_gate_injected_regression" "failed" "$DURATION_MS" "$PHASE2_STDOUT" "bad SUMMARY"
     cat "$PHASE2_STDOUT" >&2
     exit 1
