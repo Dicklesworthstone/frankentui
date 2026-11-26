@@ -1309,9 +1309,8 @@ impl ShowcaseRunner {
         self.inner.is_running()
     }
 
-    /// Release internal resources.
+    /// Release internal resources and notify the showcase model of shutdown.
     pub fn destroy(&mut self) {
-        // Currently a no-op — all resources are Drop-cleaned.
-        // Placeholder for future WebGPU resource cleanup.
+        self.inner.destroy();
     }
 }

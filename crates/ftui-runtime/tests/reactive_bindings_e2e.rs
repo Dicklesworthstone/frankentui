@@ -1112,11 +1112,24 @@ mod bloodstream_roundtrip {
 
         let latency_budget_us =
             1_000_u64.saturating_mul(u64::from(ftui_core::cx::test_time_scale()));
+        // Sample multiple single-row propagations and check the median so one
+        // OS preemption on a busy multi-core host does not flake the test while
+        // any real per-row regression still fails loudly (bd-jwxgb).
+        let mut samples_us = Vec::with_capacity(9);
+        samples_us.push(single_row_latency_us.get());
+        for idx in 0..8_u64 {
+            let start = Instant::now();
+            materialized_view.insert_rows(&[(500 + idx, (500 + idx) as i64 * 10)]);
+            samples_us.push(start.elapsed().as_micros() as u64);
+        }
+        samples_us.sort_unstable();
+        let median_us = samples_us[samples_us.len() / 2];
         assert!(
-            single_row_latency_us.get() <= latency_budget_us,
-            "single-row propagation target is sub-millisecond (budget {}us), got {}us",
+            median_us <= latency_budget_us,
+            "single-row propagation median target is sub-millisecond (budget {}us), got median {}us (samples={:?})",
             latency_budget_us,
-            single_row_latency_us.get()
+            median_us,
+            samples_us
         );
 
         assert!(

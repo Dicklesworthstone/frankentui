@@ -518,7 +518,9 @@ impl TerminalSession {
             signal_guard,
         };
 
-        // Enable optional features
+        // Enable optional features under the process-wide terminal output lock
+        // so initialization escapes cannot interleave with concurrent signal teardown.
+        let _output_guard = crate::session_teardown::terminal_output_lock();
         let mut stdout = io::stdout();
 
         if options.alternate_screen {
@@ -750,6 +752,7 @@ impl TerminalSession {
         if self.headless {
             return Ok(());
         }
+        let _output_guard = crate::session_teardown::terminal_output_lock();
         crossterm::execute!(io::stdout(), crossterm::cursor::Show)
     }
 
@@ -771,6 +774,7 @@ impl TerminalSession {
         if self.headless {
             return Ok(());
         }
+        let _output_guard = crate::session_teardown::terminal_output_lock();
         let result = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
         let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
         IO_WRITE_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);
@@ -786,6 +790,7 @@ impl TerminalSession {
         if self.headless {
             return Ok(());
         }
+        let _output_guard = crate::session_teardown::terminal_output_lock();
         crossterm::execute!(io::stdout(), crossterm::cursor::Hide)
     }
 
@@ -807,6 +812,7 @@ impl TerminalSession {
         if self.headless {
             return Ok(());
         }
+        let _output_guard = crate::session_teardown::terminal_output_lock();
         let result = crossterm::execute!(io::stdout(), crossterm::cursor::Hide);
         let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
         IO_WRITE_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);
@@ -853,6 +859,7 @@ impl TerminalSession {
             return Ok(());
         }
 
+        let _output_guard = crate::session_teardown::terminal_output_lock();
         let mut stdout = io::stdout();
         let write_result = if enabled {
             let enable_seq =
@@ -916,6 +923,7 @@ impl TerminalSession {
             return Ok(());
         }
         let start = web_time::Instant::now();
+        let _output_guard = crate::session_teardown::terminal_output_lock();
         let mut stdout = io::stdout();
         let result = if enabled {
             let enable_seq =
@@ -1010,6 +1018,7 @@ impl TerminalSession {
             return Ok(());
         }
         let start = web_time::Instant::now();
+        let _output_guard = crate::session_teardown::terminal_output_lock();
         let result = io::stdout().flush();
         let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
         IO_FLUSH_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);

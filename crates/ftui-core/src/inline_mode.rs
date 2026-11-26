@@ -591,25 +591,34 @@ pub fn sanitize_overlay_log_line(text: &str, max_cols: usize) -> String {
     let mut out = String::new();
     let mut used_cols = 0usize;
 
-    // Measured per grapheme with the crate's own width, not by summing
-    // `UnicodeWidthChar` per scalar. The two disagree: a lone regional
-    // indicator is one column to `unicode-width` and two to every width
-    // function in this workspace, so the per-scalar sum let a two-column
-    // glyph into a one-column overlay — one column past the clamp whose
-    // entire purpose is to keep the line from wrapping into the UI.
+    // Take the maximum of the workspace's grapheme-cluster width and the
+    // per-scalar `wcwidth` sum. Grapheme-aware terminals and scalar-advancing
+    // terminals disagree in both directions:
+    // - A lone regional indicator is 2 columns to `grapheme_width` and 1 to
+    //   `UnicodeWidthChar::width`.
+    // - Prepend clusters like `U+0600 + ' '` are 1 column to `grapheme_width`
+    //   and 2 (`1 + 1`) to scalar-advancing terminals (including xterm and
+    //   `VirtualTerminal`), and ZWJ/modifier emoji similarly advance further on
+    //   scalar terminals.
+    // Taking the maximum ensures neither terminal class wraps on the bottom row
+    // and scrolls a top-anchored UI away (bd-ojjqa).
     for grapheme in text.graphemes(true) {
         // One display line: `\r\n` is a single grapheme, so test the start.
         if grapheme.starts_with('\n') || grapheme.starts_with('\r') {
             break;
         }
 
-        // Skip control characters so logs cannot inject cursor motion. A
-        // control is always its own grapheme.
-        if grapheme.chars().all(char::is_control) {
+        // Skip control characters so logs cannot inject cursor motion.
+        if grapheme.chars().any(char::is_control) {
             continue;
         }
 
-        let width = crate::text_width::grapheme_width(grapheme);
+        let grapheme_w = crate::text_width::grapheme_width(grapheme);
+        let scalar_w: usize = grapheme
+            .chars()
+            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+            .sum();
+        let width = grapheme_w.max(scalar_w);
         if width == 0 {
             // Keep a zero-width cluster only when it can attach to prior text.
             if !out.is_empty() {
@@ -1087,5 +1096,46 @@ mod tests {
             !out.contains('\n') && !out.chars().any(char::is_control),
             "{out:?}"
         );
+    }
+
+    /// Regression test for bd-ojjqa: Prepend clusters such as `U+0600 + ' '`
+    /// measure 1 column by `grapheme_width` but 2 columns on scalar-advancing
+    /// terminals (`UnicodeWidthChar::width` per codepoint). Clamping must bound
+    /// both grapheme width and scalar-sum width to `max_cols` so the bottom row
+    /// cannot wrap and scroll a top-anchored UI away.
+    #[test]
+    fn overlay_clamp_bounds_scalar_and_grapheme_widths_for_prepend_clusters() {
+        let minimal = format!(" \u{0600}{}\0{}", " ".repeat(7), " ".repeat(11));
+        let clamped = sanitize_overlay_log_line(&minimal, 20);
+        let grapheme_cols = crate::text_width::display_width(&clamped);
+        let scalar_cols: usize = clamped
+            .chars()
+            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+            .sum();
+        assert!(
+            grapheme_cols <= 20 && scalar_cols <= 20,
+            "clamped={clamped:?} grapheme_cols={grapheme_cols} scalar_cols={scalar_cols}"
+        );
+
+        for text in [
+            "\u{0600} abcdef",
+            " \u{0600}       \0           ",
+            "👍🏽👍🏽👍🏽",
+            "👨\u{200D}👩\u{200D}👧\u{200D}👦",
+            "\u{0600}中x",
+        ] {
+            for cols in 0..=12usize {
+                let out = sanitize_overlay_log_line(text, cols);
+                let gw = crate::text_width::display_width(&out);
+                let sw: usize = out
+                    .chars()
+                    .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+                    .sum();
+                assert!(
+                    gw <= cols && sw <= cols,
+                    "{text:?} at {cols} cols -> {out:?} (gw={gw}, sw={sw})"
+                );
+            }
+        }
     }
 }

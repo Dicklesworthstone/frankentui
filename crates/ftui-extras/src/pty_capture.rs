@@ -529,19 +529,23 @@ mod tests {
 
     #[test]
     fn pty_capture_partial_reads_across_calls() {
+        let scale = ftui_core::cx::test_time_scale();
         let mut cmd = CommandBuilder::new("sh");
-        cmd.args(["-c", "printf part-1; sleep 0.2; printf part-2"]);
+        cmd.args(["-c", "printf part-1; sleep 0.3; printf part-2"]);
         let mut capture = PtyCapture::spawn(PtyCaptureConfig::default(), cmd).unwrap();
 
-        let first = capture
-            .read_available_with_timeout(Duration::from_millis(50))
-            .unwrap();
+        // Give the shell ample scaled time to spawn; `read_available_with_timeout`
+        // returns immediately when the first chunk arrives (bd-uf6om).
+        let read_timeout = Duration::from_secs(2).saturating_mul(scale);
+        let first = capture.read_available_with_timeout(read_timeout).unwrap();
         assert!(!first.is_empty(), "expected first chunk");
+        assert!(
+            !first.windows(b"part-2".len()).any(|w| w == b"part-2"),
+            "first read should not already contain part-2: {:?}",
+            String::from_utf8_lossy(&first)
+        );
 
-        std::thread::sleep(Duration::from_millis(250));
-        let second = capture
-            .read_available_with_timeout(Duration::from_millis(200))
-            .unwrap();
+        let second = capture.read_available_with_timeout(read_timeout).unwrap();
         assert!(!second.is_empty(), "expected second chunk");
 
         let mut combined = Vec::new();
@@ -732,20 +736,39 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pty_capture_drop_does_not_block_when_background_process_keeps_pty_open() {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let scale = ftui_core::cx::test_time_scale();
+        // Spawn before timing Drop so shell startup is not charged against the
+        // teardown bound; use a 5 s background descendant so a Drop that blocks
+        // on the reader thread still exceeds the scaled window (bd-09vve).
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "sleep 5 >/dev/null 2>&1 &"]);
+        let capture = PtyCapture::spawn(PtyCaptureConfig::default(), cmd).unwrap();
+
         let (done_tx, done_rx) = mpsc::channel();
+        let drop_start = Instant::now();
         let drop_thread = thread::spawn(move || {
-            let mut cmd = CommandBuilder::new(&shell);
-            cmd.args(["-c", "sleep 1 >/dev/null 2>&1 &"]);
-            let capture = PtyCapture::spawn(PtyCaptureConfig::default(), cmd).unwrap();
+            let t0 = Instant::now();
             drop(capture);
-            done_tx.send(()).expect("signal drop completion");
+            let _ = done_tx.send(t0.elapsed());
         });
 
-        assert!(
-            done_rx.recv_timeout(Duration::from_millis(400)).is_ok(),
-            "PtyCapture drop should not wait for background descendants to close the PTY"
-        );
+        let window = Duration::from_millis(1500)
+            .saturating_mul(scale)
+            .min(Duration::from_secs(4));
+        match done_rx.recv_timeout(window) {
+            Ok(drop_elapsed) => {
+                assert!(
+                    drop_elapsed < Duration::from_secs(4),
+                    "PtyCapture drop took {drop_elapsed:?}, suggesting it waited on background sleep"
+                );
+            }
+            Err(_) => {
+                panic!(
+                    "PtyCapture drop blocked for {:?} (window {window:?}); must not wait for background descendants to close the PTY",
+                    drop_start.elapsed()
+                );
+            }
+        }
         drop_thread.join().expect("drop thread join");
     }
 }

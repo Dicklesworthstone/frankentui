@@ -387,7 +387,7 @@ impl Widget for Block<'_> {
             frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
         }
 
-        let deg = frame.degradation;
+        let deg = frame.buffer.degradation;
         let border_style = if deg.apply_styling() {
             self.border_style
         } else {

@@ -24,7 +24,7 @@ render-thread = []
 # inline mode. See stdio_capture module docs for limitations.
 stdio-capture = []
 # Enable tracing instrumentation for runtime internals.
-tracing = []
+tracing = ["ftui-core/tracing", "ftui-render/tracing"]
 # Enable widget state persistence with JSON file storage.
 # Adds FileStorage backend for cross-session state persistence.
 state-persistence = ["dep:serde", "dep:serde_json", "dep:base64"]
@@ -46,6 +46,7 @@ event-trace = ["dep:serde", "dep:serde_json", "dep:flate2"]
 # When enabled, spans can be exported to an OTLP collector.
 # Zero overhead when feature is off; minimal overhead when on but disabled via env.
 telemetry = [
+    "tracing",
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
     "dep:opentelemetry-otlp",

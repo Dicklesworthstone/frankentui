@@ -423,7 +423,7 @@ def main():
                              f"(default {DEFAULT_STALE_DAYS})")
     parser.add_argument("--as-of",
                         help="reference ISO-8601 UTC timestamp for --alerts staleness "
-                             "(default: latest timestamp in the JSONL)")
+                             "(default: current UTC wall-clock time; pass 'latest' for max JSONL timestamp)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
@@ -439,8 +439,14 @@ def main():
         jsonl = args.jsonl or (args.root / ".beads" / "issues.jsonl")
         if args.alerts:
             issues = load_issues(jsonl)
+            if args.as_of == "latest":
+                as_of = None
+            elif args.as_of:
+                as_of = args.as_of
+            else:
+                as_of = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             report = audit_alerts_from_issues(
-                issues, args.root, stale_days=args.stale_days, as_of=args.as_of
+                issues, args.root, stale_days=args.stale_days, as_of=as_of
             )
             print(json.dumps(report))
             return 0

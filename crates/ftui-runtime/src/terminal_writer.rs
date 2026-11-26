@@ -727,6 +727,10 @@ pub struct TerminalWriter<W: Write> {
     /// stream would erase hold the terminal's reflowed content, not UI rows.
     /// Teardown streams them without erasing.
     logs_held_across_resize: bool,
+    /// A resize invalidated an active inline session and no frame has been
+    /// drawn at the new geometry yet: overlay log streams must use the no-UI
+    /// path instead of emitting `ESC [ J` over reflowed rows (bd-vssk7).
+    resized_without_frame: bool,
     /// The open line the last overlay stream left (see [`OverlayOpenLine`]).
     overlay_open: Option<OverlayOpenLine>,
     /// Overlay log lines dropped at the queue bound (see
@@ -931,6 +935,7 @@ impl<W: Write> TerminalWriter<W> {
             pending_logs: Vec::new(),
             pending_log_bytes: 0,
             logs_held_across_resize: false,
+            resized_without_frame: false,
             overlay_open: None,
             dropped_log_lines: 0,
             inline_rows_reserved: false,
@@ -1198,8 +1203,10 @@ impl<W: Write> TerminalWriter<W> {
         // clear_inline_region_diff acts on rows that no longer exist. The
         // cursor's row within the UI stays: it is relative to the UI, which
         // the multiplexer moved together with the cursor.
+        let had_inline_output = self.last_inline_region.is_some() || self.inline_rows_reserved;
         self.last_inline_region = None;
         self.logs_held_across_resize = !self.pending_logs.is_empty();
+        self.resized_without_frame = had_inline_output;
         self.spare_buffer = None;
         self.clone_buf = None;
         self.reset_diff_on_resize();
@@ -1260,10 +1267,26 @@ impl<W: Write> TerminalWriter<W> {
         }
         let _output_guard = terminal_output_lock();
         if matches!(mode, ScreenMode::AltScreen) && !self.pending_logs.is_empty() {
-            let _ = self.flush_pending_logs(false);
+            // Stream pending logs via the no-UI path: no inline UI will remain
+            // on the main screen afterwards, so never erase unowned post-resize
+            // rows (bd-vssk7) and deliver lines even if the old UI filled the screen.
+            let _ = self.stream_pending_logs(false, true);
         }
         if self.scroll_region_active {
             let _ = self.deactivate_scroll_region();
+        }
+        let was_inline = matches!(
+            self.screen_mode,
+            ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
+        );
+        let is_inline = matches!(
+            mode,
+            ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
+        );
+        if !was_inline && is_inline {
+            INLINE_ACTIVE_WIDGETS.fetch_add(1, Ordering::SeqCst);
+        } else if was_inline && !is_inline {
+            INLINE_ACTIVE_WIDGETS.fetch_sub(1, Ordering::SeqCst);
         }
         self.screen_mode = mode;
         self.auto_ui_height = None;
@@ -1272,6 +1295,7 @@ impl<W: Write> TerminalWriter<W> {
         self.log_floor = None;
         self.overlay_open = None;
         self.last_inline_region = None;
+        self.resized_without_frame = false;
         self.reset_diff_strategy();
     }
 
@@ -1341,6 +1365,7 @@ impl<W: Write> TerminalWriter<W> {
                     self.stash_displayed_frame();
                     self.reset_diff_strategy();
                     if self.scroll_region_active {
+                        let _output_guard = terminal_output_lock();
                         let _ = self.deactivate_scroll_region();
                     }
                 }
@@ -1365,6 +1390,7 @@ impl<W: Write> TerminalWriter<W> {
             self.stash_displayed_frame();
             self.reset_diff_strategy();
             if self.scroll_region_active {
+                let _output_guard = terminal_output_lock();
                 let _ = self.deactivate_scroll_region();
             }
         }
@@ -1518,6 +1544,7 @@ impl<W: Write> TerminalWriter<W> {
         }
         self.inline_strategy = InlineStrategy::OverlayRedraw;
         if self.scroll_region_active {
+            let _output_guard = terminal_output_lock();
             let _ = self.deactivate_scroll_region();
         }
         let fallback = InlineStrategyFallback {
@@ -2333,6 +2360,7 @@ impl<W: Write> TerminalWriter<W> {
         self.stale_frame = None;
         self.log_floor = None;
         self.last_inline_region = None;
+        self.resized_without_frame = false;
         self.cursor_ui_row = None;
         self.reset_diff_strategy();
     }
@@ -2593,6 +2621,7 @@ impl<W: Write> TerminalWriter<W> {
             } else {
                 None
             };
+            self.resized_without_frame = false;
             self.stale_frame = None;
             if visible_height > 0 {
                 // The displayed frame now marks where the log rows end.
@@ -3084,11 +3113,15 @@ impl<W: Write> TerminalWriter<W> {
         let base = if reset_col { 0 } else { self.decstbm_col };
         let new_col = base.saturating_add(width);
         let term_width = self.term_width.max(1);
-        self.decstbm_col = if new_col >= term_width {
-            new_col % term_width
+        if new_col >= term_width && new_col % term_width == 0 && width > 0 {
+            // Exact multiple of term_width puts the terminal in VT100 deferred
+            // wrap on the bottom log row; mark it occupied so the next partial
+            // write scrolls the region instead of overwriting via CUP log_row;1H.
+            self.decstbm_col = 0;
+            self.decstbm_row_occupied = true;
         } else {
-            new_col
-        };
+            self.decstbm_col = new_col % term_width;
+        }
     }
 
     /// Split sanitized log text into lines and batch them for the overlay
@@ -3223,18 +3256,36 @@ impl<W: Write> TerminalWriter<W> {
         // `start`: where the stream begins (and the screen is erased from);
         // `height`: the blank rows the UI needs at the bottom afterwards.
         let displayed = self.last_inline_region;
-        let (mut start, height) = match displayed {
+        // When no frame is displayed after a resize, standalone flushes
+        // (`repaint == true`) and UI-less streams (`without_ui == true`) must
+        // not emit `ESC [ J` over rows the terminal reflowed (bd-vssk7).
+        // `present_ui_owned` (`repaint == false, without_ui == false`) is about
+        // to claim the bottom `height` rows and must erase stale UI content
+        // there so old widget rows cannot scroll into history.
+        let no_ui_erase = without_ui || (repaint && self.resized_without_frame);
+        let (mut start, height, erase_full_displayed_ui) = match displayed {
             Some(region) => {
                 let start = region.start.min(self.term_height);
-                (start, region.height.min(self.term_height - start))
+                let h = region.height.min(self.term_height - start);
+                if without_ui && h >= self.term_height {
+                    // Leaving inline mode while a full-screen UI is displayed:
+                    // erase the owned UI rows so they never scroll into history,
+                    // then stream pending logs with no reserved UI rows.
+                    (start, 0, true)
+                } else {
+                    (start, h, false)
+                }
             }
-            None if without_ui => (self.term_height, 0),
+            // No UI is displayed after a resize (or on AltScreen/teardown
+            // no-UI stream): stream on the bottom row without erasing unowned
+            // rows (bd-vssk7).
+            None if no_ui_erase => (self.term_height, 0, false),
             None => {
                 let height = self.effective_ui_height().min(self.term_height);
                 // An earlier stream may have left lines below the pending UI
                 // start (an inline-auto UI grew since); never erase them.
                 let floor = self.log_floor.unwrap_or(0);
-                ((self.term_height - height).max(floor), height)
+                ((self.term_height - height).max(floor), height, false)
             }
         };
         if height >= self.term_height {
@@ -3306,6 +3357,10 @@ impl<W: Write> TerminalWriter<W> {
                 }
             }
         } else {
+            if erase_full_displayed_ui {
+                self.move_to_row(start, 0)?;
+                self.writer().write_all(b"\x1b[J")?;
+            }
             // No UI rows: the newest line lives on the bottom row, so each
             // line starts with the scroll instead of ending with it, and an
             // open line is continued in place.
@@ -3540,10 +3595,11 @@ impl<W: Write> TerminalWriter<W> {
             }
         };
 
-        if matches!(self.ui_anchor, UiAnchor::Bottom) && self.decstbm_row_occupied {
-            // `reserve_inline_rows` or `flush_pending_logs` left a completed
-            // line on `log_row`; scroll the DECSTBM region up one row before
-            // writing at column 1 so that line is never overwritten.
+        if self.decstbm_row_occupied {
+            // `reserve_inline_rows`, `flush_pending_logs`, or an exact-width
+            // partial write left a completed line on `log_row`; scroll the
+            // DECSTBM region up one row before writing at column 1 so that
+            // line is never overwritten.
             write!(self.writer(), "\x1b[{};1H\r\n", log_row)?;
             self.decstbm_row_occupied = false;
             self.decstbm_col = 0;
@@ -3595,6 +3651,7 @@ impl<W: Write> TerminalWriter<W> {
         self.decstbm_row_occupied = false;
         self.decstbm_col = 0;
         self.last_inline_region = None;
+        self.resized_without_frame = false;
         self.cursor_ui_row = None;
         self.reset_diff_strategy();
         if let Some(err) = first_error {
@@ -9929,11 +9986,15 @@ mod tests {
         writer.set_size(24, 12);
 
         let mut certificates = Vec::new();
+        let mut last_frame = Buffer::new(24, 4);
         for frame in 0..4u16 {
-            let mut buffer = Buffer::new(24, 4);
-            if frame > 0 {
-                buffer.clear_dirty();
-            }
+            let mut buffer = if frame == 0 {
+                Buffer::new(24, 4)
+            } else {
+                let mut cloned = last_frame.clone();
+                cloned.clear_dirty();
+                cloned
+            };
             match frame {
                 // Frame 0: initial paint (all rows dirty by construction).
                 0 => {}
@@ -9944,11 +10005,12 @@ mod tests {
                     buffer.set(3, 1, ftui_render::cell::Cell::from_char('X'));
                     buffer.set(9, 3, ftui_render::cell::Cell::from_char('Y'));
                 }
-                // Frame 3: another sparse update.
+                // Frame 3: another sparse update on row 1 (retaining 'Y' on row 3).
                 _ => {
                     buffer.set(3, 1, ftui_render::cell::Cell::from_char('Z'));
                 }
             }
+            last_frame = buffer.clone();
             writer
                 .present_ui_owned(buffer, None, false)
                 .expect("present");
@@ -9960,6 +10022,176 @@ mod tests {
             );
         }
         (writer.into_inner().expect("writer sink"), certificates)
+    }
+
+    #[test]
+    fn vssk7_write_log_after_resize_flush_never_erases_unowned_rows() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.in_tmux = true;
+        caps.scroll_region = false;
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 3 },
+            UiAnchor::Bottom,
+            caps,
+        );
+        writer.set_size(40, 10);
+        let frame = Buffer::new(40, 3);
+        writer.present_ui_owned(frame, None, false).unwrap();
+        let before_resize = writer.writer().inner().get_ref().len();
+
+        // Resize invalidates last_inline_region; a subsequent log + flush must
+        // not emit ESC [ J over unowned post-resize rows, and must emit "x" once.
+        writer.set_size(40, 12);
+        writer.write_log("x\n").unwrap();
+        writer.flush().unwrap();
+
+        let after_resize = &writer.into_inner().unwrap()[before_resize..];
+        assert!(
+            !contains_bytes(after_resize, b"\x1b[J") && !contains_bytes(after_resize, b"\x1b[0J"),
+            "post-resize log flush emitted ED erase: {:?}",
+            String::from_utf8_lossy(after_resize)
+        );
+        let text = String::from_utf8_lossy(after_resize);
+        assert_eq!(
+            text.matches('x').count(),
+            1,
+            "expected 'x' once in post-resize output, got {text:?}"
+        );
+    }
+
+    #[test]
+    fn vssk7_alt_screen_switch_after_resize_with_held_lines_never_erases_and_delivers_once() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::InlineAuto {
+                min_height: 1,
+                max_height: 10,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        hold_a_log_line_while_the_ui_fills_the_terminal(&mut writer);
+        let before_resize = writer.writer().inner().get_ref().len();
+
+        // Resize while line is held, then switch to AltScreen: must stream the
+        // held line once without emitting ESC [ J over unowned rows.
+        writer.set_size(20, 10);
+        writer.set_screen_mode(ScreenMode::AltScreen);
+        writer.flush().unwrap();
+
+        let after_resize = &writer.into_inner().unwrap()[before_resize..];
+        assert!(
+            !contains_bytes(after_resize, b"\x1b[J") && !contains_bytes(after_resize, b"\x1b[0J"),
+            "AltScreen switch emitted ED erase after resize: {:?}",
+            String::from_utf8_lossy(after_resize)
+        );
+        let text = String::from_utf8_lossy(after_resize);
+        assert_eq!(
+            text.matches("held").count(),
+            1,
+            "expected held line once on AltScreen transition, got {text:?}"
+        );
+    }
+
+    #[test]
+    fn set_screen_mode_updates_inline_active_widgets_without_underflow_or_leak() {
+        // AltScreen -> Inline -> Drop must never underflow INLINE_ACTIVE_WIDGETS.
+        let mut w1 = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            full_caps(),
+        );
+        w1.set_screen_mode(ScreenMode::Inline { ui_height: 3 });
+        drop(w1);
+        assert!(
+            inline_active_widgets() < 1_000_000,
+            "INLINE_ACTIVE_WIDGETS underflowed after AltScreen -> Inline -> Drop: {}",
+            inline_active_widgets()
+        );
+
+        // Inline -> AltScreen -> Drop must decrement cleanly once (no +1 leak).
+        let mut w2 = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 3 },
+            UiAnchor::Bottom,
+            full_caps(),
+        );
+        w2.set_screen_mode(ScreenMode::AltScreen);
+        drop(w2);
+        assert!(
+            inline_active_widgets() < 1_000_000,
+            "INLINE_ACTIVE_WIDGETS underflowed after Inline -> AltScreen -> Drop: {}",
+            inline_active_widgets()
+        );
+    }
+
+    #[test]
+    fn decstbm_exact_width_partial_write_scrolls_before_next_partial_write() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.scroll_region = true;
+        caps.in_tmux = false;
+        caps.in_screen = false;
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 2 },
+            UiAnchor::Bottom,
+            caps,
+        );
+        writer.set_size(5, 6);
+        writer
+            .present_ui_owned(Buffer::new(5, 2), None, false)
+            .unwrap();
+        // Fill exact width (5 columns) without newline: triggers VT100 pending wrap.
+        writer.write_log("12345").unwrap();
+        let after_first = writer.writer().inner().get_ref().len();
+        writer.write_log("abc\n").unwrap();
+        let bytes = writer.into_inner().unwrap();
+        let second_write = String::from_utf8_lossy(&bytes[after_first..]);
+        assert!(
+            second_write.contains("\x1b[4;1H\r\n"),
+            "expected DECSTBM scroll before second partial write after exact-width fill, got {second_write:?}"
+        );
+    }
+
+    #[test]
+    fn stale_zero_gen_buffer_falls_back_and_erases_previous_cells() {
+        let config = RuntimeDiffConfig {
+            certified_skips: true,
+            bayesian_enabled: false,
+            ..RuntimeDiffConfig::default()
+        };
+        let mut writer = TerminalWriter::with_diff_config(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 4 },
+            UiAnchor::Bottom,
+            full_caps(),
+            config,
+        );
+        writer.set_size(24, 12);
+
+        let mut frame0 = Buffer::new(24, 4);
+        frame0.set(9, 3, ftui_render::cell::Cell::from_char('Y'));
+        writer.present_ui_owned(frame0, None, false).unwrap();
+
+        // Fresh empty buffer with clear_dirty() has dirty_baseline_gen == Some(0),
+        // which does NOT match frame0.mutation_gen (> 0). Certified diff must
+        // detect the mismatch and fall back to full diff rather than skipping row 3.
+        let mut frame1 = Buffer::new(24, 4);
+        frame1.clear_dirty();
+        frame1.set(3, 1, ftui_render::cell::Cell::from_char('Z'));
+        writer.present_ui_owned(frame1, None, false).unwrap();
+
+        let cert = writer
+            .last_render_certificate()
+            .expect("certificate must be recorded");
+        assert_eq!(
+            cert.level,
+            ftui_render::render_certificate::RenderCertificateLevel::FullRequired
+        );
+        assert!(cert.fell_back);
+        assert_eq!(cert.causes, vec!["dirty-row-witness-inconsistent"]);
     }
 
     #[test]

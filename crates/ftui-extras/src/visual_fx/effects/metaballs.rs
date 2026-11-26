@@ -1001,6 +1001,7 @@ mod tests {
 
     #[cfg(feature = "fx-gpu")]
     #[test]
+    #[ignore = "requires wgpu adapter; run with --ignored or FTUI_REQUIRE_GPU=1"]
     fn gpu_parity_sanity_small_buffer() {
         let _guard = crate::visual_fx::gpu::gpu_test_lock();
 
@@ -1034,6 +1035,9 @@ mod tests {
             &mut gpu_out,
         );
         if !rendered {
+            let require_gpu = std::env::var("FTUI_REQUIRE_GPU")
+                .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+            handle_missing_gpu_adapter(require_gpu);
             return;
         }
 
@@ -1051,6 +1055,50 @@ mod tests {
             max_diff <= 8,
             "GPU output deviates from CPU beyond tolerance: {max_diff}"
         );
+    }
+
+    #[cfg(feature = "fx-gpu")]
+    fn handle_missing_gpu_adapter(require_gpu: bool) {
+        assert!(
+            !require_gpu,
+            "FTUI_REQUIRE_GPU is set but no wgpu adapter was available for metaballs GPU parity"
+        );
+        eprintln!("skipped: no wgpu adapter available for gpu_parity_sanity_small_buffer");
+    }
+
+    #[cfg(feature = "fx-gpu")]
+    #[test]
+    #[should_panic(expected = "FTUI_REQUIRE_GPU is set")]
+    fn gpu_parity_require_gpu_fails_when_no_adapter_renders() {
+        let _guard = crate::visual_fx::gpu::gpu_test_lock();
+        gpu::force_disable_for_tests();
+        let theme = ThemeInputs::default_dark();
+        let ctx = FxContext {
+            width: 8,
+            height: 4,
+            frame: 1,
+            time_seconds: 0.5,
+            quality: FxQuality::Full,
+            theme: &theme,
+        };
+        let mut fx = MetaballsFx::default();
+        fx.populate_ball_cache(ctx.time_seconds, ctx.quality);
+        fx.sync_gpu_ball_cache();
+        let stops = fx.params.palette.stops(ctx.theme);
+        let (glow, threshold) = fx.params.thresholds();
+        let mut gpu_out = vec![PackedRgba::TRANSPARENT; ctx.len()];
+        let rendered = gpu::render_metaballs(
+            ctx,
+            glow,
+            threshold,
+            ctx.theme.bg_base,
+            stops,
+            &fx.gpu_ball_cache,
+            &mut gpu_out,
+        );
+        gpu::reset_for_tests();
+        assert!(!rendered, "force-disabled GPU should report rendered=false");
+        handle_missing_gpu_adapter(true);
     }
 
     #[cfg(feature = "fx-gpu")]

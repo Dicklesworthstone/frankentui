@@ -109,8 +109,8 @@ if command -v ffmpeg >/dev/null 2>&1; then
     pass "ffmpeg_png_decoder_positive_and_negative_controls"
 fi
 
-DOCTOR_ROOT="${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}"
-if [[ -f "${DOCTOR_ROOT}/happy/doctor/doctor_full_run/snapshot.png" ]]; then
+if [[ -n "${DOCTOR_FTUI_ARTIFACT_ROOT:-}" && -f "${DOCTOR_FTUI_ARTIFACT_ROOT}/happy/doctor/doctor_full_run/snapshot.png" ]]; then
+    DOCTOR_ROOT="${DOCTOR_FTUI_ARTIFACT_ROOT}"
     SNAP="${DOCTOR_ROOT}/happy/doctor/doctor_full_run/snapshot.png"
     [[ -s "${SNAP}" ]] || fail "doctor snapshot.png is empty: ${SNAP}"
     if command -v ffmpeg >/dev/null 2>&1; then

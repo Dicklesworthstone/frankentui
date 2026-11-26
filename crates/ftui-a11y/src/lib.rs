@@ -32,8 +32,8 @@
 //! # How it fits in the system
 //!
 //! - **`ftui-core`**: provides `Rect` for node bounding boxes.
-//! - **`ftui-widgets`**: widgets will `impl Accessible` in a future phase.
-//! - **`ftui-render`**: the render pass will collect nodes via the builder.
+//! - **`ftui-widgets`**: core widgets implement `Accessible` and emit scoped stateful nodes during render.
+//! - **`ftui-render`**: `Frame` collects nodes via `A11yTreeBuilder` when accessibility is enabled.
 //! - **Platform bridges** (future Phase 3): consume `A11yTreeDiff`,
 //!   screen-reader mirror text, and bounded live announcements to push
 //!   updates to AccessKit / platform APIs.

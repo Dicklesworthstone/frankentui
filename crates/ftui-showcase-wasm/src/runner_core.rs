@@ -411,6 +411,16 @@ impl RunnerCore {
         self.inner.take_pending_events()
     }
 
+    /// Drain pending clipboard requests emitted by the showcase model.
+    pub fn take_clipboard_requests(&mut self) -> Vec<ftui_web::step_program::ClipboardRequest> {
+        self.inner.take_clipboard_requests()
+    }
+
+    /// Shut down the underlying `StepProgram`, invoking `Model::on_shutdown()` once.
+    pub fn destroy(&mut self) {
+        self.inner.shutdown();
+    }
+
     /// Take the flat patch batch for GPU upload.
     ///
     /// Also caches patch hash, stats, and logs so they can be read

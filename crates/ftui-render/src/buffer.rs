@@ -673,7 +673,7 @@ impl Buffer {
             return false;
         }
         match self.dirty_baseline_gen {
-            Some(base_gen) => base_gen == old.mutation_gen || base_gen == 0,
+            Some(base_gen) => base_gen == old.mutation_gen,
             None => self.dirty_all && self.dirty_row_count() == self.height as usize,
         }
     }
@@ -716,7 +716,7 @@ impl Buffer {
 
         let baseline_valid = consistent
             && match self.dirty_baseline_gen {
-                Some(base_gen) => base_gen == old.mutation_gen || base_gen == 0,
+                Some(base_gen) => base_gen == old.mutation_gen,
                 None => self.dirty_all && dirty_row_count == height,
             };
 

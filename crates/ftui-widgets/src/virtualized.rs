@@ -12,7 +12,7 @@
 //! - [`VirtualizedStorage`] - Owned vs external storage abstraction
 //! - [`ItemHeight`] - Three height strategies:
 //!   - [`ItemHeight::Fixed`] — constant height per item (`O(1)` scroll indexing)
-//!   - [`ItemHeight::VariableFenwick`] — default for [`Virtualized::with_variable_heights`] and [`VirtualizedList::variable_heights`] (`O(log n)` prefix-sum offsets via [`crate::fenwick::FenwickTree`], optional per-category Bayesian height prediction via [`crate::height_predictor::HeightPredictor`], and Beta-VOI remeasurement via [`RemeasurePolicy`])
+//!   - [`ItemHeight::VariableFenwick`] — default for [`Virtualized::with_variable_heights`] and [`VirtualizedList::variable_heights`] (`O(log n)` prefix-sum offsets via internal `VariableHeightsFenwick`, optional per-category Bayesian height prediction via [`crate::height_predictor::HeightPredictor`], and Beta-VOI remeasurement via [`RemeasurePolicy`])
 //!   - [`ItemHeight::Variable`] — legacy [`HeightCache`] LRU cache with linear scan
 //! - [`RemeasurePolicy`] - Beta-posterior Value-of-Information policy scheduling remeasurement checks and emitting `voi_sample` evidence (`source: "virtualized_list"`)
 //!
@@ -2263,6 +2263,23 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
 
         let total_items = self.items.len();
         if total_items == 0 {
+            if frame.a11y_enabled() {
+                let bounds = area.intersection(&frame.buffer.current_scissor());
+                if !bounds.is_empty() {
+                    let root_id = ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                        ftui_a11y::node::A11yRole::List,
+                        area,
+                    );
+                    let root = ftui_a11y::node::A11yNodeInfo::new(
+                        root_id,
+                        ftui_a11y::node::A11yRole::List,
+                        bounds,
+                    )
+                    .with_name("VirtualizedList")
+                    .with_description("0 items");
+                    frame.push_a11y(root);
+                }
+            }
             state.visible_count = 0;
             state.scroll_offset = 0;
             if let Some(heights) = state.heights.as_mut() {
@@ -2330,6 +2347,29 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
             .saturating_add(items_per_viewport)
             .saturating_add(state.overscan)
             .min(total_items);
+
+        let a11y_list_id = if frame.a11y_enabled() {
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if bounds.is_empty() {
+                None
+            } else {
+                let root_id = ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                    ftui_a11y::node::A11yRole::List,
+                    area,
+                );
+                let root = ftui_a11y::node::A11yNodeInfo::new(
+                    root_id,
+                    ftui_a11y::node::A11yRole::List,
+                    bounds,
+                )
+                .with_name("VirtualizedList")
+                .with_description(format!("{total_items} items"));
+                frame.push_a11y(root);
+                Some(root_id)
+            }
+        } else {
+            None
+        };
 
         // Render visible items
         for idx in render_start..render_end {
@@ -2399,6 +2439,21 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
 
             // Render the item
             self.items[idx].render(row_area, frame, is_selected, skip_rows);
+
+            if let Some(parent_id) = a11y_list_id {
+                let item_bounds = row_area.intersection(&frame.buffer.current_scissor());
+                if !item_bounds.is_empty() {
+                    let mut item_node = ftui_a11y::node::A11yNodeInfo::new(
+                        parent_id.wrapping_add(1).wrapping_add(idx as u64),
+                        ftui_a11y::node::A11yRole::ListItem,
+                        item_bounds,
+                    )
+                    .with_name(format!("Item {}", idx + 1))
+                    .with_parent(parent_id);
+                    item_node.state.selected = is_selected;
+                    frame.push_a11y(item_node);
+                }
+            }
         }
 
         // Render scrollbar
@@ -2565,6 +2620,29 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
             area.width
         };
 
+        let a11y_list_id = if frame.a11y_enabled() {
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if bounds.is_empty() {
+                None
+            } else {
+                let root_id = ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                    ftui_a11y::node::A11yRole::List,
+                    area,
+                );
+                let root = ftui_a11y::node::A11yNodeInfo::new(
+                    root_id,
+                    ftui_a11y::node::A11yRole::List,
+                    bounds,
+                )
+                .with_name("VirtualizedList")
+                .with_description(format!("{total_items} items"));
+                frame.push_a11y(root);
+                Some(root_id)
+            }
+        } else {
+            None
+        };
+
         let mut y = 0u16;
         for idx in state.scroll_offset..state.scroll_offset.saturating_add(visible).min(total_items)
         {
@@ -2584,6 +2662,20 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
             };
             clear_text_area(frame, row_area, row_style);
             self.items[idx].render(row_area, frame, is_selected, 0);
+            if let Some(parent_id) = a11y_list_id {
+                let item_bounds = row_area.intersection(&frame.buffer.current_scissor());
+                if !item_bounds.is_empty() {
+                    let mut item_node = ftui_a11y::node::A11yNodeInfo::new(
+                        parent_id.wrapping_add(1).wrapping_add(idx as u64),
+                        ftui_a11y::node::A11yRole::ListItem,
+                        item_bounds,
+                    )
+                    .with_name(format!("Item {}", idx + 1))
+                    .with_parent(parent_id);
+                    item_node.state.selected = is_selected;
+                    frame.push_a11y(item_node);
+                }
+            }
             y = y.saturating_add(row_h);
         }
 
@@ -5916,5 +6008,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn virtualized_list_emits_scoped_list_and_visible_item_a11y_nodes() {
+        let items: Vec<String> = (0..10).map(|i| format!("Row {i}")).collect();
+        let list = VirtualizedList::new(&items).fixed_height(1);
+        let mut state = VirtualizedListState::new();
+        state.select(Some(2));
+
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(20, 4, &mut pool);
+        let mut builder = ftui_a11y::tree::A11yTreeBuilder::new();
+        frame.set_a11y(&mut builder);
+        StatefulWidget::render(&list, Rect::new(0, 0, 20, 4), &mut frame, &mut state);
+        frame.finish_a11y();
+
+        let tree = builder.build();
+        let root = tree
+            .nodes()
+            .find(|n| n.role == ftui_a11y::node::A11yRole::List)
+            .expect("VirtualizedList a11y root");
+        assert_eq!(root.description.as_deref(), Some("10 items"));
+        let mut item_nodes: Vec<_> = tree
+            .nodes()
+            .filter(|n| n.role == ftui_a11y::node::A11yRole::ListItem)
+            .collect();
+        item_nodes.sort_by_key(|n| n.bounds.y);
+        assert_eq!(item_nodes.len(), 4);
+        assert!(item_nodes.iter().all(|n| n.parent == Some(root.id)));
+        assert!(item_nodes[2].state.selected);
+        assert!(!item_nodes[0].state.selected);
     }
 }

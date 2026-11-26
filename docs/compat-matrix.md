@@ -1,6 +1,6 @@
 # Terminal compatibility matrix
 
-Measured on 2026-09-02 with `scripts/pty_identity_matrix.py` driving the demo showcase under a real pty per terminal identity (100x30, `q` after 2 s). The script plays the terminal: it answers the DECRPM 2026 probe with the status a real terminal of that identity reports, or stays silent. Every row asserts the policy outcome; the same script runs in CI (`emulator_compat_matrix.yml`, job `pty-identity-matrix`) and uploads one JSONL line per run.
+Measured on 2026-09-02 with `scripts/pty_identity_matrix.py` driving the demo showcase under a real pty per terminal identity (100x30, `q` after 2 s). The script plays the terminal: it answers the DECRPM 2026 probe with the status a real terminal of that identity reports, or stays silent. Every row asserts the policy outcome and emits one JSONL line per run (run locally or through DSR rather than GitHub Actions, which is disabled in this repository).
 
 Columns: **sync** = DEC 2026 synchronized-output brackets emitted (pairs counted over the run, inline / alt); **scroll region** = DECSTBM set in inline mode; **probe** = DECRPM query sent; **exit** = clean exit on `q` with cursor and paste mode restored.
 

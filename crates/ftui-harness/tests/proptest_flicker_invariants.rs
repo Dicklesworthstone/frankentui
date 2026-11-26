@@ -761,3 +761,41 @@ proptest! {
         );
     }
 }
+
+/// Regression test for bd-ojjqa: exact minimal failing input from proptest seed
+/// `cc fbe08153499068eef3e985289ca092f8b518ed30ee90da5319eb7aad6af226d3`.
+/// Under a top-anchored inline UI (20x5, Kitty), writing a log line containing
+/// Prepend cluster `U+0600 + ' '` must not wrap the bottom row and scroll the
+/// top UI row away.
+#[test]
+fn bd_ojjqa_top_anchored_prepend_cluster_never_scrolls_ui_row() {
+    use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
+    use ftui_runtime::{ScreenMode, TerminalWriter, UiAnchor};
+
+    let caps = TerminalCapabilities::from_profile(TerminalProfile::Kitty);
+    let mut writer = TerminalWriter::new(
+        Vec::new(),
+        ScreenMode::InlineAuto {
+            min_height: 1,
+            max_height: 10,
+        },
+        UiAnchor::Top,
+        caps,
+    );
+    let mut model = VirtualTerminal::new(20, 5);
+
+    writer.set_size(20, 5);
+    let mut frame = Buffer::new(20, 1);
+    frame.set(0, 0, Cell::from_char('!'));
+    writer.present_ui(&frame, None, false).unwrap();
+
+    writer.set_auto_ui_height(2);
+    let minimal_log = format!(" \u{0600}{}\0{}", " ".repeat(7), " ".repeat(11));
+    writer.write_log(&minimal_log).unwrap();
+    writer.flush().unwrap();
+
+    let all_bytes = writer.into_inner().unwrap();
+    model.feed(&all_bytes);
+
+    check_frame(&model, &frame, 0).expect("bd-ojjqa: top UI row was scrolled away by write_log");
+}

@@ -241,16 +241,19 @@ manual assistive-technology testing and a full semantic control bridge remain.
 | `TextInput` | TextInput | value/placeholder, focus, mask state |
 | `TextArea` | TextInput | full multiline value or placeholder, focus, multiline description |
 | `List` | List + visible ListItem children | block title, filtered count, stateful selection/focus, multi-selection |
-| `Table` | Table | block title, row/column counts |
-| `Tabs` | Group + Tab children | tab titles, selected index |
+| `VirtualizedList` | List + visible ListItem children | total item count, visible viewport item bounds, stateful selection |
+| `Table` | Table + visible TableRow children | block title, row/column counts, visible row labels and stateful selection |
+| `Tabs` | Group + visible Tab children | tab titles, per-tab rendered bounds, stateful selected tab |
 | `ProgressBar` | ProgressBar | ratio, label, value text |
 | `Paragraph` | Label | text content (truncated at 200 chars), block title |
 | `Block` | Group | title text |
-| `Scrollbar` | ScrollBar | orientation (vertical/horizontal) |
+| `Scrollbar` | ScrollBar | orientation (vertical/horizontal), scroll range (`value_min`/`value_max`), position (`value_now`, percentage `value_text`) |
 | `Spinner` | ProgressBar | label, busy state |
 | `Modal<C>` | Dialog container | scoped child semantics, stable hit-ID identity, optional accessible name |
 | `Dialog` | Dialog + TextInput/Button children | title, message description, visible controls, input value, state-owned focus |
 | `ftui-extras::Form` | Group + field controls | labels, values/options, required/disabled/checked state, validation descriptions, internal focus |
+| `ftui-extras::ConfirmDialog` | Dialog + Button children | message description, Yes/No button bounds, stateful selection and focus |
+| `ValidationErrorDisplay` | live Label | polite live validation error announcement |
 | `Toast` / `NotificationStack` | live Group + Button children | title/message, severity urgency, stable notification identity, action focus |
 | `CommandPalette` | Dialog + TextInput + Menu/MenuItem | quiet query focus, selected command, descriptions/categories, polite selection status |
 | `ftui-widgets::FilePicker` | List + ListItem | current directory, file/directory kind, selected item, explicit focus ownership |
@@ -360,11 +363,11 @@ it is no longer the only description available after the packaged runner starts.
 | `F12` | Toggle debug overlay |
 | `Ctrl+K` | Open command palette |
 | `Ctrl+P` | Toggle performance HUD |
-| `Ctrl+I` | Toggle inspector / evidence ledger |
+| `Ctrl+I` | Toggle evidence ledger (Explainability Cockpit; requires Kitty keyboard protocol — legacy terminals send `Tab` `0x09`) |
 | `Ctrl+T` | Cycle theme |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
-| `Shift+A` | Toggle accessibility panel |
+| `Shift+A` | Toggle accessibility panel overlay |
 | `m` | Toggle mouse capture |
 | `F6` | Toggle mouse capture (alternative) |
 | `Enter` | Activate highlighted item (on Dashboard) |
@@ -374,9 +377,9 @@ it is no longer the only description available after the packaged runner starts.
 
 | Key | Action |
 |---|---|
-| `h` | Toggle high-contrast mode |
-| `m` | Toggle reduced-motion mode |
-| `l` | Toggle large-text mode |
+| `h` / `Shift+H` | Toggle high-contrast mode (`h` on Accessibility screen; `Shift+H` while compact `Shift+A` overlay is open) |
+| `m` / `Shift+M` | Toggle reduced-motion mode (`m` on Accessibility screen; `Shift+M` while compact `Shift+A` overlay is open) |
+| `l` / `Shift+L` | Toggle large-text mode (`l` on Accessibility screen; `Shift+L` while compact `Shift+A` overlay is open) |
 
 ### Within-widget navigation
 

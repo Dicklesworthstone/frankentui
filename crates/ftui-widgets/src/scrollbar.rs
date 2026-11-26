@@ -358,7 +358,37 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
         // compound and does cleanup, so the guard sits on the push rather than
         // the push moving past it.
         if frame.a11y_enabled() && !area.is_empty() {
-            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let id = crate::a11y_node_id(area);
+                let orientation = match self.orientation {
+                    ScrollbarOrientation::VerticalRight | ScrollbarOrientation::VerticalLeft => {
+                        "vertical"
+                    }
+                    ScrollbarOrientation::HorizontalBottom
+                    | ScrollbarOrientation::HorizontalTop => "horizontal",
+                };
+                let max_pos = state.content_length.saturating_sub(state.viewport_length);
+                let clamped_pos = state.position.min(max_pos);
+                let mut a11y_state = ftui_a11y::node::A11yState {
+                    value_min: Some(0.0),
+                    value_max: Some(max_pos as f64),
+                    value_now: Some(clamped_pos as f64),
+                    ..ftui_a11y::node::A11yState::default()
+                };
+                if max_pos > 0 {
+                    let pct = ((clamped_pos as f64 / max_pos as f64) * 100.0).round() as u32;
+                    a11y_state.value_text = Some(format!("{pct}%"));
+                }
+                let node = ftui_a11y::node::A11yNodeInfo::new(
+                    id,
+                    ftui_a11y::node::A11yRole::ScrollBar,
+                    bounds,
+                )
+                .with_name(format!("{orientation} scrollbar"))
+                .with_state(a11y_state);
+                frame.push_a11y(node);
+            }
         }
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
@@ -1096,5 +1126,27 @@ mod tests {
         let event = MouseEvent::new(MouseEventKind::Down(MouseButton::Right), 0, 0);
         let result = state.handle_mouse(&event, None, HitId::new(1));
         assert_eq!(result, MouseResult::Ignored);
+    }
+
+    #[test]
+    fn scrollbar_emits_stateful_a11y_range_and_position() {
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        let mut state = ScrollbarState::new(100, 40, 20);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 10, &mut pool);
+        let mut builder = ftui_a11y::tree::A11yTreeBuilder::new();
+        frame.set_a11y(&mut builder);
+        StatefulWidget::render(&sb, Rect::new(9, 0, 1, 10), &mut frame, &mut state);
+        frame.finish_a11y();
+
+        let tree = builder.build();
+        let node = tree
+            .nodes()
+            .find(|n| n.role == ftui_a11y::node::A11yRole::ScrollBar)
+            .expect("ScrollBar a11y node");
+        assert_eq!(node.state.value_min, Some(0.0));
+        assert_eq!(node.state.value_max, Some(80.0));
+        assert_eq!(node.state.value_now, Some(40.0));
+        assert_eq!(node.state.value_text.as_deref(), Some("50%"));
     }
 }

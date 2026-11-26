@@ -409,10 +409,10 @@ reset
 
 ### Nightly Is Required
 
-If you see `-Z is only accepted on the nightly compiler`, install nightly:
+This workspace pins an exact Rust nightly in `rust-toolchain.toml` (`nightly-2026-08-31`) rather than tracking floating `nightly`. If you see `-Z is only accepted on the nightly compiler`, install the pinned channel:
 
 ```bash
-rustup toolchain install nightly
+rustup toolchain install nightly-2026-08-31
 ```
 
 ### One-Writer Rule

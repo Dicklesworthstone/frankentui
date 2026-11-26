@@ -1583,9 +1583,22 @@ mod tests {
             state.select(Some(0));
             StatefulWidget::render(&table, area, frame, &mut state);
         });
-        assert_eq!(tree.node_count(), expected.len());
+        assert_eq!(tree.node_count(), 3);
         let table_node = tree.node(expected[0].id).expect("table node present");
         assert_eq!(table_node.role, ftui_a11y::node::A11yRole::Table);
+        assert_eq!(table_node.children.len(), 2);
+        let first_row = tree
+            .node(table_node.children[0])
+            .expect("first table row node present");
+        assert_eq!(first_row.role, ftui_a11y::node::A11yRole::TableRow);
+        assert_eq!(first_row.name.as_deref(), Some("a | 1"));
+        assert!(first_row.state.selected);
+        let second_row = tree
+            .node(table_node.children[1])
+            .expect("second table row node present");
+        assert_eq!(second_row.role, ftui_a11y::node::A11yRole::TableRow);
+        assert_eq!(second_row.name.as_deref(), Some("b | 2"));
+        assert!(!second_row.state.selected);
     }
 
     #[test]

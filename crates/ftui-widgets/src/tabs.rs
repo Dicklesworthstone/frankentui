@@ -402,9 +402,6 @@ impl StatefulWidget for Tabs<'_> {
         if area.is_empty() || area.height == 0 {
             return;
         }
-        if frame.a11y_enabled() {
-            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
-        }
 
         let deg = frame.buffer.degradation;
         let base_style = if deg.apply_styling() {
@@ -415,7 +412,28 @@ impl StatefulWidget for Tabs<'_> {
 
         clear_text_row(frame, area, base_style);
 
+        let a11y_root = if frame.a11y_enabled() {
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if bounds.is_empty() {
+                None
+            } else {
+                let base_id = crate::a11y_node_id(area);
+                let group_node = ftui_a11y::node::A11yNodeInfo::new(
+                    base_id,
+                    ftui_a11y::node::A11yRole::Group,
+                    bounds,
+                )
+                .with_name(format!("{} tabs", self.tabs.len()));
+                Some((base_id, group_node))
+            }
+        } else {
+            None
+        };
+
         if !deg.render_content() || self.tabs.is_empty() {
+            if let Some((_, group_node)) = a11y_root {
+                frame.push_a11y(group_node);
+            }
             return;
         }
 
@@ -462,6 +480,12 @@ impl StatefulWidget for Tabs<'_> {
             );
         }
 
+        let mut tab_rects: Vec<(usize, Rect)> = if a11y_root.is_some() {
+            Vec::with_capacity(end.saturating_sub(start))
+        } else {
+            Vec::new()
+        };
+
         let mut x = left;
         for idx in start..end {
             if x >= right {
@@ -491,15 +515,34 @@ impl StatefulWidget for Tabs<'_> {
                 x = draw_text_span(frame, x, area.y, self.close_marker, tab_style, right);
             }
             x = draw_text_span(frame, x, area.y, suffix, tab_style, right);
+            let width = x.saturating_sub(before).max(1);
+            let tab_rect = Rect::new(before, area.y, width, 1);
             if let Some(id) = self.hit_id {
-                let width = x.saturating_sub(before).max(1);
-                frame.register_hit(
-                    Rect::new(before, area.y, width, 1),
-                    id,
-                    HitRegion::Content,
-                    idx as u64,
-                );
+                frame.register_hit(tab_rect, id, HitRegion::Content, idx as u64);
             }
+            if a11y_root.is_some() {
+                tab_rects.push((idx, tab_rect));
+            }
+        }
+
+        if let Some((base_id, group_node)) = a11y_root {
+            let scissor = frame.buffer.current_scissor();
+            frame.with_a11y_scope(group_node, |frame| {
+                for (idx, rect) in tab_rects {
+                    let bounds = rect.intersection(&scissor);
+                    if bounds.is_empty() {
+                        continue;
+                    }
+                    let mut node = ftui_a11y::node::A11yNodeInfo::new(
+                        base_id.wrapping_add(1).wrapping_add(idx as u64),
+                        ftui_a11y::node::A11yRole::Tab,
+                        bounds,
+                    )
+                    .with_name(self.tabs[idx].title());
+                    node.state.selected = idx == state.active;
+                    frame.push_a11y(node);
+                }
+            });
         }
 
         #[cfg(feature = "tracing")]
@@ -1205,6 +1248,39 @@ mod tests {
         assert!(
             row.trim_end().ends_with('>'),
             "expected right overflow marker"
+        );
+    }
+
+    #[test]
+    fn tabs_emits_stateful_a11y_selection_and_per_tab_bounds() {
+        let tabs = Tabs::new(vec![Tab::new("Home"), Tab::new("Logs"), Tab::new("Help")]);
+        let mut state = TabsState::default();
+        state.select(1, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 1, &mut pool);
+        let mut builder = ftui_a11y::tree::A11yTreeBuilder::new();
+        frame.set_a11y(&mut builder);
+        StatefulWidget::render(&tabs, Rect::new(0, 0, 30, 1), &mut frame, &mut state);
+        frame.finish_a11y();
+
+        let tree = builder.build();
+        let mut tab_nodes: Vec<_> = tree
+            .nodes()
+            .filter(|n| n.role == ftui_a11y::node::A11yRole::Tab)
+            .collect();
+        tab_nodes.sort_by_key(|n| n.bounds.x);
+        assert_eq!(tab_nodes.len(), 3);
+        assert_eq!(tab_nodes[0].name.as_deref(), Some("Home"));
+        assert_eq!(tab_nodes[1].name.as_deref(), Some("Logs"));
+        assert_eq!(tab_nodes[2].name.as_deref(), Some("Help"));
+        assert!(!tab_nodes[0].state.selected);
+        assert!(tab_nodes[1].state.selected);
+        assert!(!tab_nodes[2].state.selected);
+        assert!(
+            tab_nodes[0].bounds.x < tab_nodes[1].bounds.x
+                && tab_nodes[1].bounds.x < tab_nodes[2].bounds.x,
+            "expected distinct per-tab bounds, got {:?}",
+            tab_nodes.iter().map(|n| n.bounds).collect::<Vec<_>>()
         );
     }
 }

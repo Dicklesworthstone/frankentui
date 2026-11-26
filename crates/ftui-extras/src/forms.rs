@@ -1608,7 +1608,7 @@ impl StatefulWidget for ConfirmDialog {
         let yes_w = display_width(yes_str.as_str());
         let no_w = display_width(no_str.as_str());
         let total_btn_width = yes_w + 2 + no_w;
-        if total_btn_width as u16 <= area.width {
+        let (yes_rect, no_rect) = if total_btn_width as u16 <= area.width {
             let start_x = area
                 .x
                 .saturating_add(area.width.saturating_sub(total_btn_width as u16) / 2);
@@ -1618,6 +1618,10 @@ impl StatefulWidget for ConfirmDialog {
             let no_x = start_x.saturating_add(yes_w as u16).saturating_add(2);
             let no_width = area.right().saturating_sub(no_x);
             draw_str(frame, no_x, btn_y, &no_str, no_style, no_width);
+            (
+                Rect::new(start_x, btn_y, (yes_w as u16).min(yes_width), 1),
+                Rect::new(no_x, btn_y, (no_w as u16).min(no_width), 1),
+            )
         } else {
             // Under severe width pressure, keep the selected action visible
             // instead of letting it fall completely outside the dialog area.
@@ -1638,6 +1642,48 @@ impl StatefulWidget for ConfirmDialog {
                 selected_style,
                 selected_width,
             );
+            let sel_rect = Rect::new(selected_x, btn_y, selected_width, 1);
+            if state.selected_yes {
+                (sel_rect, Rect::new(area.x, btn_y, 0, 0))
+            } else {
+                (Rect::new(area.x, btn_y, 0, 0), sel_rect)
+            }
+        };
+
+        if frame.a11y_enabled() {
+            let scissor = frame.buffer.current_scissor();
+            let dialog_bounds = area.intersection(&scissor);
+            if !dialog_bounds.is_empty() {
+                let root_id = A11yNodeInfo::stable_id_for(A11yRole::Dialog, area);
+                let mut dialog_node = A11yNodeInfo::new(root_id, A11yRole::Dialog, dialog_bounds)
+                    .with_name("Confirm");
+                if !self.message.is_empty() {
+                    dialog_node = dialog_node.with_description(self.message.clone());
+                }
+                frame.with_a11y_scope(dialog_node, |frame| {
+                    let yes_bounds = yes_rect.intersection(&scissor);
+                    if !yes_bounds.is_empty() {
+                        let mut yes_node = A11yNodeInfo::new(
+                            root_id.wrapping_add(1),
+                            A11yRole::Button,
+                            yes_bounds,
+                        )
+                        .with_name(self.yes_label.clone());
+                        yes_node.state.selected = state.selected_yes;
+                        yes_node.state.focused = state.selected_yes && state.confirmed.is_none();
+                        frame.push_a11y(yes_node);
+                    }
+                    let no_bounds = no_rect.intersection(&scissor);
+                    if !no_bounds.is_empty() {
+                        let mut no_node =
+                            A11yNodeInfo::new(root_id.wrapping_add(2), A11yRole::Button, no_bounds)
+                                .with_name(self.no_label.clone());
+                        no_node.state.selected = !state.selected_yes;
+                        no_node.state.focused = !state.selected_yes && state.confirmed.is_none();
+                        frame.push_a11y(no_node);
+                    }
+                });
+            }
         }
     }
 }
@@ -3652,5 +3698,38 @@ mod tests {
         after_ids.sort_unstable();
         assert_eq!(before_ids, after_ids);
         assert_eq!(before.focused_id(), after.focused_id());
+    }
+
+    #[test]
+    fn confirm_dialog_emits_scoped_dialog_and_button_a11y_nodes() {
+        let dialog = ConfirmDialog::new("Delete record?").labels("Delete", "Keep");
+        let mut state = ConfirmDialogState {
+            selected_yes: true,
+            confirmed: None,
+        };
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 3, &mut pool);
+        let mut builder = A11yTreeBuilder::new();
+        frame.set_a11y(&mut builder);
+        StatefulWidget::render(&dialog, Rect::new(0, 0, 40, 3), &mut frame, &mut state);
+        frame.finish_a11y();
+
+        let tree = builder.build();
+        let dialog_node = tree
+            .nodes()
+            .find(|n| n.role == A11yRole::Dialog)
+            .expect("ConfirmDialog a11y root");
+        assert_eq!(dialog_node.description.as_deref(), Some("Delete record?"));
+        let mut buttons: Vec<_> = tree
+            .nodes()
+            .filter(|n| n.role == A11yRole::Button)
+            .collect();
+        buttons.sort_by_key(|b| b.bounds.x);
+        assert_eq!(buttons.len(), 2);
+        assert!(buttons.iter().all(|b| b.parent == Some(dialog_node.id)));
+        assert_eq!(buttons[0].name.as_deref(), Some("Delete"));
+        assert!(buttons[0].state.selected && buttons[0].state.focused);
+        assert_eq!(buttons[1].name.as_deref(), Some("Keep"));
+        assert!(!buttons[1].state.selected && !buttons[1].state.focused);
     }
 }

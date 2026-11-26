@@ -1345,7 +1345,7 @@ where `d_t` is signed distance to the current target boundary, `k` is drift allo
 
 **Result:** single‑cell jitter doesn’t cause hover flicker, but intentional crossings still switch within a couple frames.
 
-**Where it runs:** `ListState::default().with_hover_stabilizer(HoverStabilizerConfig::default())` routes the list's mouse-move hover through the stabilizer (default: 1-cell hysteresis band, drift allowance 0.5, threshold 2.0, 500 ms hold); without it `hovered` follows the raw hit test. The showcase's mouse playground uses the same type directly. `TableState::hovered` tracks raw mouse-move row hits (`Table` renders `TableTheme.row_hover` when set) without routing through `HoverStabilizer` yet.
+**Where it runs:** `ListState::default().with_hover_stabilizer(HoverStabilizerConfig::default())` and `TableState::default().with_hover_stabilizer(HoverStabilizerConfig::default())` route mouse-move hover through the stabilizer (default: 1-cell hysteresis band, drift allowance 0.5, threshold 2.0, 500 ms hold); without it `hovered` follows the raw hit test (`Table` renders `TableTheme.row_hover` when set). The showcase's mouse playground uses the same type directly.
 
 ### Gesture Recognition State Machine
 
@@ -1803,7 +1803,7 @@ Evidence Emission
 - **Widget-aware**: critical widgets (input fields, status bars) degrade last; `BudgetControllerConfig::default()` sets `degradation_floor = DegradationLevel::SimpleBorders` (honored by both the PID/e-process controller and the conformal risk gate) so routine frame-time spikes simplify borders without stripping styling or widgets unless a deeper floor is configured or hard memory/queue `FrameGuardrails` intervene
 - **Deterministic over frame-time traces**: `BudgetController::update(frame_time)` is a pure state machine — feeding the same `Duration` sequence (via `record_frame_time` or `DeterministicClock`) always produces the exact same degradation path (live `Program` runs feed measured wall-clock `elapsed()` durations)
 
-**Where it runs:** on by default through `ftui_render::budget::BudgetController` + `ftui_runtime::conformal_predictor::ConformalPredictor` + `Program` (`frame.set_degradation(..)` and `frame.buffer.degradation`, checked by 34 widget modules). Do not confuse this production path with the standalone `ftui_runtime::degradation_cascade` (`DegradationCascade`) and `ftui_runtime::conformal_frame_guard` (`ConformalFrameGuard`) modules, which are quarantined under `--features experimental` with no production consumer.
+**Where it runs:** on by default through `ftui_render::budget::BudgetController` + `ftui_runtime::conformal_predictor::ConformalPredictor` + `Program` (`frame.set_degradation(..)` and `frame.buffer.degradation`, checked by 33 widget modules across `ftui-widgets` and `ftui-extras`). Do not confuse this production path with the standalone `ftui_runtime::degradation_cascade` (`DegradationCascade`) and `ftui_runtime::conformal_frame_guard` (`ConformalFrameGuard`) modules, which are quarantined under `--features experimental` with no production consumer.
 
 ---
 
@@ -2910,7 +2910,7 @@ The `ftui-a11y` crate provides an accessibility tree that mirrors the widget ren
 - **Live regions** for announcing dynamic content changes to screen readers
 - **Contrast checking** using WCAG 2.1 luminance ratios (`ftui-style/src/color.rs`)
 
-**Runtime wiring.** Widgets that implement `ftui_a11y::Accessible` (Block, Input, List, Table, Tabs, Paragraph, Progress, Scrollbar, Spinner) push their nodes into the `Frame` as they render. Enable collection per program:
+**Runtime wiring.** Core widgets (`Block`, `TextInput`, `TextArea`, `List`, `VirtualizedList`, `Table`, `Tabs`, `Tree`, `Paragraph`, `ProgressBar`, `Scrollbar`, `Spinner`, `Modal`, `Dialog`, `CommandPalette`, `FilePicker`, `Toast`/`NotificationStack`, `ValidationErrorDisplay`, plus `ftui-extras::{Form, ConfirmDialog, FilePicker}`) push scoped, stateful accessibility nodes into the `Frame` as they render. Enable collection per program:
 
 ```rust
 use ftui::{ProgramConfig, ScreenReaderPolicy};
@@ -2932,7 +2932,7 @@ fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Msg> {
 
 The evidence sink gets `a11y_tree` and `a11y_announcement` rows (schema in `docs/spec/telemetry-events.md`) and the `ftui.a11y` tracing target carries the same data. Without the config no tree is built and rendering is unchanged.
 
-**Not done:** there is no operating‑system bridge (AT‑SPI, UIA, NSAccessibility). Announcements are evidence rows, tracing events and hook calls that a host or an app forwards; nothing reaches a screen reader on its own. Containers other than `Block` do not scope their children yet, and `Form` has no accessibility nodes. Details and proofs: `docs/ACCESSIBILITY.md`.
+**Not done:** there is no operating‑system bridge (AT‑SPI, UIA, NSAccessibility). Announcements are evidence rows, tracing events and hook calls that a host or an app forwards; nothing reaches a screen reader on its own. Some specialized/decorative widgets (e.g., `LogViewer`, `JsonView`, `Popover`, charts, pane workspaces) do not emit semantic nodes yet. Details and proofs: `docs/ACCESSIBILITY.md`.
 
 The `accessibility_panel` demo screen mirrors the live tree (size, leading dump lines) and the latest announcements as you navigate the UI.
 
@@ -2946,7 +2946,7 @@ The `ftui-i18n` crate provides locale-aware rendering:
 - **String catalog** with fallback chains and CLDR-style plural rules (`StringCatalog`, `PluralRule`)
 - **Text direction** from locale with per-line, grapheme-cluster-preserving UAX#9 reordering in `Paragraph` (feature `bidi`, on by default in `ftui`). `TextInput` and `TextArea` draw and navigate editable text in logical order; `CursorNavigator::with_visual_bidi(true)` is an explicit opt-in visual caret for editors that also render in visual order
 
-- **Number & date formatting** backed by pinned Unicode CLDR v45.0 data for 7 declared locales (`NumberFormatter`, `DateTimeFormatter`, `format_number`, `format_date`)
+- **Number & date formatting** backed by pinned Unicode CLDR v45.0 data for 7 declared locales (`ftui_i18n::{NumberFormatter, DateTimeFormatter}`, with locale-context convenience helpers `ftui_runtime::locale::{format_number, format_date}`)
 
 The `i18n_demo` screen switches live between English, Spanish, French, German, Russian, Arabic and Japanese; Arabic renders right-to-left.
 
@@ -3385,7 +3385,7 @@ arena.reset(); // O(1), no individual deallocations
 
 Why bump allocation? The render path produces many small, short-lived allocations (styled text spans, layout rectangles, change runs). A bump allocator satisfies these in O(1) with zero fragmentation, and `reset()` reclaims everything in a single pointer write.
 
-**Where it runs:** `FrameArena` (`BumpVec`, `BumpString`) lives in `ftui-core::arena` (re-exported by `ftui-render::arena`). `Program` and `StepProgram` reset and attach a shared `FrameArena` to each `Frame` (`frame.arena()`), consumed on the render hot path by `ftui_text::wrap` (`wrap_text_in`, `wrap_with_options_in`, `wrap_text_optimal_in`), `ftui_layout::Flex` (`split_in`, `split_with_measurer_in`, `solve_constraints_with_hints_into`), `ftui_widgets::{paragraph::Paragraph, table::Table, tabs::Tabs, input::TextInput}`, and the showcase's `dashboard` screen. Measured in `alloc_count_bench`: `0 allocs/frame` (`0 B`, down from `1,397 allocs` / `142,688 B`) on the 80×24 ASCII dashboard and `3 allocs/frame` (`42 B` in `GraphemePool::intern`, down 99.5% from `661 allocs` / `79,962 B`) on the 80×24 Unicode dashboard.
+**Where it runs:** `FrameArena` (`BumpVec`, `BumpString`) lives in `ftui-core::arena` (re-exported by `ftui-render::arena`). `Program` and `StepProgram` reset and attach a shared `FrameArena` to each `Frame` (`frame.arena()`), consumed on the render hot path by `ftui_text::wrap` (`wrap_text_in`, `wrap_with_options_in`, `wrap_text_optimal_in`), `ftui_layout::Flex` (`split_in`, `split_with_measurer_in`, `solve_constraints_with_hints_into`), `ftui_widgets::{paragraph::Paragraph, table::Table, input::TextInput}`, and the showcase's `dashboard` screen. Measured in `alloc_count_bench`: `0 allocs/frame` (`0 B`, down from `1,397 allocs` / `142,688 B`) on the 80×24 ASCII dashboard and `3 allocs/frame` (`42 B` in `GraphemePool::intern`, down 99.5% from `661 allocs` / `79,962 B`) on the 80×24 Unicode dashboard.
 
 ---
 

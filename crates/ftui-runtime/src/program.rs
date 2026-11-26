@@ -3191,10 +3191,10 @@ impl RuntimeLane {
 ///
 /// Controls how the runtime lane transition is managed:
 ///
-/// - `Off` — use only the configured lane, no shadow comparison.
-/// - `Shadow` — run both baseline and candidate lanes, compare outputs,
-///   but use only the baseline lane for actual rendering. Evidence is emitted
-///   to the configured JSONL sink for operator review.
+/// - `Off` — use only the configured lane, no shadow evidence emission.
+/// - `Shadow` — run the active lane for rendering and emit deterministic
+///   per-frame `ShadowFrameEvidence` checksums to the configured JSONL sink for
+///   offline comparison across lane runs.
 /// - `Enabled` — use the candidate lane for rendering (requires prior shadow
 ///   evidence showing deterministic match).
 ///
@@ -3205,7 +3205,8 @@ pub enum RolloutPolicy {
     /// No rollout activity — use the configured lane directly.
     #[default]
     Off,
-    /// Shadow-run comparison mode: run both lanes, emit evidence, use baseline.
+    /// Shadow-evidence mode: render with the active lane and emit deterministic
+    /// per-frame checksum evidence for offline lane comparison.
     Shadow,
     /// Candidate lane is live — requires prior shadow evidence.
     Enabled,
@@ -3386,9 +3387,8 @@ pub struct ProgramConfig {
     pub runtime_lane: RuntimeLane,
     /// Rollout policy for the Asupersync migration (bd-2crbt).
     ///
-    /// Controls whether shadow-run comparison is active during this session.
-    /// When `Shadow`, both the baseline and candidate lanes run in parallel
-    /// and evidence is emitted; rendering uses the baseline lane only.
+    /// Controls whether per-frame shadow evidence checksums are emitted during
+    /// this session for offline comparison across lane runs.
     pub rollout_policy: RolloutPolicy,
     /// Coalesce high-frequency mouse moves and consecutive same-direction scrolls.
     ///
@@ -3839,7 +3839,8 @@ impl ProgramConfig {
 }
 
 fn render_budget_from_program_config(config: &ProgramConfig) -> RenderBudget {
-    let budget = RenderBudget::from_config(&config.budget);
+    let budget = RenderBudget::from_config(&config.budget)
+        .with_degradation_floor(config.load_governor.budget_controller.degradation_floor);
     if config.load_governor.enabled {
         let mut controller = config.load_governor.budget_controller.clone();
         controller.target = config.budget.total;
@@ -5959,6 +5960,28 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
     where
         M::Message: Send + 'static,
     {
+        let evidence_sink = EvidenceSink::from_config(&config.evidence_sink)?;
+        Self::with_event_source_and_evidence(
+            model,
+            events,
+            backend_features,
+            presenter,
+            config,
+            evidence_sink,
+        )
+    }
+
+    fn with_event_source_and_evidence(
+        model: M,
+        events: E,
+        backend_features: BackendFeatures,
+        presenter: P,
+        config: ProgramConfig,
+        evidence_sink: Option<EvidenceSink>,
+    ) -> io::Result<Self>
+    where
+        M::Message: Send + 'static,
+    {
         let resolved_lane = config.runtime_lane.resolve();
         let effect_queue_config = config.resolved_effect_queue_config(resolved_lane);
         let (width, height) = config
@@ -5973,7 +5996,6 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         }
         presenter.resize(width, height);
 
-        let evidence_sink = EvidenceSink::from_config(&config.evidence_sink)?;
         if let Some(ref sink) = evidence_sink {
             let sink_clone = sink.clone();
             presenter.set_evidence_writer(Some(Arc::new(move |line| {
@@ -6252,12 +6274,13 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, TerminalPresenter<Stdout>> {
             writer = writer.with_render_trace(recorder);
         }
 
-        Self::with_event_source(
+        Self::with_event_source_and_evidence(
             model,
             backend,
             features,
             TerminalPresenter::new(writer),
             config,
+            evidence_sink,
         )
     }
 }
@@ -7739,8 +7762,14 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         let frame_idx = self.frame_idx;
         let degradation_start = self.budget.degradation();
 
-        // Reset budget for new frame, potentially upgrading quality
-        self.budget.next_frame();
+        // Reset budget for new frame, potentially upgrading quality.
+        // On frame 1 there is no prior frame measurement yet; resetting avoids
+        // feeding startup/init wall-clock duration into PID/e-process history.
+        if frame_idx == 1 {
+            self.budget.reset();
+        } else {
+            self.budget.next_frame();
+        }
 
         // Check frame guardrails (memory/queue limits). The frame loop itself
         // is synchronous, so "queue depth" is the effect backlog: tasks this
@@ -7801,6 +7830,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 memory_bytes,
                 "emergency frame drop: memory guardrail tripped; arena rebuilt"
             );
+            // Record pre-drop work time so idle wait before the next frame does
+            // not fall back to `start.elapsed()` inside `budget.next_frame()`.
+            self.budget.record_frame_time(self.budget.elapsed());
             return Ok(());
         }
 
@@ -8040,9 +8072,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             );
             // With the load governor active, the controller decides degradation
             // from measured frame history at the next frame boundary. The
-            // legacy path keeps its immediate threshold fallback.
+            // legacy path keeps its immediate threshold fallback, honoring the
+            // configured degradation floor (bd-9gb22).
             if self.budget.controller().is_none() && self.budget.should_degrade(render_budget) {
-                self.budget.degrade();
+                self.budget.degrade_respecting_floor();
             }
         }
 

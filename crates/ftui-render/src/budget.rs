@@ -140,7 +140,7 @@ impl PidState {
     ///
     /// Returns the control signal `u_t`.
     fn update(&mut self, error: f64, gains: &PidGains) -> f64 {
-        if error.is_nan() {
+        if !error.is_finite() {
             return 0.0;
         }
         // Integral with anti-windup clamping
@@ -622,8 +622,16 @@ impl BudgetController {
         let target_ms = self.config.target.as_secs_f64() * 1000.0;
         let frame_ms = frame_time.as_secs_f64() * 1000.0;
 
-        // Compute normalized error (positive = over budget)
-        let error = (frame_ms - target_ms) / target_ms;
+        // Compute normalized error (positive = over budget). Guard zero target
+        // so `FrameBudgetConfig::strict(Duration::ZERO)` never poisons PID with
+        // +inf / NaN.
+        let error = if target_ms > 0.0 {
+            (frame_ms - target_ms) / target_ms
+        } else if frame_ms > 0.0 {
+            1.0
+        } else {
+            0.0
+        };
 
         // Update PID
         let u = self.pid.update(error, &self.config.pid);
@@ -1177,6 +1185,8 @@ pub struct RenderBudget {
     frames_since_change: u32,
     /// Cooldown frames required between changes.
     cooldown: u32,
+    /// Minimum quality floor used when no adaptive controller is attached.
+    degradation_floor: DegradationLevel,
     /// Optional adaptive budget controller (PID + e-process).
     /// When present, `next_frame()` delegates degradation decisions to the controller.
     controller: Option<BudgetController>,
@@ -1195,6 +1205,7 @@ impl RenderBudget {
             upgrade_threshold: 0.5,
             frames_since_change: 0,
             cooldown: 3,
+            degradation_floor: DegradationLevel::SkipFrame,
             controller: None,
         }
     }
@@ -1211,8 +1222,22 @@ impl RenderBudget {
             upgrade_threshold: config.upgrade_threshold,
             frames_since_change: 0,
             cooldown: config.degradation_cooldown,
+            degradation_floor: DegradationLevel::SkipFrame,
             controller: None,
         }
+    }
+
+    /// Configure the degradation floor used by [`degrade_respecting_floor`](Self::degrade_respecting_floor)
+    /// when no adaptive controller is attached.
+    #[must_use]
+    pub const fn with_degradation_floor(mut self, floor: DegradationLevel) -> Self {
+        self.degradation_floor = floor;
+        self
+    }
+
+    /// Update the degradation floor used when no adaptive controller is attached.
+    pub fn set_degradation_floor(&mut self, floor: DegradationLevel) {
+        self.degradation_floor = floor;
     }
 
     /// Attach an adaptive budget controller to this render budget.
@@ -1301,12 +1326,13 @@ impl RenderBudget {
     }
 
     /// Return the configured degradation floor from the attached controller,
-    /// or [`DegradationLevel::SkipFrame`] if no controller is attached.
+    /// or this budget's standalone floor (default [`DegradationLevel::SkipFrame`])
+    /// if no controller is attached.
     #[inline]
     pub fn degradation_floor(&self) -> DegradationLevel {
         self.controller
             .as_ref()
-            .map_or(DegradationLevel::SkipFrame, |ctrl| {
+            .map_or(self.degradation_floor, |ctrl| {
                 ctrl.config().degradation_floor
             })
     }
@@ -1540,6 +1566,7 @@ impl RenderBudget {
             upgrade_threshold: self.upgrade_threshold,
             frames_since_change: self.frames_since_change,
             cooldown: self.cooldown,
+            degradation_floor: self.degradation_floor(),
             controller: None, // Phase sub-budgets don't carry the controller
         }
     }

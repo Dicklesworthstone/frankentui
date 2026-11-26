@@ -1627,7 +1627,9 @@ mod tests {
         use std::io::Write as _;
         use std::time::Instant;
 
-        const RUNS: usize = 40;
+        // Use 200 samples per mode so p99 excludes the single worst OS-preempted
+        // sample instead of degenerating to the maximum (bd-l7pds).
+        const RUNS: usize = 400;
         let mut jsonl = Vec::new();
         let mut disabled = Vec::with_capacity(RUNS / 2 + 1);
         let mut enabled = Vec::with_capacity(RUNS / 2 + 1);

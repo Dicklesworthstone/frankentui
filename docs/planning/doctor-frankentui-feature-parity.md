@@ -24,7 +24,7 @@ Status key:
 | Report HTML generation with media cards | report script | complete | HTML card rendering with status colors, links, embeds |
 | Doctor checks + optional full smoke | doctor script | complete | `doctor` command performs command/path/help/profile/dry-run/full checks |
 | Compatibility wrapper behavior | analytics wrapper script | complete | represented as `capture --profile analytics-empty` |
-| FrankenTUI-first defaults | New behavior | complete | default `--app-command` is `cargo run -q -p ftui-demo-showcase` and default `--project-dir` is `/data/projects/frankentui` |
+| FrankenTUI-first defaults | New behavior | complete | default `--app-command` is `cargo run -q -p ftui-demo-showcase` and default `--project-dir` resolves dynamically from the current working directory / workspace root |
 
 ## Alien-Graveyard Upgrades (Intentional Improvements)
 

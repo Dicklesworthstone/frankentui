@@ -18,7 +18,12 @@ categories = ["command-line-interface", "gui"]
 # headless, WASM, or custom-backend builds.
 default = ["runtime", "extras", "backend", "bidi"]
 # Compiles internal research modules not reachable from the public API. Not supported. See README.
-experimental = []
+experimental = [
+    "ftui-runtime?/experimental",
+    "ftui-render/experimental",
+    "ftui-layout/experimental",
+    "ftui-widgets/experimental",
+]
 runtime = ["dep:ftui-runtime"]
 extras = ["dep:ftui-extras"]
 backend = ["native-backend", "crossterm"]

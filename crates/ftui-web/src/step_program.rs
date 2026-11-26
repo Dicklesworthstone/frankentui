@@ -60,6 +60,7 @@ use ftui_render::buffer::{Buffer, DoubleBuffer};
 use ftui_render::diff::BufferDiff;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
+pub use ftui_runtime::program::ClipboardRequest;
 use ftui_runtime::program::{AccessibilityFrame, Cmd, Model};
 use ftui_runtime::state_persistence::StateRegistry;
 use ftui_runtime::tick_strategy::{TickDecision, TickStrategy};
@@ -70,6 +71,8 @@ use crate::{WebBackend, WebBackendError, WebOutputs};
 const POOL_GC_INTERVAL_FRAMES: u64 = 256;
 /// Minimum supported terminal dimension.
 const MIN_TERMINAL_DIMENSION: u16 = 1;
+/// Maximum queued clipboard requests retained when a host does not drain them.
+const MAX_CLIPBOARD_REQUESTS: usize = 64;
 
 #[inline]
 fn clamp_terminal_dimension(value: u16) -> u16 {
@@ -129,6 +132,7 @@ pub struct StepProgram<M: Model> {
     pool: GraphemePool,
     running: bool,
     initialized: bool,
+    shutdown_called: bool,
     dirty: bool,
     frame_idx: u64,
     tick_rate: Option<Duration>,
@@ -163,6 +167,7 @@ impl<M: Model> StepProgram<M> {
             pool: GraphemePool::new(),
             running: true,
             initialized: false,
+            shutdown_called: false,
             dirty: true,
             frame_idx: 0,
             tick_rate: None,
@@ -196,6 +201,7 @@ impl<M: Model> StepProgram<M> {
             pool: GraphemePool::new(),
             running: true,
             initialized: false,
+            shutdown_called: false,
             dirty: true,
             frame_idx: 0,
             tick_rate: None,
@@ -568,6 +574,28 @@ impl<M: Model> StepProgram<M> {
         std::mem::take(&mut self.clipboard_requests)
     }
 
+    /// Gracefully shut down the program, invoking [`Model::on_shutdown`],
+    /// executing its cleanup command, and shutting down any active tick
+    /// strategy at most once.
+    ///
+    /// Called automatically when `Cmd::Quit` executes and safe to call again
+    /// when the host tears down the runner (e.g. `ShowcaseRunner::destroy`).
+    pub fn shutdown(&mut self) {
+        if !self.shutdown_called {
+            self.shutdown_called = true;
+            let shutdown_cmd = self.model.on_shutdown();
+            // Run cleanup commands returned by `on_shutdown()` before marking
+            // the program stopped so `Cmd::Batch` / `Cmd::SaveState` / `Cmd::Log`
+            // execute to completion (matching native `Program::shutdown_once`).
+            self.running = true;
+            self.execute_cmd(shutdown_cmd);
+        }
+        self.running = false;
+        if let Some(ref mut strategy) = self.tick_strategy {
+            strategy.shutdown();
+        }
+    }
+
     /// Read the captured outputs without consuming them.
     pub fn outputs(&self) -> &WebOutputs {
         self.backend.presenter.outputs()
@@ -839,10 +867,7 @@ impl<M: Model> StepProgram<M> {
         match cmd {
             Cmd::None => {}
             Cmd::Quit => {
-                self.running = false;
-                if let Some(ref mut strategy) = self.tick_strategy {
-                    strategy.shutdown();
-                }
+                self.shutdown();
             }
             Cmd::Msg(m) => {
                 return Some(self.model.update(m));
@@ -870,12 +895,20 @@ impl<M: Model> StepProgram<M> {
                 features.mouse_capture = enabled;
                 let _ = self.backend.events_mut().set_features(features);
             }
-            Cmd::SetClipboard(text) => self
-                .clipboard_requests
-                .push(ftui_runtime::program::ClipboardRequest::Set(text)),
-            Cmd::GetClipboard => self
-                .clipboard_requests
-                .push(ftui_runtime::program::ClipboardRequest::Get),
+            Cmd::SetClipboard(text) => {
+                if self.clipboard_requests.len() >= MAX_CLIPBOARD_REQUESTS {
+                    self.clipboard_requests.remove(0);
+                }
+                self.clipboard_requests
+                    .push(ftui_runtime::program::ClipboardRequest::Set(text));
+            }
+            Cmd::GetClipboard => {
+                if self.clipboard_requests.len() >= MAX_CLIPBOARD_REQUESTS {
+                    self.clipboard_requests.remove(0);
+                }
+                self.clipboard_requests
+                    .push(ftui_runtime::program::ClipboardRequest::Get);
+            }
             Cmd::SaveState => {
                 if let Some(ref registry) = self.state_registry
                     && let Err(error) = registry.flush()
@@ -1946,5 +1979,51 @@ mod tests {
         prog.step().unwrap();
         assert_eq!(prog.model().active_ticks, vec![1, 2]);
         assert_eq!(prog.model().bg_ticks, vec![2]);
+    }
+
+    #[test]
+    fn shutdown_invokes_on_shutdown_once_and_clipboard_queue_is_bounded() {
+        struct ShutdownModel {
+            shutdown_calls: usize,
+        }
+        impl Model for ShutdownModel {
+            type Message = Event;
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    Event::Key(k) if k.code == KeyCode::Char('q') => Cmd::quit(),
+                    Event::Key(k) if k.code == KeyCode::Char('c') => Cmd::set_clipboard("clip"),
+                    _ => Cmd::none(),
+                }
+            }
+            fn view(&self, _frame: &mut Frame) {}
+            fn on_shutdown(&mut self) -> Cmd<Self::Message> {
+                self.shutdown_calls += 1;
+                Cmd::log("shutdown-cleanup-ran")
+            }
+        }
+
+        let mut prog = StepProgram::new(ShutdownModel { shutdown_calls: 0 }, 20, 5);
+        prog.init().unwrap();
+        for i in 0..80 {
+            prog.execute_cmd(Cmd::set_clipboard(format!("clip-{i}")));
+        }
+        let reqs = prog.take_clipboard_requests();
+        assert_eq!(reqs.len(), MAX_CLIPBOARD_REQUESTS);
+
+        // Cmd::Quit triggers on_shutdown once and executes its cleanup command;
+        // explicit shutdown() afterwards is idempotent.
+        prog.execute_cmd(Cmd::quit());
+        assert!(!prog.is_running());
+        assert_eq!(prog.model().shutdown_calls, 1);
+        assert!(
+            prog.outputs()
+                .logs
+                .iter()
+                .any(|line| line.contains("shutdown-cleanup-ran")),
+            "expected on_shutdown cleanup command to execute, logs={:?}",
+            prog.outputs().logs
+        );
+        prog.shutdown();
+        assert_eq!(prog.model().shutdown_calls, 1);
     }
 }

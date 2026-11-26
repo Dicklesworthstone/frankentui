@@ -1,4 +1,53 @@
-# FrankenTUI Reality Check and Bridge Plan (updated 2026-10-14)
+# FrankenTUI Reality Check and Bridge Plan (updated 2026-11-25)
+
+## Current assessment: 2026-11-25, post-v0.11.0 (delta from `354f39cd`)
+
+### Verdict
+
+End-to-end reality-check audit and execution pass across the 21-crate workspace (`ftui` v0.11.0 + `354f39cd`), closing a high-impact batch of soundness bugs, unconnected wiring, flaky tests, doc/gate drifts, and 13 verified Beads issues (while honestly leaving unexecuted host-dependent items open):
+
+1. **Kernel & runtime soundness fixes:**
+   - **Buffer dirty-witness soundness (`crates/ftui-render/src/buffer.rs`)**: Removed the unsound `|| base_gen == 0` bypass in `is_dirty_witness_valid_for` and `collect_dirty_witness_for` so a freshly constructed empty buffer with `clear_dirty()` (`dirty_baseline_gen == Some(0)`) can no longer claim dirty-witness validity against a non-empty `old` buffer (`mutation_gen > 0`) and skip erasing stale rows. Covered by `fresh_empty_buffer_clear_dirty_against_non_empty_old_falls_back_to_full` and `stale_zero_gen_buffer_falls_back_and_erases_previous_cells`.
+   - **Top-anchored inline width clamp (`bd-ojjqa`, `crates/ftui-core/src/inline_mode.rs`)**: `sanitize_overlay_log_line` now strips clusters containing any control scalar and bounds `grapheme_width(g).max(scalar_width_sum(g))`, preventing Prepend clusters (`U+0600 + ' '`) and ZWJ/modifier emoji from wrapping on scalar-advancing terminals and scrolling the top UI row. Verified at `PROPTEST_CASES=20000` (`21/21` in `530.67s`) with regression seed persisted.
+   - **Post-resize no-region log erase, `AltScreen` transitions, DECSTBM wrap & one-writer locking (`bd-vssk7`, `crates/ftui-runtime/src/terminal_writer.rs`, `crates/ftui-core/src/terminal_session.rs`)**:
+     - Added `resized_without_frame` so standalone post-resize flushes (`repaint == true`) and `set_screen_mode(AltScreen)` (`without_ui == true`) stream via the no-UI path without `ESC [ J` over unowned reflowed rows, while post-resize `present_ui_owned` (`repaint == false`) still erases stale UI rows before scrolling so old widget rows cannot duplicate into scrollback.
+     - Fixed `set_screen_mode(AltScreen)` to deliver held lines even when a full-screen inline UI was displayed, and updated `INLINE_ACTIVE_WIDGETS` across `Inline <-> AltScreen` transitions (preventing `AtomicU32` underflow/leak).
+     - Fixed `advance_decstbm_col` deferred-wrap tracking (`decstbm_row_occupied = true` on exact-width partial write) and honored `decstbm_row_occupied` for both anchors.
+     - Acquired `terminal_output_lock()` across `TerminalSession` stdout setup/cursor/mouse/flush paths and `TerminalWriter` scroll-region deactivation paths.
+   - **Frame budget floor, zero-target NaN guard, idle leak & double `EvidenceSink` (`bd-9gb22`, `crates/ftui-render/src/budget.rs`, `crates/ftui-runtime/src/program.rs`)**:
+     - Added `degradation_floor` to `RenderBudget` (wired from `LoadGovernorConfig::budget_controller.degradation_floor`) and switched the governor-off `render_frame` path to `degrade_respecting_floor()`, preventing slow `view()` calls from blanking `Paragraph` content at `Skeleton`/`SkipFrame`.
+     - Guarded `PidState::update` / `BudgetController::update` against `Duration::ZERO` (`target_ms <= 0.0`) NaN poisoning; prevented frame-1 startup wall-time and emergency-drop elapsed time from leaking into PID/e-process telemetry; eliminated double `EvidenceSink` opening in `with_native_backend`; fixed `RolloutPolicy::Shadow` rustdocs.
+   - **Facade & runtime feature forwarding (`bd-ae9rh`, `crates/ftui/Cargo.toml`, `crates/ftui-runtime/Cargo.toml`)**: Forwarded `experimental` to `ftui-runtime`, `ftui-render`, `ftui-layout`, and `ftui-widgets`, and forwarded `ftui-runtime`'s `tracing`/`telemetry` features to `ftui-core` and `ftui-render`. (`cargo test -p ftui --all-features --test readme_snippets`: `27/27` pass.)
+2. **High-impact wiring & accessibility / web lifecycle parity:**
+   - Wired `HoverStabilizer` into `TableState` (`with_hover_stabilizer`, `hover_stabilizer`, `MouseEventKind::Moved`) and fixed `Block`/`Table` degradation checks to read `frame.buffer.degradation`.
+   - Wired stateful, scissor-clipped accessibility tree emission into `Table` (`Table` + visible `TableRow` selection), `Tabs` (`Group` + per-tab `Tab` bounds & selection), `Scrollbar` (`value_min`/`value_max`/`value_now`/`value_text`), `VirtualizedList` (`List` + visible `ListItem` selection; fixed stale doc link), and `ConfirmDialog` (`Dialog` + Yes/No `Button`s).
+   - Bounded `StepProgram` clipboard queue (`MAX_CLIPBOARD_REQUESTS = 64`), added idempotent `StepProgram::shutdown()` invoking `model.on_shutdown()` and running its cleanup `Cmd`, and wired `ShowcaseRunner::destroy()` -> `RunnerCore::destroy()` without altering the pinned `#[wasm_bindgen]` ABI (`exports_match_contract_doc` passes).
+3. **Test reliability, gate correctness & documentation truth sync:**
+   - Fixed `bd-jwxgb` (9-sample median), `bd-5dlux` (5-round best p50/p99 + `test_time_scale()`), `bd-rti48` (median + max bounds), `bd-l7pds` (`RUNS = 400`), `bd-uf6om` & `bd-09vve` (`pty_capture` scaled timeouts + pre-spawned shell), `bd-b7fwm` (`gpu_parity_sanity_small_buffer` `#[ignore]` + loud `FTUI_REQUIRE_GPU=1` panic verified by unit test), `bd-7i7td` (`O(N)` `set(good)` in `test_inline_scrollback_mux.py`, 100k analysis in `0.142s`), and landed code fixes for `bd-271h1` & `bd-e6bdy` (kept open pending live `zellij` execution on a host with `zellij` installed).
+   - Fixed `scripts/ci/capture_tools_test.sh` ambient `/tmp/doctor_frankentui_ci` coupling (`7/7` pass) and `scripts/check_close_evidence.py --alerts` default `as_of` wall-clock UTC check (now surfaces 31-day stalled `.6.37`).
+   - Reconciled stale docs in `README.md`, `docs/ACCESSIBILITY.md`, `crates/ftui-a11y/src/lib.rs`, `docs/getting-started.md`, `docs/compat-matrix.md`, and `docs/planning/doctor-frankentui-feature-parity.md`.
+   - Answered `bd-d5lro`'s open question: reproduced the exact middle-of-stream drop (`missing: [497, 498, 499]`, `0` duplicates) on non-tmux `ftui-pty::VirtualTerminal` inside `plain_pty_flagship_journey_with_cpr`, pinpointing the asynchronous DECSTBM-vs-resize race (absolute UI/log CUP addressing + synchronous emulator DECSTBM reset prior to `SIGWINCH`).
+
+### Executed Verification Summary (2026-11-25)
+
+All Cargo compilation/test checks ran remotely through RCH (`RCH_QUEUE_WHEN_BUSY=1`, pinned `nightly-2026-08-31`):
+- `cargo fmt --all --check`: **pass**
+- `cargo check --workspace --all-targets` & `--features experimental`: **pass**
+- `cargo clippy --workspace --all-targets -- -D warnings` & `-p ftui-extras --features fx-gpu --all-targets -- -D warnings`: **pass (0 warnings)**
+- `cargo doc --workspace --no-deps` (`build.rustdocflags=["-D", "warnings"]`): **pass (0 warnings)**
+- `cargo test --doc` across all 8 modified crates (`ftui`, `ftui-core`, `ftui-render`, `ftui-runtime`, `ftui-widgets`, `ftui-extras`, `ftui-web`, `ftui-showcase-wasm`): **88 passed, 0 failed**
+- Targeted crate/integration suites: `ftui` `readme_snippets` (`--all-features`, `27/27`), `ftui` `agent_shell_plain_pty` (`5/5` passed, `1` ignored), `ftui-core` `inline_mode` (`31/31`), `ftui-render` `render_certificate` + `budget` (`244/244`), `ftui-runtime` (`--features telemetry`, `216/216` `terminal_writer` + `budget_slow_frames_liveness` + `reactive_bindings_e2e` + `telemetry`), `ftui-widgets` (`228/228`), `ftui-extras` (`--features forms,pty-capture,fx-gpu`, `33/33` + `1` ignored + `1/1` `--ignored` GPU parity in `0.60s` + `1/1` `FTUI_REQUIRE_GPU` panic test), `ftui-web` (`287/287`), `ftui-showcase-wasm` (`77/77`), `ftui-harness` `proptest_flicker_invariants` at `PROPTEST_CASES=20000` (`21/21` in `530.67s`).
+- Non-Cargo gates: `make gates` (`reachability`: 476 modules / 23 allowlisted; `claims`: 167 rows / 109 proven / 358 refs; `env-docs`; `close-audit`: 0 enforced failures; `baseline-benches`: 0 unresolved; `workflows`; `repo-facts`), `render_todo_bead_map.py --check`, `render_perf_readme.py --check`, `capture_tools_test.sh` (`7/7`), `check_close_evidence.py --self-test`, `showcase-host.test.mjs` (`6/6`): **all pass**.
+
+### Remaining Verified Gaps (Tracked in Open Beads)
+
+- **Host-dependent / external verification still unexecuted on this Linux host:** Windows `wlap` / native console (`.6.5`, `.6.6`, `.36.*`), live `zellij` execution for `bd-271h1` & `bd-e6bdy` (`zellij` not installed locally), OS screen-reader AT bridge (`.13.10`/`.13.11`), real browser visual/Playwright acceptance (`.29.5`/`.29.7`/`.29.8`/`.29.9`), and full 166/166 PTY E2E triage (`.6.17.*`, `.6.18`).
+- **Architectural & release/infra gaps filed or tracked:**
+  - `bd-d5lro`: DECSTBM asynchronous resize race (reproduced on non-tmux `VirtualTerminal`).
+  - Newly tracked in this wave: stale `frankentui.com/web` (`bd-6bx3o`, `v0.10.0` `9bd2760d` vs `v0.11.0`), `docs/perf/baseline_2026-10-19.md` / `render_perf_readme.py` provenance refresh after `opt-level = 3` (`bd-gy2jc`), live `Program` G49 `Buffer::reset_for_frame` 100%-dirty defeat (`bd-n1e59`), and `RCH_CARGO_WRAPPER_BYPASS=1` incompatibility with RCH shim v9 across `.config/dsr-quality.yaml` and verification scripts (`bd-o56er`).
+  - Owner-decision & deletion-gated items remain untouched under Rule 1 (`.49.3`, `bd-qicyr`, `bd-gqit2`, `bd-5h57k`).
+
+---
 
 ## Current assessment: 2026-10-14, at v0.9.0 (`3d570fea`, delta since `befbd247`)
 

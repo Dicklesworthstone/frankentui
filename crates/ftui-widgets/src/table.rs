@@ -7,6 +7,7 @@ use crate::{
 };
 use ftui_core::event::{MouseButton, MouseEvent, MouseEventKind};
 use ftui_core::geometry::{Rect, Size};
+use ftui_core::hover_stabilizer::{HoverStabilizer, HoverStabilizerConfig};
 use ftui_layout::{Constraint, Flex};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
@@ -522,6 +523,8 @@ pub struct TableState {
     pub selected: Option<usize>,
     /// Index of the currently hovered row, if any.
     pub hovered: Option<usize>,
+    /// Optional CUSUM hover stabilizer for jitter-resistant row hover.
+    hover_stabilizer: Option<HoverStabilizer>,
     /// Scroll offset (first visible row index).
     pub offset: usize,
     /// Optional persistence ID for state saving/restoration.
@@ -562,6 +565,24 @@ impl TableState {
     #[must_use = "use the persistence id (if any)"]
     pub fn persistence_id(&self) -> Option<&str> {
         self.persistence_id.as_deref()
+    }
+
+    /// Route hover through a CUSUM hover stabilizer
+    /// ([`ftui_core::hover_stabilizer`]) so one-cell pointer jitter across a
+    /// row boundary keeps the hovered row while a decisive move still
+    /// switches within a frame. Without it, `hovered` follows the raw hit
+    /// test on every mouse move.
+    #[must_use]
+    pub fn with_hover_stabilizer(mut self, config: HoverStabilizerConfig) -> Self {
+        self.hover_stabilizer = Some(HoverStabilizer::new(config));
+        self
+    }
+
+    /// The hover stabilizer, if one is attached (diagnostics such as
+    /// [`HoverStabilizer::switch_count`]).
+    #[must_use]
+    pub fn hover_stabilizer(&self) -> Option<&HoverStabilizer> {
+        self.hover_stabilizer.as_ref()
     }
 }
 
@@ -762,23 +783,27 @@ impl TableState {
                 MouseResult::Ignored
             }
             MouseEventKind::Moved => {
-                if let Some((id, HitRegion::Content, data)) = hit
-                    && id == expected_id
-                {
-                    let index = data as usize;
-                    if index < row_count {
-                        let changed = self.hovered != Some(index);
-                        self.hovered = Some(index);
-                        return if changed {
-                            MouseResult::HoverChanged
-                        } else {
-                            MouseResult::Ignored
-                        };
+                let hit_index = match hit {
+                    Some((id, HitRegion::Content, data))
+                        if id == expected_id && (data as usize) < row_count =>
+                    {
+                        Some(data as usize)
                     }
-                }
-                // Mouse moved off the widget or to non-content region
-                if self.hovered.is_some() {
-                    self.hovered = None;
+                    _ => None,
+                };
+                let next = match self.hover_stabilizer.as_mut() {
+                    Some(stabilizer) => stabilizer
+                        .update(
+                            hit_index.map(|index| index as u64),
+                            (event.x, event.y),
+                            web_time::Instant::now(),
+                        )
+                        .map(|target| target as usize),
+                    None => hit_index,
+                };
+                let changed = self.hovered != next;
+                self.hovered = next;
+                if changed {
                     MouseResult::HoverChanged
                 } else {
                     MouseResult::Ignored
@@ -831,15 +856,38 @@ impl<'a> StatefulWidget for Table<'a> {
             return;
         }
 
-        // After the emptiness check: nothing is drawn for an empty area, so a
-        // node for it describes a widget that was never on screen, and every
-        // such node collides on the id of the same empty rect
-        // (bd-a11y-sibling-id-collision-6zqd2).
-        if frame.a11y_enabled() {
-            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
-        }
+        let a11y_table_id = if frame.a11y_enabled() {
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if bounds.is_empty() {
+                None
+            } else {
+                let base_id = crate::a11y_node_id(area);
+                let title = self
+                    .block
+                    .as_ref()
+                    .and_then(|b| b.title_text())
+                    .unwrap_or_default();
+                let mut table_node = ftui_a11y::node::A11yNodeInfo::new(
+                    base_id,
+                    ftui_a11y::node::A11yRole::Table,
+                    bounds,
+                )
+                .with_description(format!(
+                    "{} rows, {} columns",
+                    self.rows.len(),
+                    self.widths.len()
+                ));
+                if !title.is_empty() {
+                    table_node = table_node.with_name(title);
+                }
+                frame.push_a11y(table_node);
+                Some(base_id)
+            }
+        } else {
+            None
+        };
 
-        let apply_styling = frame.degradation.apply_styling();
+        let apply_styling = frame.buffer.degradation.apply_styling();
         let theme = &self.theme;
         let effects_enabled = apply_styling && !theme.effects.is_empty();
         let has_column_effects = effects_enabled && theme_has_column_effects(theme);
@@ -1316,6 +1364,34 @@ impl<'a> StatefulWidget for Table<'a> {
                 frame.register_hit(row_area, id, HitRegion::Content, row_idx as u64);
             }
 
+            if let Some(parent_id) = a11y_table_id {
+                let row_bounds = row_area.intersection(&frame.buffer.current_scissor());
+                if !row_bounds.is_empty() {
+                    let row_label: String = row
+                        .cells
+                        .iter()
+                        .filter_map(|cell| {
+                            cell.lines()
+                                .first()
+                                .map(|line| line.to_plain_text())
+                                .filter(|text| !text.trim().is_empty())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    let mut row_node = ftui_a11y::node::A11yNodeInfo::new(
+                        parent_id.wrapping_add(1).wrapping_add(row_idx as u64),
+                        ftui_a11y::node::A11yRole::TableRow,
+                        row_bounds,
+                    )
+                    .with_parent(parent_id);
+                    if !row_label.is_empty() {
+                        row_node = row_node.with_name(row_label);
+                    }
+                    row_node.state.selected = is_selected;
+                    frame.push_a11y(row_node);
+                }
+            }
+
             rendered_rows = rendered_rows.saturating_add(1);
             y = y
                 .saturating_add(eff_height)
@@ -1373,7 +1449,7 @@ fn render_row(
     preset_id: Option<TablePresetId>,
     cell_padding: u16,
 ) {
-    let apply_styling = frame.degradation.apply_styling();
+    let apply_styling = frame.buffer.degradation.apply_styling();
     let row_effect_base = if apply_styling {
         if let Some((resolver, phase)) = effects {
             if !column_effects {
@@ -4160,5 +4236,75 @@ mod tests {
             arena.allocated_bytes() > 0,
             "expected Table::render to allocate scratch rects/indices from FrameArena"
         );
+    }
+
+    #[test]
+    fn table_hover_stabilizer_filters_boundary_jitter_and_switches_on_decisive_move() {
+        let mut state =
+            TableState::default().with_hover_stabilizer(HoverStabilizerConfig::default());
+        assert!(state.hover_stabilizer().is_some());
+        let id = HitId::new(7);
+
+        // First move onto row 0 sets hover immediately.
+        let r0 = state.handle_mouse(
+            &MouseEvent::new(MouseEventKind::Moved, 5, 1),
+            Some((id, HitRegion::Content, 0)),
+            id,
+            5,
+        );
+        assert_eq!(r0, MouseResult::HoverChanged);
+        assert_eq!(state.hovered, Some(0));
+
+        // 1-cell boundary jitter onto row 1 within hysteresis is damped.
+        let _ = state.handle_mouse(
+            &MouseEvent::new(MouseEventKind::Moved, 5, 2),
+            Some((id, HitRegion::Content, 1)),
+            id,
+            5,
+        );
+        assert_eq!(state.hovered, Some(0));
+
+        // Decisive move far onto row 3 switches immediately.
+        let r3 = state.handle_mouse(
+            &MouseEvent::new(MouseEventKind::Moved, 5, 10),
+            Some((id, HitRegion::Content, 3)),
+            id,
+            5,
+        );
+        assert_eq!(r3, MouseResult::HoverChanged);
+        assert_eq!(state.hovered, Some(3));
+    }
+
+    #[test]
+    fn table_emits_scoped_stateful_a11y_rows_with_selection() {
+        let rows = [Row::new(["Alpha", "10"]), Row::new(["Beta", "20"])];
+        let widths = [Constraint::Fixed(10), Constraint::Fixed(10)];
+        let table = Table::new(rows, widths).block(Block::bordered().title("Metrics"));
+        let mut state = TableState::default();
+        state.select(Some(1));
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 8, &mut pool);
+        let mut builder = ftui_a11y::tree::A11yTreeBuilder::new();
+        frame.set_a11y(&mut builder);
+        StatefulWidget::render(&table, Rect::new(0, 0, 30, 8), &mut frame, &mut state);
+        frame.finish_a11y();
+
+        let tree = builder.build();
+        let table_node = tree
+            .nodes()
+            .find(|n| n.role == ftui_a11y::node::A11yRole::Table)
+            .expect("Table a11y node");
+        assert_eq!(table_node.name.as_deref(), Some("Metrics"));
+        let mut row_nodes: Vec<_> = tree
+            .nodes()
+            .filter(|n| n.role == ftui_a11y::node::A11yRole::TableRow)
+            .collect();
+        row_nodes.sort_by_key(|n| n.bounds.y);
+        assert_eq!(row_nodes.len(), 2);
+        assert!(row_nodes.iter().all(|n| n.parent == Some(table_node.id)));
+        assert!(!row_nodes[0].state.selected);
+        assert!(row_nodes[1].state.selected);
+        assert_eq!(row_nodes[1].name.as_deref(), Some("Beta | 20"));
     }
 }

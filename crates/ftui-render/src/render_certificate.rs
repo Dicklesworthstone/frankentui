@@ -391,6 +391,45 @@ mod tests {
     }
 
     #[test]
+    fn fresh_empty_buffer_clear_dirty_against_non_empty_old_falls_back_to_full() {
+        // Soundness regression: a brand-new Buffer::new has mutation_gen == 0, so
+        // calling clear_dirty() gives dirty_baseline_gen == Some(0). Against an `old`
+        // buffer with mutations (old.mutation_gen > 0), that baseline does NOT match
+        // `old`, and certifying SkipAll/NarrowToDirty would silently fail to erase
+        // cells present in `old`.
+        let mut old = Buffer::new(16, 6);
+        old.set(3, 1, Cell::from_char('X'));
+        old.set(9, 4, Cell::from_char('Y'));
+        assert!(old.mutation_gen() > 0);
+
+        let mut new = Buffer::new(16, 6);
+        new.clear_dirty();
+        assert_eq!(new.dirty_baseline_gen(), Some(0));
+        assert!(!new.is_dirty_witness_valid_for(&old));
+
+        // Even with zero dirty rows, must fall back and erase both 'X' and 'Y'.
+        let cert_empty = evaluate_render_certificate_for_buffers(Some(&old), &new, false);
+        assert_eq!(cert_empty.level, RenderCertificateLevel::FullRequired);
+        assert!(cert_empty.fell_back);
+        assert_eq!(cert_empty.causes, vec!["dirty-row-witness-inconsistent"]);
+        let mut diff_empty = BufferDiff::new();
+        diff_empty.compute_certified_into(&old, &new, cert_empty.into_hint());
+        assert_eq!(diff_empty.changes(), &[(3, 1), (9, 4)]);
+
+        // Mutating row 1 only must still fall back and erase 'Y' on row 4.
+        new.set(3, 1, Cell::from_char('Z'));
+        let cert_sparse = evaluate_render_certificate_for_buffers(Some(&old), &new, false);
+        assert_eq!(cert_sparse.level, RenderCertificateLevel::FullRequired);
+        assert!(cert_sparse.fell_back);
+        let mut diff_sparse = BufferDiff::new();
+        diff_sparse.compute_certified_into(&old, &new, cert_sparse.into_hint());
+        let mut full = BufferDiff::new();
+        full.compute_into(&old, &new);
+        assert_eq!(diff_sparse.changes(), full.changes());
+        assert_eq!(diff_sparse.changes(), &[(3, 1), (9, 4)]);
+    }
+
+    #[test]
     fn evidence_json_is_stable_and_named() {
         let cert = evaluate_render_certificate(&inputs(2, 10), vec![3, 7]);
         let json = cert.to_evidence_json();

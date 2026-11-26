@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import pty
@@ -91,6 +92,16 @@ STATUS_HINT = re.compile(r"(Ctrl-C Interrupt|F5 Restart)\s*$")
 STATUS_COUNTS = re.compile(r"L:(\d+) B:\d+ E:\d+")
 DONE_MARKER = "__FTUI_E2E_DONE__"
 NUMBER_LINE = re.compile(r"^\s*(\d+)\s*$")
+
+
+def zellij_session_name(case: str, pid: int | None = None) -> str:
+    """Build a <=30-char zellij session name that stays unique after truncation (bd-271h1)."""
+    pid_str = str(os.getpid() if pid is None else pid)
+    digest = hashlib.sha256(case.encode("utf-8")).hexdigest()[:8]
+    slug = case.replace("_", "")
+    # Budget: 4 ("ftui") + len(pid_str) + len(slug_prefix) + 8 (digest) <= 30.
+    prefix_budget = max(0, 30 - 4 - len(pid_str) - len(digest))
+    return f"ftui{pid_str}{slug[:prefix_budget]}{digest}"[:30]
 # Per-run file names: outputs are retained, never deleted, and a later run in
 # the same directory must not mistake an earlier run's marker for its own.
 RUN_ID = f"{os.getpid()}-{int(time.time())}"
@@ -413,12 +424,13 @@ def analyse_journey_capture(
         and bytes_per_line <= JOURNEY_MAX_BYTES_PER_LINE,
         "keystroke_latency_bounded": bool(keystroke_latency.get("ok")),
     }
+    good_set = set(good)
     return {
         "storm": f"{storm_steps} resizes every {round(storm_interval_s * 1000)} ms",
         "lines": total_lines,
-        "found": len(set(good)),
-        "duplicates": len(good) - len(set(good)),
-        "missing": [n for n in range(1, total_lines + 1) if n not in set(good)][:10],
+        "found": len(good_set),
+        "duplicates": len(good) - len(good_set),
+        "missing": [n for n in range(1, total_lines + 1) if n not in good_set][:10],
         "ui_fragment_rows": len(fragments),
         "known_limitation": REFLOW_LIMITATION if reflow_expected else None,
         "wrong_payload": wrong[:5],
@@ -714,12 +726,17 @@ def run_zellij_journey(out: Path, agent: Path, timeout_s: float, storm_steps: in
         " ; ".join(f"{JOURNEY_PRINTF[k]} {k}" for k in (1, 2)) + f"; echo {DONE_MARKER}; sleep 1",
         60,
     )
+    # Tear down the control session before launching the journey session so
+    # zellij does not hold an extra background server or risk name collision
+    # (bd-271h1).
+    zj.stop()
+    zj.sessions.clear()
     visible = dict(JOURNEY_VISIBLE)
     for row in controls.splitlines():
         if (m := MIXED_LINE.match(row)) and m.group(1) in ("1", "2"):
             visible[int(m.group(1))] = m.group(2)
 
-    session = f"ftui{os.getpid()}{case.replace('_', '')}"[:30]
+    session = zellij_session_name(case)
     marker = out / f"zellij.{case}.{RUN_ID}.restarted"
     pid_file = out / f"zellij.{case}.{RUN_ID}.pid"
     raw = out / f"zellij.{case}.{RUN_ID}.raw"
@@ -790,7 +807,9 @@ def run_zellij_journey(out: Path, agent: Path, timeout_s: float, storm_steps: in
 
     try:
         await_screen("type now", timeout_s)
-        run(["zellij", "--session", session, "action", "write-chars", "hello\n"], env=zj.env)
+        # Send CR (13) rather than LF so agent_shell submits identically to tmux Enter (bd-e6bdy).
+        run(["zellij", "--session", session, "action", "write-chars", "hello"], env=zj.env)
+        run(["zellij", "--session", session, "action", "write", "13"], env=zj.env)
         sizes = storm_sizes or JOURNEY_STORM
         for step in range(storm_steps):
             width, height = sizes[step % len(sizes)]
@@ -1001,7 +1020,7 @@ class Zellij:
             run(["zellij", "kill-session", s], env=self.env, check=False)
 
     def capture(self, case: str, shell_cmd: str, timeout_s: float) -> str:
-        session = f"ftui{os.getpid()}{case.replace('_', '')}"[:30]
+        session = zellij_session_name(case)
         self.sessions.append(session)
         marker = self.out / f"{case}.{RUN_ID}.zellij.done"
         layout = self.out / f"{case}.{RUN_ID}.zellij.kdl"

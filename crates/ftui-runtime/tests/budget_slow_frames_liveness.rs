@@ -15,7 +15,9 @@
 
 use ftui_core::event::{Event, KeyCode, KeyEvent};
 use ftui_core::terminal_capabilities::TerminalCapabilities;
-use ftui_render::budget::FrameBudgetConfig;
+use ftui_render::budget::{
+    BudgetController, BudgetControllerConfig, DegradationLevel, FrameBudgetConfig,
+};
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_runtime::program::{Cmd, Model, Program, ProgramConfig};
@@ -297,6 +299,148 @@ fn strict_budget_presents_every_slow_frame() {
             run.shown.len() as u32 >= STEPS / 2,
             "{context}: too few states reached the screen: {:?}",
             run.shown
+        );
+    }
+}
+
+/// Model that records every degradation level passed into `view()` and mimics
+/// `Paragraph`'s `render_content()` guard (blanking at `Skeleton` / `SkipFrame`).
+struct DegradationObservingModel {
+    steps: u32,
+    observed_levels: Arc<Mutex<Vec<DegradationLevel>>>,
+}
+
+impl Model for DegradationObservingModel {
+    type Message = Msg;
+
+    fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+        match msg {
+            Msg::Step => {
+                self.steps += 1;
+                Cmd::none()
+            }
+            Msg::Quit => Cmd::quit(),
+        }
+    }
+
+    fn view(&self, frame: &mut Frame) {
+        std::thread::sleep(VIEW_COST);
+        let level = frame.buffer.degradation;
+        self.observed_levels
+            .lock()
+            .expect("levels lock")
+            .push(level);
+        if !level.render_content() {
+            return;
+        }
+        let text = format!("steps={:02}", self.steps);
+        for (idx, ch) in text.chars().enumerate() {
+            if (idx as u16) < frame.width() {
+                frame.buffer.set_raw(idx as u16, 0, Cell::from_char(ch));
+            }
+        }
+    }
+}
+
+/// Regression test for bd-9gb22 (GH #104, second point): under steadily slow
+/// `view()` frames, BOTH governor-on and governor-off configurations must hold
+/// at or above the configured degradation floor (`SimpleBorders` by default)
+/// so text content is never blanked at `Skeleton` and frames are not dropped at
+/// `SkipFrame`.
+#[test]
+fn bd_9gb22_slow_frames_respect_degradation_floor_with_and_without_governor() {
+    for governor in [true, false] {
+        let context = format!("bd-9gb22 default floor, governor={governor}");
+        let mut config = ProgramConfig::default()
+            .with_forced_size(WIDTH, HEIGHT)
+            .with_budget(FrameBudgetConfig::with_total(BUDGET));
+        config.screen_mode = ScreenMode::AltScreen;
+        config.poll_timeout = Duration::ZERO;
+        config.intercept_signals = false;
+        config = config.with_load_governor(if governor {
+            LoadGovernorConfig::enabled()
+        } else {
+            LoadGovernorConfig::disabled()
+        });
+
+        let features = BackendFeatures {
+            mouse_capture: config.resolved_mouse_capture(),
+            bracketed_paste: config.bracketed_paste,
+            focus_events: config.focus_reporting,
+            kitty_keyboard: config.kitty_keyboard,
+        };
+        let sink = FlushCapture::default();
+        let writer = TerminalWriter::with_diff_config(
+            sink.clone(),
+            config.screen_mode,
+            config.ui_anchor,
+            TerminalCapabilities::basic(),
+            config.diff_config.clone(),
+        );
+        let events = PacedSource {
+            features,
+            steps_left: STEPS,
+            quit_sent: false,
+            just_read: false,
+        };
+        let levels = Arc::new(Mutex::new(Vec::new()));
+        let mut program = Program::with_event_source(
+            DegradationObservingModel {
+                steps: 0,
+                observed_levels: Arc::clone(&levels),
+            },
+            events,
+            features,
+            TerminalPresenter::new(writer),
+            config,
+        )
+        .expect("headless program for bd-9gb22");
+        program.run().expect("run bd-9gb22 scenario");
+        assert_eq!(program.model().steps, STEPS, "{context}");
+        drop(program);
+
+        let recorded = levels.lock().expect("levels lock");
+        assert!(
+            recorded.len() as u32 >= STEPS,
+            "{context}: expected every step rendered without SkipFrame drops, got {} views",
+            recorded.len()
+        );
+        for (idx, &level) in recorded.iter().enumerate() {
+            assert!(
+                level <= DegradationLevel::SimpleBorders,
+                "{context}: view #{idx} degraded past SimpleBorders floor to {level:?} (all={recorded:?})"
+            );
+            assert!(
+                level.render_content(),
+                "{context}: view #{idx} lost render_content() at {level:?}"
+            );
+        }
+
+        let capture = sink.inner.lock().expect("capture lock");
+        let mut parser = vt100::Parser::new(nonzero(HEIGHT), nonzero(WIDTH), 0);
+        parser.process(&capture.bytes);
+        let final_row = parser.screen().rows(0, WIDTH).next().unwrap_or_default();
+        assert_eq!(
+            final_row.trim_end(),
+            format!("steps={STEPS:02}"),
+            "{context}: final rendered content went blank or stale"
+        );
+    }
+}
+
+#[test]
+fn zero_target_budget_controller_never_poisons_pid_with_nan() {
+    let cfg = BudgetControllerConfig {
+        target: Duration::ZERO,
+        ..BudgetControllerConfig::default()
+    };
+    let mut ctrl = BudgetController::new(cfg);
+    for _ in 0..20 {
+        let _ = ctrl.update(Duration::from_millis(5));
+        let pid = ctrl.telemetry().pid_output;
+        assert!(
+            pid.is_finite(),
+            "zero-target controller produced non-finite PID output: {pid}"
         );
     }
 }
