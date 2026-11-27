@@ -45,6 +45,7 @@ use ftui_core::input_parser::InputParser;
 use ftui_core::keybinding::{Action, ActionMapper, AppState};
 use ftui_core::terminal_session::{SessionOptions, TerminalSession};
 use ftui_extras::theme;
+use ftui_harness::asciicast::{AsciicastRecorder, RecordConfig};
 use ftui_harness::flicker_detection;
 use ftui_layout::{Constraint, Flex, Grid, GridArea};
 use ftui_render::cell::Cell;
@@ -2308,7 +2309,137 @@ fn run_writer_session(mode: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Convert a raw terminal output stream (file or stdin) into an asciicast v2
+/// recording using [`AsciicastRecorder`].
+fn record_asciicast_from_reader<R: Read, W: Write>(
+    mut reader: R,
+    writer: W,
+    config: RecordConfig,
+    chunk_bytes: usize,
+) -> io::Result<u64> {
+    let mut recorder = AsciicastRecorder::new(writer, config)?;
+    let mut buf = vec![0u8; chunk_bytes.max(1)];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        recorder.record_output(&buf[..n])?;
+    }
+    let events = recorder.event_count();
+    recorder.finish()?;
+    Ok(events)
+}
+
+fn try_run_record_cast_cli(args: &[String]) -> Option<io::Result<()>> {
+    let mut out_path: Option<PathBuf> = None;
+    let mut input_path: Option<PathBuf> = None;
+    let mut width: u16 = 80;
+    let mut height: u16 = 24;
+    let mut title: Option<String> = None;
+    let mut chunk_bytes: usize = 4096;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--record-cast" => {
+                i += 1;
+                let Some(val) = args.get(i) else {
+                    return Some(Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--record-cast requires an output path",
+                    )));
+                };
+                out_path = Some(PathBuf::from(val));
+            }
+            "--input" => {
+                i += 1;
+                let Some(val) = args.get(i) else {
+                    return Some(Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--input requires a file path",
+                    )));
+                };
+                input_path = Some(PathBuf::from(val));
+            }
+            "--width" => {
+                i += 1;
+                let parsed = args.get(i).and_then(|v| v.parse::<u16>().ok());
+                let Some(w) = parsed.filter(|&w| w > 0) else {
+                    return Some(Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--width requires a positive u16",
+                    )));
+                };
+                width = w;
+            }
+            "--height" => {
+                i += 1;
+                let parsed = args.get(i).and_then(|v| v.parse::<u16>().ok());
+                let Some(h) = parsed.filter(|&h| h > 0) else {
+                    return Some(Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--height requires a positive u16",
+                    )));
+                };
+                height = h;
+            }
+            "--title" => {
+                i += 1;
+                let Some(val) = args.get(i) else {
+                    return Some(Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--title requires a string",
+                    )));
+                };
+                title = Some(val.clone());
+            }
+            "--chunk-bytes" => {
+                i += 1;
+                let parsed = args.get(i).and_then(|v| v.parse::<usize>().ok());
+                let Some(sz) = parsed.filter(|&sz| sz > 0) else {
+                    return Some(Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--chunk-bytes requires a positive integer",
+                    )));
+                };
+                chunk_bytes = sz;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let out_path = out_path?;
+    let mut config = RecordConfig::new(width, height);
+    if let Some(t) = title {
+        config = config.with_title(t);
+    }
+
+    let result = (|| -> io::Result<()> {
+        let out_file = std::fs::File::create(&out_path)?;
+        let writer = io::BufWriter::new(out_file);
+        let events = if let Some(in_path) = input_path {
+            let in_file = std::fs::File::open(in_path)?;
+            record_asciicast_from_reader(in_file, writer, config, chunk_bytes)?
+        } else {
+            let stdin = io::stdin();
+            record_asciicast_from_reader(stdin.lock(), writer, config, chunk_bytes)?
+        };
+        eprintln!(
+            "asciicast recorded: events={events} output={}",
+            out_path.display()
+        );
+        Ok(())
+    })();
+    Some(result)
+}
+
 fn main() -> std::io::Result<()> {
+    let cli_args: Vec<String> = std::env::args().collect();
+    if let Some(res) = try_run_record_cast_cli(&cli_args) {
+        return res;
+    }
     if let Ok(mode) = std::env::var("FTUI_HARNESS_WRITER_SESSION") {
         return run_writer_session(&mode);
     }
@@ -2665,6 +2796,23 @@ mod tests {
             "{{\"event\":\"trace_header\",\"schema_version\":\"{}\"}}\n",
             ftui_runtime::RENDER_TRACE_SCHEMA_VERSION
         )
+    }
+
+    #[test]
+    fn record_cast_writes_valid_asciicast_v2_from_raw_stream() {
+        let raw = b"hello\x1b[32m world\x1b[0m\r\nline two\r\n";
+        let mut out = Vec::new();
+        let cfg = RecordConfig::new(80, 24).with_title("Harness Capture");
+        let events = record_asciicast_from_reader(&raw[..], &mut out, cfg, 16).unwrap();
+        assert_eq!(events, 2);
+
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "header + 2 chunked output events");
+        assert!(lines[0].starts_with("{\"version\":2,\"width\":80,\"height\":24,"));
+        assert!(lines[0].contains("\"title\":\"Harness Capture\""));
+        assert!(lines[1].contains("\"o\""));
+        assert!(lines[2].contains("line two"));
     }
 
     #[test]

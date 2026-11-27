@@ -55,9 +55,15 @@ use ftui_core::keybinding::{
     Chord, ContextId, Dispatch, KeyDispatcher, KeyMap, KeyMapConfig, Priority, SequenceConfig,
 };
 use ftui_core::with_panic_cleanup_suppressed;
+use ftui_extras::help::{Tooltip, TooltipConfig, TooltipPosition};
 #[cfg(feature = "screen-mermaid")]
 use ftui_extras::mermaid::MermaidConfig;
+use ftui_extras::sinkhorn_morph::{
+    Distribution as MorphDistribution, MorphConfig, MorphTag, TransportPlan, equalize_mass,
+    extract_distribution, interpolate_frame, render_frame_to_buffer, solve_transport,
+};
 use ftui_layout::{Constraint, Flex};
+use ftui_render::buffer::Buffer as RenderBuffer;
 use ftui_render::cell::Cell as RenderCell;
 use ftui_render::frame::{Frame, HitGrid, HitId};
 use ftui_runtime::render_trace::checksum_buffer;
@@ -368,6 +374,8 @@ const DRAG_THRESHOLD: u16 = 2;
 struct MouseDispatcher {
     /// Current hover target (None = no hit region under pointer).
     hover_hit: Option<HitId>,
+    /// Pointer coordinates of the current hover target (for contextual tooltips).
+    hover_pos: Option<(u16, u16)>,
     /// Current drag state machine phase.
     drag: DragPhase,
     /// Suppress the next matching MouseUp when we already activated a click on
@@ -379,6 +387,7 @@ impl Default for MouseDispatcher {
     fn default() -> Self {
         Self {
             hover_hit: None,
+            hover_pos: None,
             drag: DragPhase::Idle,
             suppress_next_up_button: None,
         }
@@ -390,10 +399,18 @@ impl MouseDispatcher {
     fn update_hover(&mut self, new_hit: Option<HitId>) -> bool {
         if self.hover_hit != new_hit {
             self.hover_hit = new_hit;
+            if new_hit.is_none() {
+                self.hover_pos = None;
+            }
             true
         } else {
             false
         }
+    }
+
+    /// Record pointer coordinates associated with the active hover hit.
+    fn set_hover_pos(&mut self, pos: Option<(u16, u16)>) {
+        self.hover_pos = pos;
     }
 
     /// Cancel any in-progress drag, returning to Idle.
@@ -2913,6 +2930,18 @@ fn default_app_keymap() -> (KeyMap<AppAction>, ContextId, ContextId) {
     (map, text_input_ctx, screen_owns_key_ctx)
 }
 
+/// Active Sinkhorn optimal-transport transition state between two screens.
+#[derive(Debug, Clone)]
+struct SinkhornTransitionState {
+    source: MorphDistribution,
+    target: MorphDistribution,
+    plan: TransportPlan,
+    step: u8,
+    total_steps: u8,
+    width: u16,
+    height: u16,
+}
+
 // ---------------------------------------------------------------------------
 // AppModel
 // ---------------------------------------------------------------------------
@@ -2949,6 +2978,14 @@ pub struct AppModel {
     pub debug_visible: bool,
     /// Widget boundary & hit-area debug overlay state (honors `FTUI_DEBUG_OVERLAY`).
     pub widget_debug: Arc<DebugOverlayState>,
+    /// Whether opt-in Sinkhorn optimal-transport morphing runs on screen switches.
+    pub sinkhorn_morph_enabled: bool,
+    /// Last screen captured for Sinkhorn morph transitions.
+    sinkhorn_last_screen: Cell<Option<ScreenId>>,
+    /// Downsampled previous content buffer snapshot when Sinkhorn morphing is active.
+    sinkhorn_last_buf: RefCell<Option<RenderBuffer>>,
+    /// Active Sinkhorn morph animation state, if any.
+    sinkhorn_transition: RefCell<Option<SinkhornTransitionState>>,
     /// Whether the performance HUD overlay is visible.
     pub perf_hud_visible: bool,
     /// Whether the explainability cockpit overlay is visible.
@@ -3064,6 +3101,10 @@ impl AppModel {
             help_visible: false,
             debug_visible: false,
             widget_debug: DebugOverlayState::new(),
+            sinkhorn_morph_enabled: false,
+            sinkhorn_last_screen: Cell::new(None),
+            sinkhorn_last_buf: RefCell::new(None),
+            sinkhorn_transition: RefCell::new(None),
             perf_hud_visible: false,
             evidence_ledger_visible: false,
             inline_mode: false,
@@ -3810,6 +3851,17 @@ impl AppModel {
                 .with_category("View"),
         );
         actions.push(
+            ActionItem::new(
+                "cmd:toggle_sinkhorn_morph",
+                "Toggle Sinkhorn Morph Transitions",
+            )
+            .with_description(
+                "Enable or disable optimal-transport character morphing on screen switches",
+            )
+            .with_tags(&["morph", "sinkhorn", "transition", "animation", "effects"])
+            .with_category("View"),
+        );
+        actions.push(
             ActionItem::new("cmd:toggle_perf_hud", "Toggle Performance HUD")
                 .with_description("Show or hide the performance metrics overlay")
                 .with_tags(&["performance", "hud", "fps", "metrics", "budget"])
@@ -4212,6 +4264,15 @@ impl AppModel {
                 self.record_tick_timing();
                 if !self.a11y.reduced_motion {
                     self.screens.tick(self.display_screen(), self.tick_count);
+                    if self.sinkhorn_morph_enabled {
+                        let mut slot = self.sinkhorn_transition.borrow_mut();
+                        if let Some(tr) = slot.as_mut() {
+                            tr.step = tr.step.saturating_add(1);
+                            if tr.step >= tr.total_steps {
+                                *slot = None;
+                            }
+                        }
+                    }
                 }
                 if let Some(event) = self.tour.advance(Duration::from_millis(tick_ms)) {
                     self.handle_tour_event(event);
@@ -4871,6 +4932,9 @@ impl Model for AppModel {
         if self.display_screen() == ScreenId::GuidedTour && !self.tour.is_active() {
             self.render_guided_tour_landing(frame, inner);
         }
+        if self.sinkhorn_morph_enabled {
+            self.apply_sinkhorn_morph(frame, inner);
+        }
 
         if self.tour.is_active()
             && let Some(state) = self.tour.overlay_state(inner, 6)
@@ -4952,6 +5016,16 @@ impl Model for AppModel {
             undo_description,
         };
         crate::chrome::render_status_bar(&status_state, frame, chunks[2]);
+
+        if !self.command_palette.is_visible()
+            && !self.help_visible
+            && let (Some(hit_id), Some((hx, hy))) = (
+                self.mouse_dispatcher.hover_hit,
+                self.mouse_dispatcher.hover_pos,
+            )
+        {
+            self.render_chrome_hover_tooltip(frame, area, chunks[0], chunks[2], hit_id, hx, hy);
+        }
 
         if self.widget_debug.enabled() {
             self.widget_debug
@@ -5321,6 +5395,8 @@ impl AppModel {
 
         // Update hover state (coalesced — only logs when target changes).
         let hover_changed = self.mouse_dispatcher.update_hover(hit_id);
+        self.mouse_dispatcher
+            .set_hover_pos(hit_id.map(|_| (mouse.x, mouse.y)));
         if hover_changed && matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
             emit_mouse_jsonl(mouse, hit_id, "hover_change", None, current);
         }
@@ -5882,6 +5958,24 @@ impl AppModel {
                             vec![("state".to_string(), state.to_string())],
                         );
                     }
+                    "cmd:toggle_sinkhorn_morph" => {
+                        self.sinkhorn_morph_enabled = !self.sinkhorn_morph_enabled;
+                        if !self.sinkhorn_morph_enabled {
+                            self.sinkhorn_last_screen.set(None);
+                            *self.sinkhorn_last_buf.borrow_mut() = None;
+                            *self.sinkhorn_transition.borrow_mut() = None;
+                        }
+                        let state = if self.sinkhorn_morph_enabled {
+                            "on"
+                        } else {
+                            "off"
+                        };
+                        self.screens.action_timeline.record_command_event(
+                            self.tick_count,
+                            "Toggle Sinkhorn morph transitions (palette)",
+                            vec![("state".to_string(), state.to_string())],
+                        );
+                    }
                     "cmd:toggle_perf_hud" => {
                         self.perf_hud_visible = !self.perf_hud_visible;
                         let state = if self.perf_hud_visible { "on" } else { "off" };
@@ -6436,6 +6530,146 @@ impl AppModel {
 
         // Register hit region so clicking dismisses the overlay (bd-iuvb.17.4).
         frame.register_hit_region(overlay_area, HitId::new(crate::chrome::OVERLAY_DEBUG));
+    }
+
+    /// Cap a Sinkhorn morph distribution to at most `max_cells` evenly strided
+    /// cells so optimal-transport solving stays well within a frame budget.
+    fn downsample_distribution(mut dist: MorphDistribution, max_cells: usize) -> MorphDistribution {
+        if dist.cells.len() > max_cells && max_cells > 0 {
+            let stride = dist.cells.len().div_ceil(max_cells);
+            dist.cells = dist
+                .cells
+                .into_iter()
+                .step_by(stride)
+                .take(max_cells)
+                .collect();
+            dist.mass = dist.cells.len();
+        }
+        dist
+    }
+
+    /// Apply opt-in Sinkhorn optimal-transport character morphing across screen switches.
+    fn apply_sinkhorn_morph(&self, frame: &mut Frame, inner: Rect) {
+        if self.a11y.reduced_motion || inner.is_empty() {
+            return;
+        }
+        let mut cur_buf = RenderBuffer::new(inner.width, inner.height);
+        for dy in 0..inner.height {
+            for dx in 0..inner.width {
+                if let Some(cell) = frame.buffer.get(inner.x + dx, inner.y + dy) {
+                    cur_buf.set_raw(dx, dy, *cell);
+                }
+            }
+        }
+
+        let current = self.display_screen();
+        let prev_screen = self.sinkhorn_last_screen.get();
+        if prev_screen.is_some_and(|prev| prev != current)
+            && let Some(prev_buf) = self.sinkhorn_last_buf.borrow().as_ref()
+            && prev_buf.width() == cur_buf.width()
+            && prev_buf.height() == cur_buf.height()
+        {
+            let tagger = |x: u16, y: u16, _cell: &RenderCell| {
+                MorphTag(u32::from(y / 8) * 16 + u32::from(x / 16))
+            };
+            let mut source =
+                Self::downsample_distribution(extract_distribution(prev_buf, &tagger), 48);
+            let mut target =
+                Self::downsample_distribution(extract_distribution(&cur_buf, &tagger), 48);
+            equalize_mass(&mut source, &mut target);
+            if source.mass > 0 {
+                let plan = solve_transport(&source, &target, &MorphConfig::default());
+                *self.sinkhorn_transition.borrow_mut() = Some(SinkhornTransitionState {
+                    source,
+                    target,
+                    plan,
+                    step: 1,
+                    total_steps: 6,
+                    width: inner.width,
+                    height: inner.height,
+                });
+            }
+        }
+
+        if let Some(tr) = self.sinkhorn_transition.borrow().as_ref()
+            && tr.width == inner.width
+            && tr.height == inner.height
+            && tr.step < tr.total_steps
+        {
+            let t = f64::from(tr.step) / f64::from(tr.total_steps);
+            let morph_frame = interpolate_frame(&tr.source, &tr.target, &tr.plan, t);
+            let morphed = render_frame_to_buffer(&morph_frame, tr.width, tr.height);
+            for dy in 0..inner.height {
+                for dx in 0..inner.width {
+                    if let Some(cell) = morphed.get(dx, dy)
+                        && !cell.content.is_empty()
+                    {
+                        frame.buffer.set_raw(inner.x + dx, inner.y + dy, *cell);
+                    }
+                }
+            }
+        } else {
+            self.sinkhorn_last_screen.set(Some(current));
+            *self.sinkhorn_last_buf.borrow_mut() = Some(cur_buf);
+        }
+    }
+
+    /// Render a floating contextual [`Tooltip`] when hovering over tab bar,
+    /// category, or status bar toggle chrome.
+    #[allow(clippy::too_many_arguments)]
+    fn render_chrome_hover_tooltip(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        tab_area: Rect,
+        status_area: Rect,
+        hit_id: HitId,
+        hx: u16,
+        hy: u16,
+    ) {
+        let (label, anchor, position) = match crate::chrome::classify_hit(hit_id) {
+            crate::chrome::HitLayer::Tab(screen) => {
+                let Some(meta) = screens::screen_registry().iter().find(|m| m.id == screen) else {
+                    return;
+                };
+                (
+                    format!("{} — {}", meta.title, meta.blurb),
+                    Rect::new(hx, tab_area.y, 1, tab_area.height.max(1)),
+                    TooltipPosition::Below,
+                )
+            }
+            crate::chrome::HitLayer::Category(cat) => (
+                format!("Category: {}", cat.label()),
+                Rect::new(hx, tab_area.y, 1, tab_area.height.max(1)),
+                TooltipPosition::Below,
+            ),
+            crate::chrome::HitLayer::StatusToggle(raw) => {
+                let hint = match raw {
+                    crate::chrome::STATUS_HELP_TOGGLE => "Toggle keyboard shortcuts help (?)",
+                    crate::chrome::STATUS_PALETTE_TOGGLE => "Open command palette (Ctrl+P)",
+                    crate::chrome::STATUS_A11Y_TOGGLE => "Toggle accessibility panel (Shift+A)",
+                    crate::chrome::STATUS_PERF_TOGGLE => "Toggle performance HUD (F2)",
+                    crate::chrome::STATUS_DEBUG_TOGGLE => "Toggle debug overlay (F12)",
+                    crate::chrome::STATUS_MOUSE_TOGGLE => "Toggle mouse capture mode",
+                    _ => return,
+                };
+                (
+                    hint.to_string(),
+                    Rect::new(hx, status_area.y.min(hy), 1, status_area.height.max(1)),
+                    TooltipPosition::Above,
+                )
+            }
+            _ => return,
+        };
+
+        let config = TooltipConfig::default()
+            .position(position)
+            .max_width(48)
+            .style(theme::help_overlay());
+        Tooltip::new(label)
+            .config(config)
+            .for_widget(anchor)
+            .render(area, frame);
     }
 
     /// Render the Explainability Cockpit overlay.
@@ -11008,6 +11242,75 @@ mod tests {
             on_text.contains("TabBar") && on_text.contains("StatusBar"),
             "widget debug overlay should render recorded chrome bounds:\n{on_text}"
         );
+    }
+
+    #[test]
+    fn chrome_hover_renders_contextual_tooltip() {
+        let mut app = AppModel::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 32, &mut pool);
+        // Prime hit grid by rendering once without hover.
+        app.view(&mut frame);
+
+        // Find any TabBar hit cell on row 0 and hover over it.
+        let mut tab_coord = None;
+        for x in 0..120u16 {
+            if let Some((hit_id, _, _)) = frame.hit_test(x, 0)
+                && let crate::chrome::HitLayer::Tab(screen) = crate::chrome::classify_hit(hit_id)
+            {
+                tab_coord = Some((x, screen));
+                break;
+            }
+        }
+        let (hx, hovered_screen) = tab_coord.expect("row 0 should contain at least one tab hit");
+        let meta = screens::screen_registry()
+            .iter()
+            .find(|m| m.id == hovered_screen)
+            .expect("hovered screen metadata");
+
+        let hover = Event::Mouse(MouseEvent::new(MouseEventKind::Moved, hx, 0));
+        let _ = app.update(AppMsg::from(hover));
+
+        let mut hovered_frame = Frame::new(120, 32, &mut pool);
+        app.view(&mut hovered_frame);
+        let rendered = frame_text(&hovered_frame);
+        assert!(
+            rendered.contains(meta.title),
+            "hovering tab {hovered_screen:?} should render tooltip with title {:?}:\n{rendered}",
+            meta.title
+        );
+    }
+
+    #[test]
+    fn sinkhorn_morph_transition_runs_transport_pipeline_when_enabled() {
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::Dashboard;
+        app.sinkhorn_morph_enabled = true;
+        let mut pool = GraphemePool::new();
+
+        // Frame 1 captures Dashboard baseline distribution.
+        let mut f1 = Frame::new(100, 30, &mut pool);
+        app.view(&mut f1);
+        assert!(app.sinkhorn_transition.borrow().is_none());
+
+        // Switching screen triggers Sinkhorn transport plan computation.
+        app.current_screen = ScreenId::WidgetGallery;
+        let mut f2 = Frame::new(100, 30, &mut pool);
+        app.view(&mut f2);
+        {
+            let tr = app.sinkhorn_transition.borrow();
+            let state = tr
+                .as_ref()
+                .expect("switching screens with Sinkhorn morph enabled should start transition");
+            assert!(!state.plan.assignments.is_empty());
+            assert_eq!(state.step, 1);
+        }
+
+        // Advancing ticks completes the transition cleanly.
+        for _ in 0..6 {
+            let _ = app.update(AppMsg::Tick);
+        }
+        assert!(app.sinkhorn_transition.borrow().is_none());
     }
 }
 

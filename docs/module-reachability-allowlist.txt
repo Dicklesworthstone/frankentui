@@ -69,9 +69,7 @@ ftui-widgets::choreography  # bd-gqit2
 # through (:835) - so the README's "Esc Esc goes through the SequenceDetector
 # window" is true, just not via this module. Merge or remove rather than wire.
 ftui-core::key_sequence  # bd-gqit2
-ftui-extras::help  # bd-gqit2
 ftui-extras::pty_capture  # bd-gqit2
-ftui-extras::sinkhorn_morph  # bd-gqit2
 ftui-layout::debug  # bd-gqit2
 # Unreachable by decision, not neglect: benchmarked 2026-09-18 at 4-19x slower
 # than Flex::split on the same constraints, so wiring it in would cost every
@@ -106,7 +104,6 @@ ftui-text::normalization  # bd-gqit2
 # answer differs for each, which is why one blanket question produced none.
 #
 # Engines — complete, tested analyzers with a callable API, waiting on a caller:
-ftui-harness::asciicast  # bd-5h57k
 ftui-harness::doctor_topology  # bd-5h57k
 ftui-harness::hotspot_extraction  # bd-5h57k
 ftui-harness::optimization_policy  # bd-5h57k

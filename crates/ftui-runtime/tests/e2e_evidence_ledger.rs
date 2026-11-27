@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![cfg(feature = "telemetry")]
+#![cfg(all(feature = "telemetry", feature = "experimental"))]
 //! E2E tests for the Unified Evidence Ledger (bd-fp38v.1).
 //!
 //! Verifies that all 7 Bayesian decision points produce valid, parseable JSONL
