@@ -1,5 +1,31 @@
 # FrankenTUI Reality Check and Bridge Plan (updated 2026-11-27)
 
+## Current assessment: 2026-11-27, Wave 3 post-v0.11.1 (delta from `abe4ab1a`)
+
+### Verdict
+
+Wave 3 closed the remaining locally actionable product, wiring, and performance-provenance gaps (`bd-b8isx`, `bd-gy2jc`), repaired a feature-gating test failure under `--features telemetry`, and wired three more finished modules into production surfaces (shrinking `docs/module-reachability-allowlist.txt` from `21 -> 18`, down 5 total across Waves 2–3):
+
+1. **Coherent UAX #9 visual-order bidi editing & caret affinity (`bd-b8isx` — CLOSED, `abf683df`):**
+   - `crates/ftui-text/src/cursor.rs`, `crates/ftui-text/src/editor.rs`, `crates/ftui-text/src/lib.rs`: added `CaretAffinity` (`Downstream`, `Upstream`), `CursorPosition.affinity`, public `VisualGrapheme` & `VisualLineLayout` (including `for_wrapped_slice` preserving enclosing UAX #9 paragraph direction and L1/L2 rules), bijective visual-slot navigation in `CursorNavigator::with_visual_bidi(true)` (preserving affinity across direction changes, keeping distinct stops around zero-width controls without loops, reaching trailing RTL logical ends, and snapping wide-cell hit-tests cleanly), and `Editor::with_visual_bidi` / `set_visual_bidi`.
+   - `crates/ftui-widgets/src/input.rs`, `crates/ftui-widgets/src/textarea.rs`, `crates/ftui-widgets/tests/textarea_edge_cases.rs`: added opt-in `with_visual_bidi(true)` to `TextInput` and `TextArea`, wiring visual-order rendering with original-byte selection & syntax highlighting, wrapped-slice visual navigation (Left/Right/Up/Down/Home/End), IME slot placement, visual scroll snapping, and mouse click/drag/word/line hit-testing. Updated `README.md`.
+   - **Verified:** `ftui-text` default & `--features bidi` (`162/162` cursor/editor tests), `ftui-widgets` default (`159/159`) & `--features bidi` (`163/163` + `77/77` `textarea_edge_cases`), workspace `fmt`/`check --features experimental`/`clippy -D warnings`/`rustdoc -D warnings`.
+2. **Telemetry test feature gate + high-value finished-code wiring (`dda73273`, allowlist `21 -> 18`):**
+   - `crates/ftui-runtime/tests/e2e_evidence_ledger.rs`: fixed `#![cfg(all(feature = "telemetry", feature = "experimental"))]` so `cargo clippy -p ftui-runtime --features telemetry --tests -- -D warnings` passes cleanly without forcing `experimental` (while `telemetry,experimental` also passes).
+   - Wired `ftui-harness::asciicast` into `ftui-harness` CLI via `--record-cast <out.cast> [--input <raw>] [--width N] [--height N] [--title STR] [--chunk-bytes N]` (`record_cast_writes_valid_asciicast_v2_from_raw_stream` passes).
+   - Wired `ftui-extras::help::Tooltip` onto `ftui-demo-showcase` chrome hover (TabBar/Category/StatusToggle; `chrome_hover_renders_contextual_tooltip` passes, default unhovered snapshots unchanged) and `ftui-extras::sinkhorn_morph` as an opt-in transition mode via Command Palette `"cmd:toggle_sinkhorn_morph"` (`sinkhorn_morph_transition_runs_transport_pipeline_when_enabled` passes).
+   - Removed `ftui-extras::help`, `ftui-extras::sinkhorn_morph`, and `ftui-harness::asciicast` from `docs/module-reachability-allowlist.txt` (`ALLOWLISTED=18`, `OK=266`, `FEATURE_GATED=42`).
+3. **`opt-level = 3` performance baseline & README provenance refresh (`bd-gy2jc` — CLOSED, `3984f55e`):**
+   - Compiled all 13 `tests/baseline.json` benchmarks plus `diff_paths_paired` with workspace `[profile.release]` (`opt-level = 3`, `lto = true`, `codegen-units = 1`, `panic = "abort"`) on pinned `rustc 1.100.0-nightly (908501772 2026-08-30)` (`nightly-2026-08-31`) and executed locally on AMD EPYC-Genoa Linux `x86_64` (run `20261127T102710-2160615`): **28/28 thresholds passing** (`80x24@5%` full pipeline `7.99 µs` vs `17.74 µs` at `opt-level="z"`, 80×24 sparse diff `967.8 ns`, presenter `6.59 µs`, cached width `16.0 ns`, Fenwick 100k scroll `6.95 ns`, command palette 1k scan `105.67 µs`, `169 B` ANSI, `0` ASCII / `3` Unicode steady-state heap allocs).
+   - Updated `scripts/render_perf_readme.py` (dynamic row count, `opt-level = 3` provenance, fresh 120×40 `diff_paths_paired` & full-scan numbers) and regenerated `docs/perf/baseline_2026-10-19.md`, `docs/perf/regression_report_2026-10-19.jsonl`, `docs/perf/README_BLOCK.sha256`, `docs/perf/README.md`, `README.md` (`<!-- perf:begin -->..<!-- perf:end -->` + FAQ), and `docs/claims-ledger.md` row N16.
+   - **Verified:** `./scripts/perf_gate_e2e.sh` (all 3 phases: 28/28 clean pass + JSONL schema, injected regression detection, and provenance + 13-case decision matrix), `render_perf_readme.py --self-test --check`, and `make gates` (all 7 green).
+
+### Remaining Open Beads (41 total — External-Host / Owner-Decision Bounded)
+
+All remaining locally actionable product/wiring/provenance gaps from the reality check are now closed. The remaining 41 open/in_progress beads require either external hosts/tooling not available locally (native macOS `mmini` / Windows `wlap` / live `zellij` / real browser WebGPU / `frankentui.com/web` deploy / native DSR `.config/dsr-quality.yaml` / `aarch64` zigbuild) or explicit owner decisions (`.49.3`, `bd-qicyr`, `bd-gqit2`, `bd-5h57k`).
+
+---
+
 ## Current assessment: 2026-11-27, Wave 2 post-v0.11.1 (delta from `ecd29210`)
 
 ### Verdict
