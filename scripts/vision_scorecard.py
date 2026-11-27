@@ -85,9 +85,27 @@ def pinned_toolchain(root: Path = ROOT) -> str:
     return str(data["toolchain"]["channel"])
 
 
+def cargo_bypass_supported(root: Path = ROOT) -> bool:
+    probe_env = dict(os.environ)
+    probe_env["RCH_CARGO_WRAPPER_BYPASS"] = "1"
+    proc = subprocess.run(
+        ["cargo", "-V"],
+        cwd=str(root),
+        env=probe_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
 def cargo_env(root: Path = ROOT) -> dict[str, str]:
     env = dict(os.environ)
-    env["RCH_CARGO_WRAPPER_BYPASS"] = "1"
+    if env.get("RCH_CARGO_WRAPPER_BYPASS") != "0" and cargo_bypass_supported(root):
+        env["RCH_CARGO_WRAPPER_BYPASS"] = "1"
+    else:
+        env.pop("RCH_CARGO_WRAPPER_BYPASS", None)
+        env.setdefault("RCH_QUEUE_WHEN_BUSY", "1")
     env["RUSTUP_TOOLCHAIN"] = pinned_toolchain(root)
     env["CARGO_BUILD_FINGERPRINT"] = "content"
     env["CARGO_CACHE_AUTO_CLEAN_FREQUENCY"] = "never"

@@ -228,7 +228,24 @@ empty_home = g43_root / "empty_cargo_home"
 empty_home.mkdir(parents=True, exist_ok=True)
 
 neg_env = dict(os.environ)
-neg_env["RCH_CARGO_WRAPPER_BYPASS"] = "1"
+probe_env = dict(neg_env)
+probe_env["RCH_CARGO_WRAPPER_BYPASS"] = "1"
+if (
+    neg_env.get("RCH_CARGO_WRAPPER_BYPASS") != "0"
+    and subprocess.run(
+        ["cargo", "-V"],
+        cwd=str(project_root),
+        env=probe_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode
+    == 0
+):
+    neg_env["RCH_CARGO_WRAPPER_BYPASS"] = "1"
+else:
+    neg_env.pop("RCH_CARGO_WRAPPER_BYPASS", None)
+    neg_env.setdefault("RCH_QUEUE_WHEN_BUSY", "1")
 
 for neg_name, neg_args, expected_substr in (
     (

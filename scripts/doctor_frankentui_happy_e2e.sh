@@ -666,7 +666,12 @@ raise SystemExit(0)
 PY
 }
 
-export RCH_CARGO_WRAPPER_BYPASS=1
+if [[ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ]] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then
+  export RCH_CARGO_WRAPPER_BYPASS=1
+else
+  unset RCH_CARGO_WRAPPER_BYPASS || true
+  export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"
+fi
 run_step vhs_smoke vhs_smoke_check
 run_step build_doctor cargo build -p doctor_frankentui
 

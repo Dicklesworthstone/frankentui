@@ -151,7 +151,7 @@ ensure_demo_bin() {
         return 0
     fi
     log_info "Building ftui-demo-showcase (debug)..." >&2
-    (cd "$PROJECT_ROOT" && cargo build -p ftui-demo-showcase >/dev/null)
+    (cd "$PROJECT_ROOT" && pty_run_cargo build -p ftui-demo-showcase >/dev/null)
     if [[ -x "$bin" ]]; then
         echo "$bin"
         return 0
@@ -231,13 +231,19 @@ vsearch_screen_load() {
     grep -a -q "Stats" "$assert_file" || return 1
 }
 
+# Wait for the Virtualized Search screen's first rendered frame before sending
+# keys so tcsetattr(TCSAFLUSH) / startup capability probes cannot discard input
+# on slower or loaded hosts (bd-g00-root-epic-ewths.6.17.6).
+VSEARCH_READY_MARKER="Virtualized Search"
+
 vsearch_focus_search() {
     LOG_FILE="$E2E_LOG_DIR/vsearch_focus_search.log"
     local output_file="$E2E_LOG_DIR/vsearch_focus_search.pty"
 
     PTY_COLS=120 \
     PTY_ROWS=40 \
-    PTY_SEND_DELAY_MS=200 \
+    PTY_SEND_AFTER_OUTPUT="$VSEARCH_READY_MARKER" \
+    PTY_SEND_DELAY_MS=100 \
     PTY_SEND="$SLASH" \
     PTY_CANONICALIZE=1 \
     PTY_CANONICALIZE_BIN="$CANON_BIN" \
@@ -245,8 +251,8 @@ vsearch_focus_search() {
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
     FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
-    FTUI_DEMO_EXIT_AFTER_MS=1200 \
-    PTY_TIMEOUT=4 \
+    FTUI_DEMO_EXIT_AFTER_MS=1600 \
+    PTY_TIMEOUT=5 \
         pty_run "$output_file" "$DEMO_BIN" || return 1
 
     local assert_file
@@ -264,7 +270,8 @@ vsearch_query() {
 
     PTY_COLS=120 \
     PTY_ROWS=40 \
-    PTY_SEND_DELAY_MS=200 \
+    PTY_SEND_AFTER_OUTPUT="$VSEARCH_READY_MARKER" \
+    PTY_SEND_DELAY_MS=100 \
     PTY_SEND="${SLASH}auth" \
     PTY_CANONICALIZE=1 \
     PTY_CANONICALIZE_BIN="$CANON_BIN" \
@@ -272,8 +279,8 @@ vsearch_query() {
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
     FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
-    FTUI_DEMO_EXIT_AFTER_MS=1400 \
-    PTY_TIMEOUT=4 \
+    FTUI_DEMO_EXIT_AFTER_MS=1800 \
+    PTY_TIMEOUT=5 \
         pty_run "$output_file" "$DEMO_BIN" || return 1
 
     local assert_file
@@ -291,7 +298,8 @@ vsearch_navigation() {
 
     PTY_COLS=120 \
     PTY_ROWS=40 \
-    PTY_SEND_DELAY_MS=150 \
+    PTY_SEND_AFTER_OUTPUT="$VSEARCH_READY_MARKER" \
+    PTY_SEND_DELAY_MS=100 \
     PTY_SEND="jjjj" \
     PTY_CANONICALIZE=1 \
     PTY_CANONICALIZE_BIN="$CANON_BIN" \
@@ -299,8 +307,8 @@ vsearch_navigation() {
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
     FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
-    FTUI_DEMO_EXIT_AFTER_MS=1400 \
-    PTY_TIMEOUT=4 \
+    FTUI_DEMO_EXIT_AFTER_MS=2200 \
+    PTY_TIMEOUT=5 \
         pty_run "$output_file" "$DEMO_BIN" || return 1
 
     local assert_file
@@ -317,7 +325,8 @@ vsearch_jump_bottom() {
 
     PTY_COLS=120 \
     PTY_ROWS=40 \
-    PTY_SEND_DELAY_MS=200 \
+    PTY_SEND_AFTER_OUTPUT="$VSEARCH_READY_MARKER" \
+    PTY_SEND_DELAY_MS=100 \
     PTY_SEND="G" \
     PTY_CANONICALIZE=1 \
     PTY_CANONICALIZE_BIN="$CANON_BIN" \
@@ -325,8 +334,8 @@ vsearch_jump_bottom() {
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
     FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
-    FTUI_DEMO_EXIT_AFTER_MS=1400 \
-    PTY_TIMEOUT=4 \
+    FTUI_DEMO_EXIT_AFTER_MS=1800 \
+    PTY_TIMEOUT=5 \
         pty_run "$output_file" "$DEMO_BIN" || return 1
 
     local assert_file
@@ -343,7 +352,8 @@ vsearch_variable_heights() {
 
     PTY_COLS=120 \
     PTY_ROWS=40 \
-    PTY_SEND_DELAY_MS=200 \
+    PTY_SEND_AFTER_OUTPUT="$VSEARCH_READY_MARKER" \
+    PTY_SEND_DELAY_MS=100 \
     PTY_SEND="${SLASH}payload_0" \
     PTY_CANONICALIZE=1 \
     PTY_CANONICALIZE_BIN="$CANON_BIN" \
@@ -351,8 +361,8 @@ vsearch_variable_heights() {
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
     FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
-    FTUI_DEMO_EXIT_AFTER_MS=1400 \
-    PTY_TIMEOUT=4 \
+    FTUI_DEMO_EXIT_AFTER_MS=2200 \
+    PTY_TIMEOUT=5 \
         pty_run "$output_file" "$DEMO_BIN" || return 1
 
     local assert_file
@@ -372,7 +382,8 @@ vsearch_scroll_position_after_jump() {
 
     PTY_COLS=120 \
     PTY_ROWS=40 \
-    PTY_SEND_DELAY_MS=200 \
+    PTY_SEND_AFTER_OUTPUT="$VSEARCH_READY_MARKER" \
+    PTY_SEND_DELAY_MS=100 \
     PTY_SEND="Gg${PGDN}${PGDN}${PGDN}" \
     PTY_CANONICALIZE=1 \
     PTY_CANONICALIZE_BIN="$CANON_BIN" \
@@ -381,8 +392,8 @@ vsearch_scroll_position_after_jump() {
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
     FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
-    FTUI_DEMO_EXIT_AFTER_MS=1600 \
-    PTY_TIMEOUT=4 \
+    FTUI_DEMO_EXIT_AFTER_MS=2000 \
+    PTY_TIMEOUT=5 \
         pty_run "$output_file" "$DEMO_BIN" || return 1
 
     local assert_file

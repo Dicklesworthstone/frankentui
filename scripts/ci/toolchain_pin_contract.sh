@@ -88,7 +88,17 @@ if [[ -n "${override_line}" && "${override_line}" != "${CHANNEL}" && "${override
 fi
 
 # 4. Verify the pinned toolchain is installed and matches active compiler/Cargo
-export RCH_CARGO_WRAPPER_BYPASS=1
+# Respect RCH shim v9 (which refuses RCH_CARGO_WRAPPER_BYPASS=1 when
+# RCH_REQUIRE_REMOTE is enabled) while keeping local bypass on hosts that permit it.
+if [[ -z "${RCH_CARGO_WRAPPER_BYPASS+x}" ]]; then
+    if RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then
+        export RCH_CARGO_WRAPPER_BYPASS=1
+    fi
+elif [[ "${RCH_CARGO_WRAPPER_BYPASS}" == "1" ]] && ! cargo -V >/dev/null 2>&1; then
+    if env -u RCH_CARGO_WRAPPER_BYPASS cargo -V >/dev/null 2>&1; then
+        unset RCH_CARGO_WRAPPER_BYPASS
+    fi
+fi
 if ! plus_rustc_vv="$(rustc +"${CHANNEL}" -vV 2>&1)"; then
     echo "pinned toolchain ${CHANNEL} is not installed on this host: ${plus_rustc_vv}" >&2
     exit 1

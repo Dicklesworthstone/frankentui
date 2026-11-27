@@ -1922,10 +1922,10 @@ if $RUN_AGENT_SHELL; then
     TARGET_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
     AGENT_SHELL_BIN="${AGENT_SHELL_BIN:-$TARGET_DIR/debug/examples/agent_shell}"
     if [[ ! -x "$AGENT_SHELL_BIN" ]]; then
-        (cd "$PROJECT_ROOT" && RCH_CARGO_WRAPPER_BYPASS=1 cargo build -q -p ftui --example agent_shell) || true
+        (cd "$PROJECT_ROOT" && pty_run_cargo build -q -p ftui --example agent_shell) || true
     fi
     if [[ ! -x "$TARGET_DIR/debug/pty_canonicalize" ]]; then
-        (cd "$PROJECT_ROOT" && RCH_CARGO_WRAPPER_BYPASS=1 cargo build -q -p ftui-pty --bin pty_canonicalize) || true
+        (cd "$PROJECT_ROOT" && pty_run_cargo build -q -p ftui-pty --bin pty_canonicalize) || true
     fi
 
     if [[ ! -x "$AGENT_SHELL_BIN" ]]; then

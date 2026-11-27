@@ -22,7 +22,12 @@ MISSING_RUNTIME_TOOLS=()
 FINALIZE_DISABLED=0
 
 export TMPDIR="${DOCTOR_E2E_TMPDIR:-${ROOT_DIR}/target/doctor_frankentui_ci/tmp}"
-export RCH_CARGO_WRAPPER_BYPASS=1
+if [[ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ]] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then
+  export RCH_CARGO_WRAPPER_BYPASS=1
+else
+  unset RCH_CARGO_WRAPPER_BYPASS || true
+  export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"
+fi
 mkdir -p "${CASES_DIR}" "${LOG_DIR}" "${META_DIR}" "${TMPDIR}"
 
 require_command() {

@@ -12,8 +12,12 @@ mkdir -p "$(dirname "${OUT_JSONL}")" "${TMPDIR}"
 
 START_NS="$(date +%s%N)"
 set +e
-RCH_CARGO_WRAPPER_BYPASS="${RCH_CARGO_WRAPPER_BYPASS:-1}" \
-  cargo test -p doctor_frankentui --all-targets
+if [[ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ]] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then
+  RCH_CARGO_WRAPPER_BYPASS=1 cargo test -p doctor_frankentui --all-targets
+else
+  env -u RCH_CARGO_WRAPPER_BYPASS RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}" \
+    cargo test -p doctor_frankentui --all-targets
+fi
 CARGO_EXIT=$?
 set -e
 END_NS="$(date +%s%N)"

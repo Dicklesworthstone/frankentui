@@ -86,7 +86,25 @@ cov_rustflags = sys.argv[3]
 objects_json_path = Path(sys.argv[4])
 
 env = os.environ.copy()
-env["RCH_CARGO_WRAPPER_BYPASS"] = "1"
+probe_env = env.copy()
+probe_env["RCH_CARGO_WRAPPER_BYPASS"] = "1"
+bypass_ok = (
+    env.get("RCH_CARGO_WRAPPER_BYPASS") != "0"
+    and subprocess.run(
+        ["cargo", "-V"],
+        cwd=root_dir,
+        env=probe_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode
+    == 0
+)
+if bypass_ok:
+    env["RCH_CARGO_WRAPPER_BYPASS"] = "1"
+else:
+    env.pop("RCH_CARGO_WRAPPER_BYPASS", None)
+    env.setdefault("RCH_QUEUE_WHEN_BUSY", "1")
 env["CARGO_TARGET_DIR"] = target_dir
 env["RUSTFLAGS"] = cov_rustflags
 env["DOCTOR_REAL_TOOL_INTEGRATION"] = "1"
@@ -132,12 +150,22 @@ print(f"[coverage] discovered {len(executables)} instrumented executables -> {ob
 PY
 
 echo "[coverage] executing doctor_frankentui unit + integration test suite with DOCTOR_REAL_TOOL_INTEGRATION=1"
-RCH_CARGO_WRAPPER_BYPASS=1 \
-  CARGO_TARGET_DIR="${COV_TARGET_DIR}" \
-  RUSTFLAGS="${COV_RUSTFLAGS}" \
-  DOCTOR_REAL_TOOL_INTEGRATION=1 \
-  LLVM_PROFILE_FILE="${PROFRAW_DIR}/doctor-%p-%m.profraw" \
-  cargo test -p doctor_frankentui --all-targets
+if [[ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ]] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then
+  RCH_CARGO_WRAPPER_BYPASS=1 \
+    CARGO_TARGET_DIR="${COV_TARGET_DIR}" \
+    RUSTFLAGS="${COV_RUSTFLAGS}" \
+    DOCTOR_REAL_TOOL_INTEGRATION=1 \
+    LLVM_PROFILE_FILE="${PROFRAW_DIR}/doctor-%p-%m.profraw" \
+    cargo test -p doctor_frankentui --all-targets
+else
+  env -u RCH_CARGO_WRAPPER_BYPASS \
+    RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}" \
+    CARGO_TARGET_DIR="${COV_TARGET_DIR}" \
+    RUSTFLAGS="${COV_RUSTFLAGS}" \
+    DOCTOR_REAL_TOOL_INTEGRATION=1 \
+    LLVM_PROFILE_FILE="${PROFRAW_DIR}/doctor-%p-%m.profraw" \
+    cargo test -p doctor_frankentui --all-targets
+fi
 
 echo "[coverage] merging profraw files and exporting branch+line+function coverage summary"
 python3 - "${LLVM_PROFDATA}" "${LLVM_COV}" "${PROFRAW_DIR}" "${PROFDATA_FILE}" "${OBJECTS_JSON}" "${ROOT_DIR}/crates/doctor_frankentui/src" "${SUMMARY_JSON}" <<'PY'

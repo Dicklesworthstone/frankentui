@@ -13,6 +13,14 @@ pty_timestamp() {
     date -Iseconds
 }
 
+pty_run_cargo() {
+    if [[ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ]] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then
+        RCH_CARGO_WRAPPER_BYPASS=1 cargo "$@"
+    else
+        env -u RCH_CARGO_WRAPPER_BYPASS RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}" cargo "$@"
+    fi
+}
+
 resolve_canonicalize_bin() {
     if [[ -n "${PTY_CANONICALIZE_BIN:-}" && -x "$PTY_CANONICALIZE_BIN" ]]; then
         echo "$PTY_CANONICALIZE_BIN"
@@ -21,7 +29,7 @@ resolve_canonicalize_bin() {
 
     local target_dir="${CARGO_TARGET_DIR:-}"
     if [[ -z "$target_dir" ]]; then
-        target_dir="$(cd "$PROJECT_ROOT" && RCH_CARGO_WRAPPER_BYPASS=1 cargo metadata --format-version=1 --no-deps 2>/dev/null | jq -er '.target_directory')" || target_dir="$PROJECT_ROOT/target"
+        target_dir="$(cd "$PROJECT_ROOT" && pty_run_cargo metadata --format-version=1 --no-deps 2>/dev/null | jq -er '.target_directory')" || target_dir="$PROJECT_ROOT/target"
     fi
     local debug_bin="$target_dir/debug/pty_canonicalize"
     local release_bin="$target_dir/release/pty_canonicalize"
@@ -46,7 +54,7 @@ resolve_canonicalize_bin() {
         return 1
     fi
 
-    (cd "$PROJECT_ROOT" && RCH_CARGO_WRAPPER_BYPASS=1 cargo build -q -p ftui-pty --bin pty_canonicalize) || return 1
+    (cd "$PROJECT_ROOT" && pty_run_cargo build -q -p ftui-pty --bin pty_canonicalize) || return 1
     PTY_CANONICALIZE_BUILT=1
 
     if [[ -x "$debug_bin" ]]; then

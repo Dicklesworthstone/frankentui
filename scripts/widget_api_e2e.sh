@@ -507,9 +507,16 @@ run_step "Building workspace" "$LOG_DIR/01_build.log" \
 # to be env-independent, so this is defense in depth.
 # Use the existing nextest timing-test reservations and 120-second per-test
 # timeout while preserving the library-only scope of this step.
+WIDGET_CARGO_ENV=()
+if [[ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ]] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then
+    WIDGET_CARGO_ENV=(RCH_CARGO_WRAPPER_BYPASS=1)
+else
+    WIDGET_CARGO_ENV=(-u RCH_CARGO_WRAPPER_BYPASS "RCH_QUEUE_WHEN_BUSY=${RCH_QUEUE_WHEN_BUSY:-1}")
+fi
+
 e2e_log_cargo_test_hermetic
 run_step "Running unit tests" "$LOG_DIR/02_tests.log" \
-    e2e_cargo_test_env_guard env RCH_CARGO_WRAPPER_BYPASS=1 cargo nextest run --workspace --lib \
+    e2e_cargo_test_env_guard env "${WIDGET_CARGO_ENV[@]}" cargo nextest run --workspace --lib \
         --profile default --no-fail-fast --test-threads=4
 
 # Step 3: Clippy
@@ -691,7 +698,7 @@ else
     snap_start_ms="$(e2e_now_ms)"
     jsonl_step_start "snapshot_tests"
     if [ -f "$PROJECT_ROOT/crates/ftui-harness/tests/widget_snapshots.rs" ]; then
-        if e2e_cargo_test_env_guard env RCH_CARGO_WRAPPER_BYPASS=1 cargo nextest run -p ftui-harness --test widget_snapshots \
+        if e2e_cargo_test_env_guard env "${WIDGET_CARGO_ENV[@]}" cargo nextest run -p ftui-harness --test widget_snapshots \
             --profile default --no-fail-fast --test-threads=4 > "$LOG_DIR/07_snapshots.log" 2>&1; then
             log_pass "Snapshot tests passed"
             PASS_COUNT=$((PASS_COUNT + 1))
@@ -802,11 +809,11 @@ widget_scenarios_jsonl="$LOG_DIR/09_widget_scenarios.jsonl"
     echo ""
 
     if e2e_cargo_test_env_guard env \
+        "${WIDGET_CARGO_ENV[@]}" \
         E2E_JSONL_FILE="$widget_scenarios_jsonl" \
         E2E_RUN_ID="${E2E_RUN_ID:-widget_api}" \
         E2E_SEED="$SEED" \
         E2E_TIMESTAMP="$(e2e_timestamp)" \
-        RCH_CARGO_WRAPPER_BYPASS=1 \
         cargo test -p ftui-harness --test widget_feature_scenarios -- --nocapture --test-threads=1; then
         echo "Integration test completed successfully."
     else

@@ -66,7 +66,7 @@ ensure_demo_bin() {
         return 0
     fi
     log_info "Building ftui-demo-showcase (debug)..." >&2
-    (cd "$PROJECT_ROOT" && cargo build -p ftui-demo-showcase >/dev/null)
+    (cd "$PROJECT_ROOT" && pty_run_cargo build -p ftui-demo-showcase >/dev/null)
     if [[ -x "$bin" ]]; then
         echo "$bin"
         return 0
@@ -76,8 +76,15 @@ ensure_demo_bin() {
 
 sha256_file() {
     local file="$1"
-    if command -v sha256sum >/dev/null 2>&1 && [[ -f "$file" ]]; then
+    if [[ ! -f "$file" ]]; then
+        echo ""
+        return 0
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$file" | awk '{print $1}'
+        return 0
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
         return 0
     fi
     echo ""
@@ -199,10 +206,15 @@ run_case() {
     local status="passed"
     local error=""
     local exit_code=0
+    local ready_marker=""
+    if [[ -n "$send_data" && "$scenario" == "bidi" ]]; then
+        ready_marker="Dir: LTR"
+    fi
     PTY_CANONICALIZE=1 \
     PTY_CANONICALIZE_ARGS="--quirk windows_no_alt_screen" \
     PTY_COLS="$cols" \
     PTY_ROWS="$rows" \
+    PTY_SEND_AFTER_OUTPUT="$ready_marker" \
     PTY_SEND="$send_data" \
     PTY_SEND_DELAY_MS="$send_delay_ms" \
     PTY_TIMEOUT=6 \
@@ -212,7 +224,7 @@ run_case() {
     FTUI_DEMO_SCREEN_MODE="$mode" \
     FTUI_DEMO_UI_HEIGHT="$ui_height" \
     FTUI_DEMO_SCREEN="$screen" \
-    FTUI_DEMO_EXIT_AFTER_MS=1600 \
+    FTUI_DEMO_EXIT_AFTER_MS=1800 \
         pty_run "$output_file" "$DEMO_BIN" || exit_code=$?
 
     if [[ "$exit_code" -ne 0 ]]; then
@@ -353,7 +365,7 @@ run_german_case() {
     local cols=80
     local rows=24
     local send_data="$DE_SEND"
-    local send_delay_ms=300
+    local send_delay_ms=100
     local start_ms end_ms duration_ms
 
     LOG_FILE="$E2E_LOG_DIR/${case_id}.log"
@@ -369,6 +381,7 @@ run_german_case() {
     PTY_CANONICALIZE_ARGS="--quirk windows_no_alt_screen" \
     PTY_COLS="$cols" \
     PTY_ROWS="$rows" \
+    PTY_SEND_AFTER_OUTPUT="Dir: LTR" \
     PTY_SEND="$send_data" \
     PTY_SEND_DELAY_MS="$send_delay_ms" \
     PTY_TIMEOUT=6 \
@@ -377,7 +390,7 @@ run_german_case() {
     FTUI_DEMO_TICK_MS="$E2E_TIME_STEP_MS" \
     FTUI_DEMO_SCREEN_MODE="$mode" \
     FTUI_DEMO_SCREEN="$screen" \
-    FTUI_DEMO_EXIT_AFTER_MS=1600 \
+    FTUI_DEMO_EXIT_AFTER_MS=1800 \
         pty_run "$output_file" "$DEMO_BIN" || exit_code=$?
 
     if [[ "$exit_code" -ne 0 ]]; then
@@ -463,7 +476,7 @@ run_identity_case() {
     local cols=80
     local rows=24
     local send_data="$BIDI_SEND"
-    local send_delay_ms=300
+    local send_delay_ms=100
     local start_ms end_ms duration_ms
 
     LOG_FILE="$E2E_LOG_DIR/${case_id}.log"
@@ -496,6 +509,7 @@ run_identity_case() {
         PTY_CANONICALIZE_ARGS="--quirk windows_no_alt_screen" \
         PTY_COLS="$cols" \
         PTY_ROWS="$rows" \
+        PTY_SEND_AFTER_OUTPUT="Dir: LTR" \
         PTY_SEND="$send_data" \
         PTY_SEND_DELAY_MS="$send_delay_ms" \
         PTY_TIMEOUT=6 \
@@ -504,7 +518,7 @@ run_identity_case() {
         FTUI_DEMO_TICK_MS="$E2E_TIME_STEP_MS" \
         FTUI_DEMO_SCREEN_MODE="$mode" \
         FTUI_DEMO_SCREEN="$screen" \
-        FTUI_DEMO_EXIT_AFTER_MS=1600 \
+        FTUI_DEMO_EXIT_AFTER_MS=1800 \
             pty_run "$output_file" "$DEMO_BIN"
     ) || exit_code=$?
 
@@ -641,7 +655,7 @@ for mode in "${modes[@]}"; do
     for size in "${sizes[@]}"; do
         cols="${size%x*}"
         rows="${size#*x}"
-        if ! run_case "bidi" "$BIDI_SCREEN" "$mode" "$cols" "$rows" "$BIDI_SEND" 300; then
+        if ! run_case "bidi" "$BIDI_SCREEN" "$mode" "$cols" "$rows" "$BIDI_SEND" 100; then
             overall_failures=$((overall_failures + 1))
         fi
         if ! run_case "voi" "$VOI_SCREEN" "$mode" "$cols" "$rows" "" 0; then

@@ -1,4 +1,41 @@
-# FrankenTUI Reality Check and Bridge Plan (updated 2026-11-25)
+# FrankenTUI Reality Check and Bridge Plan (updated 2026-11-27)
+
+## Current assessment: 2026-11-27, Wave 2 post-v0.11.1 (delta from `ecd29210`)
+
+### Verdict
+
+Wave 2 closed the three highest-leverage runtime/rendering/test-harness gaps surfaced in Wave 1 (`bd-n1e59`, `bd-d5lro`, `bd-l7pds`), wired two finished user-facing modules into `ftui-demo-showcase` (`ftui-extras::validation` and `ftui-widgets::debug_overlay`, shrinking `docs/module-reachability-allowlist.txt` from 23 -> 21), fixed RCH shim v9 `RCH_CARGO_WRAPPER_BYPASS=1` refusal across all 11 repo scripts (`bd-o56er`), and fixed the startup `tcsetattr(TCSAFLUSH)` early-input race across the macOS-failing PTY E2E suites (`.6.17.2`, `.6.17.6`):
+
+1. **G49 live-`Program` sparse reset & zero-clone certified diff (`bd-n1e59` — CLOSED):**
+   - Added per-row `occupied_spans` tracking and `Buffer::reset_for_frame_against(&mut self, prev: &Buffer)` (`crates/ftui-render/src/buffer.rs`) so reused/fresh `TerminalWriter::take_render_buffer` frames sparse-clear only previously written spans, seed dirty spans from `prev.occupied_spans`, and anchor `dirty_baseline_gen = Some(prev.mutation_gen)` instead of calling `clear() -> mark_all_dirty()`.
+   - Added borrowed `BufferDiff::compute_certified_with_certificate_into` (`crates/ftui-render/src/diff.rs`) and wired both into `crates/ftui-runtime/src/terminal_writer.rs` (eliminating `dirty_rows` cloning on the hot frame-presentation path).
+   - **Same-invocation paired measurement (`reset_for_frame_against_paired_live_loop_measurement`, 120x40 x 60 sparse frames):** incumbent `reset_for_frame` + full diff touched `2,400` dirty rows / `288,000` scanned cells in `6.71 ms` (`111.8 us/frame`); candidate `reset_for_frame_against` + borrowed certified narrow diff touched `120` dirty rows (**20x reduction**) / `2,520` scanned cells (**114.3x reduction**) in `1.92 ms` (`32.0 us/frame`, **3.50x faster**) with byte-for-byte identical diff changes. Verified with `138/138` `ftui-render` buffer/certificate/diff tests and live-loop `NarrowToDirty`/`SkipAll` tests.
+2. **Inline DECSTBM scroll-region resize-storm fix (`bd-d5lro` — CLOSED):**
+   - Enabled `bottom_addressed()` (`cup_from_bottom`) for all bottom-anchored inline strategies (`OverlayRedraw | ScrollRegion | Hybrid`) and updated `position_cursor_for_log` to address `log_row` from bottom (verified on real `tmux 3.6`: `CUP(9999, 1) + CUU(k)` lands on exact target rows under active DECSTBM `1..7`), eliminating pre-SIGWINCH absolute-CUP overwrites on height growth.
+   - Added `BackendPresenter::scroll_region_active(&self) -> bool` (`crates/ftui-backend/src/lib.rs`, implemented in `crates/ftui-runtime/src/terminal_presenter.rs`) and `Program::sync_live_size_if_scroll_region_active()` (`crates/ftui-runtime/src/program.rs`) to reconcile live TTY dimensions before `Cmd::Log` and `present_ui_owned` whenever DECSTBM is active (zero overhead once in `OverlayRedraw`).
+   - **Verified 10/10 on real `tmux 3.6`** (`flagship_journey_scroll_region`, 10,000 lines x 10 = 100,000 lines, 50-resize storm, 6.1–6.6s/round, retained in `/tmp/ftui_bd_d5lro_tmux10_1795767274`) **and 10/10 on non-tmux `ftui-pty::VirtualTerminal`** (`plain_pty_flagship_journey_with_cpr` + `5/5` `agent_shell_plain_pty`). Updated the 0.10.0 `CHANGELOG.md` Known Issue.
+3. **Telemetry microbench calibration & 10x regression gate (`bd-l7pds` — CLOSED):**
+   - Added 16-iteration warmup, replaced unscaled 200us/400us debug budgets and preemption-flaky `p99` check with `FTUI_TEST_TIME_SCALE`-scaled tight `p50` budgets (`550ns`/`6,000ns` debug; `250ns`/`3,000ns` release) + generous `p95` guard (`100us`/`200us`), and added permanent `perf_telemetry_config_budget_catches_10x_regression` proving a 10x slowdown fails decisively. Passed at both `scale=1` and `scale=4`.
+4. **High-value finished-code wiring (`docs/module-reachability-allowlist.txt`: 23 -> 21):**
+   - Wired `ftui-extras::validation` (`Required`, `Email`, `Range`, `Url`, `Validator`) into `FormValidationDemo` (`crates/ftui-demo-showcase/src/screens/form_validation.rs`, `20/20` unit tests + all `form_validation_*` snapshots pass).
+   - Wired `ftui-widgets::debug_overlay` (`DebugOverlayState`, `DebugOverlay`, `WidgetDebugInfo`, honoring `FTUI_DEBUG_OVERLAY` and adding `"Toggle Widget Bounds Overlay"` palette action + hover tracking) into `AppModel` (`crates/ftui-demo-showcase/src/app.rs`, `widget_debug_overlay_renders_bounds_when_enabled` + `app_debug_overlay_120x40` snapshot pass).
+5. **RCH shim v9 compatibility (`bd-o56er` — 11/11 repo scripts fixed; `.config/dsr-quality.yaml` coordinated with `.6.24`/`.6.37`):**
+   - Replaced hardcoded `RCH_CARGO_WRAPPER_BYPASS=1` across `scripts/ci/toolchain_pin_contract.sh`, `scripts/vision_scorecard.py`, `tests/e2e/lib/pty.sh`, `scripts/e2e_test.sh`, `scripts/widget_api_e2e.sh`, `scripts/cross_platform_e2e.sh`, `scripts/release_preflight_test.sh`, and `scripts/doctor_frankentui_{core_time_budget,happy_e2e,failure_e2e,coverage}.sh` with a self-probing check that preserves local bypass on native/pre-v9 DSR hosts while unsetting bypass and falling through cleanly to RCH on shim v9 (`RCH_REQUIRE_REMOTE`). Verified live: `toolchain_pin_contract.sh`, `parse_toolchain_pin_test.sh` (18/18), `vision_scorecard.py --self-test`, and `bash -n` on all 11 scripts pass on this RCH shim v9 host.
+6. **PTY E2E startup readiness & macOS diagnosability (`.6.17.2`, `.6.17.6` — Linux live-verified, kept open pending native macOS confirmation):**
+   - Added `PTY_SEND_AFTER_OUTPUT` first-frame readiness (`' Command '`, `'Dir: LTR'`, `'Virtualized Search'`) across `tests/e2e/scripts/test_keybinding.sh`, `test_bidi_voi_overlay.sh`, and `test_virtualized_search.sh` so `tcsetattr(TCSAFLUSH)` and startup capability probes cannot discard early keystrokes on slower/debug macOS builds; added specific `CASE_FAIL_REASON` labels and full `.6.17.2` JSONL diagnostics (`send_delay_ms`, `esc_window_ms`, `identity`, `hash`) to `test_keybinding.sh`, and macOS `shasum -a 256` fallback to `test_bidi_voi_overlay.sh`.
+   - Verified live locally against freshly compiled binaries: `test_keybinding.sh` **8/8**, `test_virtualized_search.sh` **7/7**, `test_bidi_voi_overlay.sh` **12/12** (`0` failures).
+
+### Executed Verification Summary (2026-11-27 Wave 2)
+
+- `cargo fmt --all --check`: **pass**
+- `cargo check --workspace --all-targets` & `--features experimental`: **pass**
+- `cargo clippy --workspace --all-targets -- -D warnings`: **pass (0 warnings)**
+- `cargo doc --workspace --no-deps --config 'build.rustdocflags=["-D", "warnings"]'`: **pass (0 warnings)**
+- Unit/integration/snapshot suites: `ftui-render` (`138/138`), `ftui-runtime` (`--features telemetry`, `bd-n1e59` + `bd-d5lro` + `bd-l7pds` at `scale=1` & `scale=4` + 10x regression test), `ftui-demo-showcase` (`21/21` lib + `app_debug_overlay_120x40` & `form_validation` snapshots), `ftui` `agent_shell_plain_pty` (`5/5` + `10/10` `plain_pty_flagship_journey_with_cpr`).
+- Real PTY / mux E2E: `tmux 3.6` `flagship_journey_scroll_region` (`10/10` rounds, 100,000 lines), `test_keybinding.sh` (`8/8`), `test_virtualized_search.sh` (`7/7`), `test_bidi_voi_overlay.sh` (`12/12`).
+- Non-Cargo gates: `make gates` (`ALLOWLISTED=21`, `OK=266`, `FEATURE_GATED=39`, all 7 green), `toolchain_pin_contract.sh`, `parse_toolchain_pin_test.sh` (`18/18`), `vision_scorecard.py --self-test`, `render_todo_bead_map.py --check`, `render_perf_readme.py --check`.
+
+---
 
 ## Current assessment: 2026-11-25, post-v0.11.0 (delta from `354f39cd`)
 

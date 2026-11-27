@@ -113,20 +113,26 @@ log_json "env" "platform=$(uname -s) mode=$MODE term=${TERM:-unknown} shell=${SH
 
 if [[ "$MODE" == "windows-smoke" ]]; then
   TARGET_DIR="${CARGO_TARGET_DIR:-target}"
-  run_step "test_ftui_tty" env RCH_CARGO_WRAPPER_BYPASS=1 cargo test -p ftui-tty --lib
-  run_step "test_default_backend" env RCH_CARGO_WRAPPER_BYPASS=1 cargo test -p ftui --test default_backend
-  run_step "test_wt_session_caps" env RCH_CARGO_WRAPPER_BYPASS=1 cargo test -p ftui-core --lib wt_session_profile_matches_windows_doc
-  run_step "test_crossterm_key_map" env RCH_CARGO_WRAPPER_BYPASS=1 cargo test -p ftui-core --lib crossterm_key_event_maps_to_ftui_key
-  run_step "test_simulator_resize" env RCH_CARGO_WRAPPER_BYPASS=1 cargo test -p ftui-runtime --lib simulator_resize_reflows_view
-  run_step "test_exit_after_env" env RCH_CARGO_WRAPPER_BYPASS=1 cargo test -p ftui-runtime --lib exit_after_env_parses_ms_and_rejects_garbage
-  run_step "test_not_a_console" env RCH_CARGO_WRAPPER_BYPASS=1 cargo test -p ftui-runtime --lib with_config_reports_not_a_console_cleanly
-  if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
-    run_step "win_gnu_clippy" env RCH_CARGO_WRAPPER_BYPASS=1 cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
-    run_step "win_gnu_runtime_native_feature" env RCH_CARGO_WRAPPER_BYPASS=1 cargo check -p ftui-runtime --features native-backend --target x86_64-pc-windows-gnu
-    run_step "win_gnu_tests_no_run" env RCH_CARGO_WRAPPER_BYPASS=1 cargo test -p ftui-tty -p ftui --test default_backend --target x86_64-pc-windows-gnu --no-run
-    run_step "win_gnu_examples" env RCH_CARGO_WRAPPER_BYPASS=1 cargo build -p ftui --examples --target x86_64-pc-windows-gnu
+  CARGO_PREFIX=()
+  if [[ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ]] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then
+    CARGO_PREFIX=(env RCH_CARGO_WRAPPER_BYPASS=1)
+  else
+    CARGO_PREFIX=(env -u RCH_CARGO_WRAPPER_BYPASS "RCH_QUEUE_WHEN_BUSY=${RCH_QUEUE_WHEN_BUSY:-1}")
   fi
-  run_step "build_smoke_binaries" env RCH_CARGO_WRAPPER_BYPASS=1 cargo build -p ftui --example minimal_inline --example agent_shell -p ftui-demo-showcase --bin ftui-demo-showcase
+  run_step "test_ftui_tty" "${CARGO_PREFIX[@]}" cargo test -p ftui-tty --lib
+  run_step "test_default_backend" "${CARGO_PREFIX[@]}" cargo test -p ftui --test default_backend
+  run_step "test_wt_session_caps" "${CARGO_PREFIX[@]}" cargo test -p ftui-core --lib wt_session_profile_matches_windows_doc
+  run_step "test_crossterm_key_map" "${CARGO_PREFIX[@]}" cargo test -p ftui-core --lib crossterm_key_event_maps_to_ftui_key
+  run_step "test_simulator_resize" "${CARGO_PREFIX[@]}" cargo test -p ftui-runtime --lib simulator_resize_reflows_view
+  run_step "test_exit_after_env" "${CARGO_PREFIX[@]}" cargo test -p ftui-runtime --lib exit_after_env_parses_ms_and_rejects_garbage
+  run_step "test_not_a_console" "${CARGO_PREFIX[@]}" cargo test -p ftui-runtime --lib with_config_reports_not_a_console_cleanly
+  if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+    run_step "win_gnu_clippy" "${CARGO_PREFIX[@]}" cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+    run_step "win_gnu_runtime_native_feature" "${CARGO_PREFIX[@]}" cargo check -p ftui-runtime --features native-backend --target x86_64-pc-windows-gnu
+    run_step "win_gnu_tests_no_run" "${CARGO_PREFIX[@]}" cargo test -p ftui-tty -p ftui --test default_backend --target x86_64-pc-windows-gnu --no-run
+    run_step "win_gnu_examples" "${CARGO_PREFIX[@]}" cargo build -p ftui --examples --target x86_64-pc-windows-gnu
+  fi
+  run_step "build_smoke_binaries" "${CARGO_PREFIX[@]}" cargo build -p ftui --example minimal_inline --example agent_shell -p ftui-demo-showcase --bin ftui-demo-showcase
   run_step "smoke_minimal_inline" run_smoke_binary "minimal_inline" "$TARGET_DIR/debug/examples/minimal_inline"
   run_step "smoke_showcase" run_smoke_binary "ftui-demo-showcase" "$TARGET_DIR/debug/ftui-demo-showcase" --screen=1
   if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* || "${OS:-}" == "Windows_NT" ]]; then
