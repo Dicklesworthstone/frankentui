@@ -485,11 +485,7 @@ fn select_down_at_last_line() {
 fn set_cursor_position_clamps_line() {
     use ftui_text::CursorPosition;
     let mut ta = TextArea::new().with_text("abc\ndef");
-    ta.set_cursor_position(CursorPosition {
-        line: 100,
-        grapheme: 0,
-        visual_col: 0,
-    });
+    ta.set_cursor_position(CursorPosition::new(100, 0, 0));
     // Should clamp to valid range
     assert!(ta.cursor().line < ta.line_count());
 }
@@ -498,11 +494,7 @@ fn set_cursor_position_clamps_line() {
 fn set_cursor_position_clamps_column() {
     use ftui_text::CursorPosition;
     let mut ta = TextArea::new().with_text("abc");
-    ta.set_cursor_position(CursorPosition {
-        line: 0,
-        grapheme: 100,
-        visual_col: 100,
-    });
+    ta.set_cursor_position(CursorPosition::new(0, 100, 100));
     // Should be at or after end of line
     assert!(ta.cursor().grapheme <= 3);
 }

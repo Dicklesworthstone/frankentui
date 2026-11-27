@@ -134,7 +134,9 @@ impl TextMeasurement {
 }
 
 pub use cluster_map::{ClusterEntry, ClusterMap};
-pub use cursor::{CursorNavigator, CursorPosition};
+pub use cursor::{CaretAffinity, CursorNavigator, CursorPosition};
+#[cfg(feature = "bidi")]
+pub use cursor::{VisualGrapheme, VisualLineLayout};
 pub use editor::{Editor, Selection};
 pub use hyphenation::{
     HyphenBreakPoint, HyphenationDict, HyphenationPattern, PatternTrie, break_penalties,

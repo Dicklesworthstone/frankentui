@@ -10,6 +10,27 @@ use crate::wrap::{display_width, graphemes};
 use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Which side of a logical grapheme boundary the caret is visually attached to.
+///
+/// At a bidirectional run boundary, one logical grapheme boundary corresponds
+/// to two distinct display positions:
+/// - [`CaretAffinity::Upstream`] attaches to the trailing edge of the
+///   logically preceding grapheme (or the paragraph start at boundary `0`).
+/// - [`CaretAffinity::Downstream`] attaches to the leading edge of the
+///   logically following grapheme (or the paragraph end at boundary `len`).
+///
+/// On single-direction lines both affinities resolve to the same display column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaretAffinity {
+    /// Attached to the logically following grapheme (leading edge), or the
+    /// paragraph end at the end of a line.
+    #[default]
+    Downstream,
+    /// Attached to the logically preceding grapheme (trailing edge), or the
+    /// paragraph start at boundary `0`.
+    Upstream,
+}
+
 /// Logical + visual cursor position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CursorPosition {
@@ -19,17 +40,28 @@ pub struct CursorPosition {
     pub grapheme: usize,
     /// Visual column in cells (0-based).
     pub visual_col: usize,
+    /// Caret affinity at bidirectional direction changes.
+    pub affinity: CaretAffinity,
 }
 
 impl CursorPosition {
-    /// Create a cursor position with explicit fields.
+    /// Create a cursor position with explicit fields and default
+    /// ([`CaretAffinity::Downstream`]) affinity.
     #[must_use]
     pub const fn new(line: usize, grapheme: usize, visual_col: usize) -> Self {
         Self {
             line,
             grapheme,
             visual_col,
+            affinity: CaretAffinity::Downstream,
         }
+    }
+
+    /// Return this cursor position with an explicit [`CaretAffinity`].
+    #[must_use]
+    pub const fn with_affinity(mut self, affinity: CaretAffinity) -> Self {
+        self.affinity = affinity;
+        self
     }
 }
 
@@ -67,21 +99,25 @@ impl<'a> CursorNavigator<'a> {
     ///
     /// When enabled, on lines that contain RTL text:
     /// - `visual_col` is the cell column of the caret in UAX#9 visual order
-    ///   (resolved levels from [`crate::bidi::BidiSegment`], with every
-    ///   extended grapheme cluster kept whole and measured with its full
-    ///   display width);
+    ///   (via [`VisualLineLayout`], with every extended grapheme cluster kept
+    ///   whole and measured with its full display width);
+    /// - [`CaretAffinity`] tracks which side of a bidirectional run boundary
+    ///   the caret is visually attached to (`Upstream` = trailing edge of the
+    ///   preceding grapheme, `Downstream` = leading edge of the following
+    ///   grapheme);
     /// - [`move_left`](Self::move_left) / [`move_right`](Self::move_right)
-    ///   step to the next caret stop strictly to the left / right on screen,
-    ///   so repeated presses are monotonic and never loop;
+    ///   step one visual boundary slot strictly left / right on screen,
+    ///   keeping distinct stops around zero-width marks (such as RLM/LRM),
+    ///   reaching the logical end of trailing RTL runs, and round-tripping
+    ///   monotonically without loops;
     /// - [`line_start`](Self::line_start) / [`line_end`](Self::line_end) go to
-    ///   the leftmost / rightmost caret stop;
+    ///   the leftmost / rightmost display edge;
     /// - [`from_visual_col`](Self::from_visual_col) hit-tests against the
-    ///   visual layout.
+    ///   visual layout, snapping clicks inside wide clusters to their left
+    ///   edge.
     ///
-    /// Each logical position has a single canonical caret stop, so at a
-    /// direction change the caret does not remember which visual edge it
-    /// arrived from (no caret affinity). The widgets in `ftui-widgets` draw
-    /// editable text in logical order and therefore do not enable this.
+    /// Pair this with visual-order rendering (such as `TextArea::with_visual_bidi(true)`
+    /// or `TextInput::with_visual_bidi(true)` in `ftui-widgets`).
     #[cfg(feature = "bidi")]
     #[must_use]
     pub const fn with_visual_bidi(mut self, enabled: bool) -> Self {
@@ -98,7 +134,7 @@ impl<'a> CursorNavigator<'a> {
 
     /// Visual layout for `text` when visual bidi behavior applies to it.
     #[cfg(feature = "bidi")]
-    fn visual_layout(&self, text: &str) -> Option<VisualLineLayout> {
+    fn visual_layout<'t>(&self, text: &'t str) -> Option<VisualLineLayout<'t>> {
         if self.visual_bidi {
             VisualLineLayout::new(text)
         } else {
@@ -106,41 +142,65 @@ impl<'a> CursorNavigator<'a> {
         }
     }
 
-    fn visual_col_for_grapheme(&self, text: &str, grapheme_idx: usize) -> usize {
-        #[cfg(feature = "bidi")]
-        if let Some(layout) = self.visual_layout(text) {
-            return layout.visual_col(grapheme_idx);
-        }
-        visual_col_for_grapheme(text, grapheme_idx)
-    }
-
-    fn grapheme_index_at_visual_col(&self, text: &str, visual_col: usize) -> usize {
-        #[cfg(feature = "bidi")]
-        if let Some(layout) = self.visual_layout(text) {
-            return layout.grapheme_at_visual_col(visual_col);
-        }
-        grapheme_index_at_visual_col(text, visual_col)
-    }
-
-    /// Clamp an arbitrary position to valid ranges.
+    /// Clamp an arbitrary position to valid ranges, preserving [`CaretAffinity`]
+    /// on visual-bidi RTL lines.
     #[must_use]
     pub fn clamp(&self, pos: CursorPosition) -> CursorPosition {
         let line = clamp_line_index(self.rope, pos.line);
         let line_text = line_text(self.rope, line);
         let line_text = strip_trailing_newline(&line_text);
         let grapheme = pos.grapheme.min(grapheme_count(line_text));
-        let visual_col = self.visual_col_for_grapheme(line_text, grapheme);
+        #[cfg(feature = "bidi")]
+        if let Some(layout) = self.visual_layout(line_text) {
+            let visual_col = layout.visual_col(grapheme, pos.affinity);
+            return CursorPosition::new(line, grapheme, visual_col).with_affinity(pos.affinity);
+        }
+        let visual_col = visual_col_for_grapheme(line_text, grapheme);
         CursorPosition::new(line, grapheme, visual_col)
     }
 
-    /// Build a position from line + grapheme index.
+    /// Build a position from line + grapheme index using canonical affinity.
     #[must_use]
     pub fn from_line_grapheme(&self, line: usize, grapheme: usize) -> CursorPosition {
         let line = clamp_line_index(self.rope, line);
         let line_text = line_text(self.rope, line);
         let line_text = strip_trailing_newline(&line_text);
         let grapheme = grapheme.min(grapheme_count(line_text));
-        let visual_col = self.visual_col_for_grapheme(line_text, grapheme);
+        #[cfg(feature = "bidi")]
+        if let Some(layout) = self.visual_layout(line_text) {
+            let affinity = layout.canonical_affinity(grapheme);
+            let visual_col = layout.visual_col(grapheme, affinity);
+            return CursorPosition::new(line, grapheme, visual_col).with_affinity(affinity);
+        }
+        let visual_col = visual_col_for_grapheme(line_text, grapheme);
+        CursorPosition::new(line, grapheme, visual_col)
+    }
+
+    /// Build a position from line + grapheme index with an explicit [`CaretAffinity`].
+    ///
+    /// On visual-bidi lines containing RTL text, `affinity` selects which side
+    /// of a direction change the caret attaches to. In logical mode (or on
+    /// pure-LTR lines), both affinities map to the same display column and the
+    /// returned position uses [`CaretAffinity::Downstream`].
+    #[must_use]
+    pub fn from_line_grapheme_with_affinity(
+        &self,
+        line: usize,
+        grapheme: usize,
+        affinity: CaretAffinity,
+    ) -> CursorPosition {
+        let line = clamp_line_index(self.rope, line);
+        let line_text = line_text(self.rope, line);
+        let line_text = strip_trailing_newline(&line_text);
+        let grapheme = grapheme.min(grapheme_count(line_text));
+        #[cfg(feature = "bidi")]
+        if let Some(layout) = self.visual_layout(line_text) {
+            let visual_col = layout.visual_col(grapheme, affinity);
+            return CursorPosition::new(line, grapheme, visual_col).with_affinity(affinity);
+        }
+        #[cfg(not(feature = "bidi"))]
+        let _ = affinity;
+        let visual_col = visual_col_for_grapheme(line_text, grapheme);
         CursorPosition::new(line, grapheme, visual_col)
     }
 
@@ -150,8 +210,13 @@ impl<'a> CursorNavigator<'a> {
         let line = clamp_line_index(self.rope, line);
         let line_text = line_text(self.rope, line);
         let line_text = strip_trailing_newline(&line_text);
-        let grapheme = self.grapheme_index_at_visual_col(line_text, visual_col);
-        let visual_col = self.visual_col_for_grapheme(line_text, grapheme);
+        #[cfg(feature = "bidi")]
+        if let Some(layout) = self.visual_layout(line_text) {
+            let (grapheme, col, affinity) = layout.hit_test(visual_col);
+            return CursorPosition::new(line, grapheme, col).with_affinity(affinity);
+        }
+        let grapheme = grapheme_index_at_visual_col(line_text, visual_col);
+        let visual_col = visual_col_for_grapheme(line_text, grapheme);
         CursorPosition::new(line, grapheme, visual_col)
     }
 
@@ -167,7 +232,7 @@ impl<'a> CursorNavigator<'a> {
         line_start_byte.saturating_add(byte_offset)
     }
 
-    /// Convert a byte index into a cursor position.
+    /// Convert a byte index into a cursor position using canonical affinity.
     #[must_use]
     pub fn from_byte_index(&self, byte_idx: usize) -> CursorPosition {
         let (line, col_chars) = self.rope.byte_to_line_col(byte_idx);
@@ -178,12 +243,35 @@ impl<'a> CursorNavigator<'a> {
         self.from_line_grapheme(line, grapheme)
     }
 
+    /// Convert a byte index into a cursor position with an explicit [`CaretAffinity`].
+    #[must_use]
+    pub fn from_byte_index_with_affinity(
+        &self,
+        byte_idx: usize,
+        affinity: CaretAffinity,
+    ) -> CursorPosition {
+        let (line, col_chars) = self.rope.byte_to_line_col(byte_idx);
+        let line = clamp_line_index(self.rope, line);
+        let line_text = line_text(self.rope, line);
+        let line_text = strip_trailing_newline(&line_text);
+        let grapheme = grapheme_index_from_char_offset(line_text, col_chars);
+        self.from_line_grapheme_with_affinity(line, grapheme, affinity)
+    }
+
     /// Move cursor backward by one grapheme in logical document order (across line boundaries).
+    ///
+    /// On visual-bidi lines, stepping logically backward sets
+    /// [`CaretAffinity::Downstream`] so the caret remembers that it arrived at
+    /// the leading edge of the grapheme it stepped over.
     #[must_use]
     pub fn move_grapheme_backward(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
         if pos.grapheme > 0 {
-            return self.from_line_grapheme(pos.line, pos.grapheme - 1);
+            return self.from_line_grapheme_with_affinity(
+                pos.line,
+                pos.grapheme - 1,
+                CaretAffinity::Downstream,
+            );
         }
         if pos.line == 0 {
             return pos;
@@ -196,6 +284,10 @@ impl<'a> CursorNavigator<'a> {
     }
 
     /// Move cursor forward by one grapheme in logical document order (across line boundaries).
+    ///
+    /// On visual-bidi lines, stepping logically forward sets
+    /// [`CaretAffinity::Upstream`] so the caret remembers that it arrived at
+    /// the trailing edge of the grapheme it stepped over.
     #[must_use]
     pub fn move_grapheme_forward(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
@@ -203,7 +295,11 @@ impl<'a> CursorNavigator<'a> {
         let current_text = strip_trailing_newline(&raw);
         let line_end = grapheme_count(current_text);
         if pos.grapheme < line_end {
-            return self.from_line_grapheme(pos.line, pos.grapheme + 1);
+            return self.from_line_grapheme_with_affinity(
+                pos.line,
+                pos.grapheme + 1,
+                CaretAffinity::Upstream,
+            );
         }
         let last_line = last_line_index(self.rope);
         if pos.line >= last_line {
@@ -216,8 +312,9 @@ impl<'a> CursorNavigator<'a> {
     ///
     /// Moves backward in logical document order, unless visual bidi behavior
     /// was enabled with [`with_visual_bidi`](Self::with_visual_bidi) and the
-    /// line contains RTL text: then it moves to the next caret stop to the
-    /// left on screen, wrapping to the visual end of the previous line.
+    /// line contains RTL text: then it moves one visual boundary slot left on
+    /// screen from `(pos.grapheme, pos.affinity)`, wrapping to the visual end
+    /// of the previous line.
     #[must_use]
     pub fn move_left(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
@@ -225,12 +322,12 @@ impl<'a> CursorNavigator<'a> {
         if self.visual_bidi {
             let raw = line_text(self.rope, pos.line);
             let current_text = strip_trailing_newline(&raw);
-            let step = match VisualLineLayout::new(current_text) {
-                Some(layout) => layout.step_left(pos.grapheme),
-                None => pos.grapheme.checked_sub(1),
-            };
-            if let Some(next) = step {
-                return self.from_line_grapheme(pos.line, next);
+            if let Some(layout) = VisualLineLayout::new(current_text) {
+                if let Some((g, col, affinity)) = layout.step_left(pos.grapheme, pos.affinity) {
+                    return CursorPosition::new(pos.line, g, col).with_affinity(affinity);
+                }
+            } else if let Some(prev) = pos.grapheme.checked_sub(1) {
+                return self.from_line_grapheme(pos.line, prev);
             }
             if pos.line == 0 {
                 return pos;
@@ -245,8 +342,9 @@ impl<'a> CursorNavigator<'a> {
     ///
     /// Moves forward in logical document order, unless visual bidi behavior
     /// was enabled with [`with_visual_bidi`](Self::with_visual_bidi) and the
-    /// line contains RTL text: then it moves to the next caret stop to the
-    /// right on screen, wrapping to the visual start of the next line.
+    /// line contains RTL text: then it moves one visual boundary slot right on
+    /// screen from `(pos.grapheme, pos.affinity)`, wrapping to the visual start
+    /// of the next line.
     #[must_use]
     pub fn move_right(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
@@ -254,12 +352,12 @@ impl<'a> CursorNavigator<'a> {
         if self.visual_bidi {
             let raw = line_text(self.rope, pos.line);
             let current_text = strip_trailing_newline(&raw);
-            let step = match VisualLineLayout::new(current_text) {
-                Some(layout) => layout.step_right(pos.grapheme),
-                None => (pos.grapheme < grapheme_count(current_text)).then_some(pos.grapheme + 1),
-            };
-            if let Some(next) = step {
-                return self.from_line_grapheme(pos.line, next);
+            if let Some(layout) = VisualLineLayout::new(current_text) {
+                if let Some((g, col, affinity)) = layout.step_right(pos.grapheme, pos.affinity) {
+                    return CursorPosition::new(pos.line, g, col).with_affinity(affinity);
+                }
+            } else if pos.grapheme < grapheme_count(current_text) {
+                return self.from_line_grapheme(pos.line, pos.grapheme + 1);
             }
             if pos.line >= last_line_index(self.rope) {
                 return pos;
@@ -356,7 +454,7 @@ impl<'a> CursorNavigator<'a> {
     ///
     /// Goes to the logical start of the line (grapheme 0), unless visual bidi
     /// behavior was enabled with [`with_visual_bidi`](Self::with_visual_bidi)
-    /// and the line contains RTL text: then it goes to the leftmost caret stop.
+    /// and the line contains RTL text: then it goes to the leftmost display stop.
     #[must_use]
     pub fn line_start(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
@@ -365,7 +463,8 @@ impl<'a> CursorNavigator<'a> {
             let line_text = line_text(self.rope, pos.line);
             let line_text = strip_trailing_newline(&line_text);
             if let Some(layout) = self.visual_layout(line_text) {
-                return self.from_line_grapheme(pos.line, layout.leftmost());
+                let (grapheme, col, affinity) = layout.leftmost();
+                return CursorPosition::new(pos.line, grapheme, col).with_affinity(affinity);
             }
         }
         self.logical_line_start(pos)
@@ -376,7 +475,7 @@ impl<'a> CursorNavigator<'a> {
     /// Goes to the logical end of the line (after the last grapheme), unless
     /// visual bidi behavior was enabled with
     /// [`with_visual_bidi`](Self::with_visual_bidi) and the line contains RTL
-    /// text: then it goes to the rightmost caret stop.
+    /// text: then it goes to the rightmost display stop.
     #[must_use]
     pub fn line_end(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
@@ -385,7 +484,8 @@ impl<'a> CursorNavigator<'a> {
             let line_text = line_text(self.rope, pos.line);
             let line_text = strip_trailing_newline(&line_text);
             if let Some(layout) = self.visual_layout(line_text) {
-                return self.from_line_grapheme(pos.line, layout.rightmost());
+                let (grapheme, col, affinity) = layout.rightmost();
+                return CursorPosition::new(pos.line, grapheme, col).with_affinity(affinity);
             }
         }
         self.logical_line_end(pos)
@@ -516,148 +616,422 @@ fn grapheme_index_at_visual_col(text: &str, visual_col: usize) -> usize {
     idx
 }
 
-/// Visual (UAX#9) caret layout of one line, at extended-grapheme granularity.
-///
-/// [`crate::bidi::BidiSegment`] works in Unicode scalar (char) indices, while
-/// the navigator works in extended grapheme cluster indices. This type is the
-/// only place the two meet: grapheme boundaries are converted to scalar
-/// indices before calling into the segment, scalar results are converted back
-/// to grapheme indices, and display widths are measured per whole cluster (so
-/// combining marks, ZWJ sequences, flags and keycaps keep their real width).
+/// A single extended grapheme cluster laid out in UAX#9 visual order.
 #[cfg(feature = "bidi")]
-struct VisualLineLayout {
-    /// Canonical caret column (cells) of every logical grapheme boundary
-    /// `0..=grapheme_count`.
-    stop_cols: Vec<usize>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisualGrapheme<'a> {
+    /// Full extended grapheme cluster text from the laid-out line or slice.
+    pub text: &'a str,
+    /// 0-based logical grapheme index within the laid-out line or slice.
+    pub logical_index: usize,
+    /// Start byte offset within the laid-out slice (inclusive).
+    pub byte_start: usize,
+    /// End byte offset within the laid-out slice (exclusive).
+    pub byte_end: usize,
+    /// Leftmost display column (0-based cells).
+    pub visual_col: usize,
+    /// Display width in terminal cells.
+    pub width: usize,
+    /// Resolved UAX#9 embedding level (odd = RTL, even = LTR).
+    pub level: u8,
 }
 
 #[cfg(feature = "bidi")]
-impl VisualLineLayout {
-    /// Build the layout, or `None` for lines without RTL text (those are laid
-    /// out in logical order and use the plain logical helpers).
-    fn new(text: &str) -> Option<Self> {
+impl VisualGrapheme<'_> {
+    /// Whether this grapheme cluster belongs to an RTL run.
+    #[inline]
+    #[must_use]
+    pub const fn is_rtl(&self) -> bool {
+        self.level % 2 == 1
+    }
+}
+
+/// Visual (UAX#9) grapheme and caret layout of one line or wrapped slice.
+///
+/// Resolves paragraph direction and per-cluster embedding levels using
+/// [`unicode_bidi::BidiInfo`] (including rules L1/L2) while keeping every
+/// extended grapheme cluster intact and measuring its whole display width
+/// (combining marks, pointed Hebrew/Arabic, ZWJ families, flags, keycaps).
+///
+/// Exposes both the visual grapheme stream (with original byte offsets for
+/// rendering, syntax highlighting, and selection mapping) and a bijective
+/// visual-slot caret map with [`CaretAffinity`] support:
+/// - Distinct logical boundaries around zero-width marks (e.g. RLM/LRM) retain
+///   distinct visual slots and never collapse or loop.
+/// - Direction-change boundaries expose both their `Upstream` (trailing edge
+///   of `g - 1`) and `Downstream` (leading edge of `g`) visual slots.
+/// - The logical end of a line ending in an RTL run inside an LTR paragraph is
+///   cleanly reachable both at its `Downstream` right display edge and at its
+///   `Upstream` trailing-RTL edge.
+#[cfg(feature = "bidi")]
+#[derive(Debug, Clone)]
+pub struct VisualLineLayout<'a> {
+    visual_graphemes: Vec<VisualGrapheme<'a>>,
+    /// Display column of each visual boundary slot `0..=grapheme_count`.
+    slot_cols: Vec<usize>,
+    /// Visual slot for `(logical_grapheme, CaretAffinity::Upstream)`.
+    upstream_slots: Vec<usize>,
+    /// Visual slot for `(logical_grapheme, CaretAffinity::Downstream)`.
+    downstream_slots: Vec<usize>,
+    /// Canonical (lower-embedding-level) affinity for each logical boundary.
+    canonical_affinities: Vec<CaretAffinity>,
+    /// Canonical visual slot for each logical boundary (bijection `0..=N -> 0..=N`).
+    canonical_slots: Vec<usize>,
+    /// Inverse of `canonical_slots`: canonical logical boundary at each visual slot.
+    slot_to_canonical_grapheme: Vec<usize>,
+    /// Whether the enclosing paragraph base direction is RTL.
+    base_is_rtl: bool,
+}
+
+#[cfg(feature = "bidi")]
+impl<'a> VisualLineLayout<'a> {
+    /// Build the layout for `text`, or `None` when `text` contains no RTL
+    /// characters (pure-LTR lines can use the fast logical path directly).
+    #[must_use]
+    pub fn new(text: &'a str) -> Option<Self> {
         if !crate::bidi::has_rtl(text) {
             return None;
         }
-        let seg = crate::bidi::BidiSegment::new(text, None);
-        let scalar_total = seg.len();
+        Some(Self::for_line(text))
+    }
 
-        // Scalar index at which each grapheme starts, plus the total.
-        let mut grapheme_scalar_start = Vec::new();
-        let mut widths = Vec::new();
-        let mut scalar = 0usize;
-        for g in graphemes(text) {
-            grapheme_scalar_start.push(scalar);
-            widths.push(display_width(g));
-            scalar += g.chars().count();
+    /// Build the visual layout for a single logical line (including pure-LTR
+    /// or empty lines).
+    #[must_use]
+    pub fn for_line(text: &'a str) -> Self {
+        Self::for_wrapped_slice(text, 0..text.len())
+    }
+
+    /// Build the visual layout for a wrapped slice `slice_byte_range` of
+    /// `full_line`, preserving the enclosing logical line's UAX#9 paragraph
+    /// direction and resolved levels while applying rules L1/L2 to the slice.
+    #[must_use]
+    pub fn for_wrapped_slice(full_line: &'a str, slice_byte_range: std::ops::Range<usize>) -> Self {
+        let start = slice_byte_range.start.min(full_line.len());
+        let end = slice_byte_range.end.clamp(start, full_line.len());
+        let slice = &full_line[start..end];
+
+        if slice.is_empty() {
+            return Self {
+                visual_graphemes: Vec::new(),
+                slot_cols: vec![0],
+                upstream_slots: vec![0],
+                downstream_slots: vec![0],
+                canonical_affinities: vec![CaretAffinity::Downstream],
+                canonical_slots: vec![0],
+                slot_to_canonical_grapheme: vec![0],
+                base_is_rtl: false,
+            };
         }
-        grapheme_scalar_start.push(scalar);
-        debug_assert_eq!(scalar, scalar_total);
-        let grapheme_count = widths.len();
 
-        // Order clusters left-to-right by their leftmost visual scalar slot.
-        let mut visual_order: Vec<(usize, usize)> = (0..grapheme_count)
-            .map(|g| {
-                let first_visual = (grapheme_scalar_start[g]..grapheme_scalar_start[g + 1])
-                    .map(|s| seg.visual_pos(s))
-                    .min()
-                    .unwrap_or(0);
-                (first_visual, g)
-            })
-            .collect();
-        visual_order.sort_unstable();
+        if !crate::bidi::has_rtl(full_line) {
+            let mut visual_graphemes = Vec::new();
+            let mut slot_cols = vec![0usize];
+            let mut col = 0usize;
+            for (logical_index, (byte_start, g)) in slice.grapheme_indices(true).enumerate() {
+                let width = display_width(g);
+                visual_graphemes.push(VisualGrapheme {
+                    text: g,
+                    logical_index,
+                    byte_start,
+                    byte_end: byte_start + g.len(),
+                    visual_col: col,
+                    width,
+                    level: 0,
+                });
+                col += width;
+                slot_cols.push(col);
+            }
+            let n = visual_graphemes.len();
+            return Self {
+                visual_graphemes,
+                slot_cols,
+                upstream_slots: (0..=n).collect(),
+                downstream_slots: (0..=n).collect(),
+                canonical_affinities: vec![CaretAffinity::Downstream; n + 1],
+                canonical_slots: (0..=n).collect(),
+                slot_to_canonical_grapheme: (0..=n).collect(),
+                base_is_rtl: false,
+            };
+        }
 
-        // Cell column of every visual scalar boundary. A boundary that falls
-        // inside a cluster (only possible if a cluster's scalars resolved to
-        // different levels) snaps to the cluster's left edge.
-        let mut slot_cols = vec![0usize; scalar_total + 1];
-        let mut slot = 0usize;
-        let mut col = 0usize;
-        for &(_, g) in &visual_order {
-            let scalars = grapheme_scalar_start[g + 1] - grapheme_scalar_start[g];
-            for k in 0..scalars {
-                if let Some(c) = slot_cols.get_mut(slot + k) {
-                    *c = col;
+        let bidi_info = unicode_bidi::BidiInfo::new(full_line, None);
+        let para = bidi_info
+            .paragraphs
+            .iter()
+            .find(|p| start >= p.range.start && start < p.range.end)
+            .or_else(|| bidi_info.paragraphs.first());
+
+        let (para_level, resolved_levels) = if let Some(para) = para {
+            let clamped_start = start.clamp(para.range.start, para.range.end);
+            let clamped_end = end.clamp(clamped_start, para.range.end);
+            let (levels, _runs) = bidi_info.visual_runs(para, clamped_start..clamped_end);
+            (para.level.number(), levels)
+        } else {
+            (0u8, Vec::new())
+        };
+        let base_is_rtl = para_level % 2 == 1;
+
+        let mut logical: Vec<(&'a str, usize, usize, usize, u8)> = Vec::new();
+        for (rel_start, g) in slice.grapheme_indices(true) {
+            let abs_start = start + rel_start;
+            let lvl = resolved_levels
+                .get(abs_start)
+                .map_or(para_level, unicode_bidi::Level::number);
+            logical.push((g, rel_start, rel_start + g.len(), display_width(g), lvl));
+        }
+        let n = logical.len();
+
+        // UAX#9 Rule L2 applied directly at extended-grapheme granularity so
+        // multi-scalar clusters (combining marks, pointed Hebrew/Arabic, flags,
+        // keycaps, ZWJ sequences) are never split or reversed internally.
+        let mut visual_to_logical: Vec<usize> = (0..n).collect();
+        let max_level = logical.iter().map(|entry| entry.4).max().unwrap_or(0);
+        let min_odd = logical
+            .iter()
+            .map(|entry| entry.4)
+            .filter(|&l| l % 2 == 1)
+            .min()
+            .unwrap_or(max_level.saturating_add(1));
+
+        for level in (min_odd..=max_level).rev() {
+            let mut i = 0;
+            while i < n {
+                if logical[visual_to_logical[i]].4 >= level {
+                    let run_start = i;
+                    while i < n && logical[visual_to_logical[i]].4 >= level {
+                        i += 1;
+                    }
+                    visual_to_logical[run_start..i].reverse();
+                } else {
+                    i += 1;
                 }
             }
-            slot += scalars;
-            col += widths[g];
-        }
-        if let Some(last) = slot_cols.last_mut() {
-            *last = col;
         }
 
-        let stop_cols = grapheme_scalar_start
-            .iter()
-            .map(|&s| {
-                let visual_boundary = seg.visual_cursor_pos(s).min(scalar_total);
-                slot_cols[visual_boundary]
-            })
-            .collect();
-        Some(Self { stop_cols })
-    }
+        let mut logical_to_visual = vec![0usize; n];
+        for (v, &g) in visual_to_logical.iter().enumerate() {
+            logical_to_visual[g] = v;
+        }
 
-    fn visual_col(&self, grapheme: usize) -> usize {
-        let last = self.stop_cols.len() - 1;
-        self.stop_cols[grapheme.min(last)]
-    }
+        let mut visual_graphemes = Vec::with_capacity(n);
+        let mut slot_cols = Vec::with_capacity(n + 1);
+        let mut col = 0usize;
+        slot_cols.push(0);
+        for &g_idx in &visual_to_logical {
+            let (g_text, byte_start, byte_end, width, level) = logical[g_idx];
+            visual_graphemes.push(VisualGrapheme {
+                text: g_text,
+                logical_index: g_idx,
+                byte_start,
+                byte_end,
+                visual_col: col,
+                width,
+                level,
+            });
+            col += width;
+            slot_cols.push(col);
+        }
 
-    /// Grapheme boundary whose caret stop is the rightmost one at or left of
-    /// `visual_col` (lowest index on ties).
-    fn grapheme_at_visual_col(&self, visual_col: usize) -> usize {
-        let mut best: Option<(usize, usize)> = None;
-        for (g, &c) in self.stop_cols.iter().enumerate() {
-            if c <= visual_col && best.is_none_or(|(bc, _)| c > bc) {
-                best = Some((c, g));
+        let mut upstream_slots = Vec::with_capacity(n + 1);
+        let mut downstream_slots = Vec::with_capacity(n + 1);
+        let mut canonical_affinities = Vec::with_capacity(n + 1);
+        let mut canonical_slots = Vec::with_capacity(n + 1);
+        let mut slot_to_canonical_grapheme = vec![usize::MAX; n + 1];
+
+        for g in 0..=n {
+            let up_slot = if g == 0 {
+                if base_is_rtl { n } else { 0 }
+            } else {
+                let prev = g - 1;
+                let v = logical_to_visual[prev];
+                if logical[prev].4 % 2 == 1 { v } else { v + 1 }
+            };
+            let down_slot = if g == n {
+                if base_is_rtl { 0 } else { n }
+            } else {
+                let v = logical_to_visual[g];
+                if logical[g].4 % 2 == 1 { v + 1 } else { v }
+            };
+
+            let level_left = if g > 0 { logical[g - 1].4 } else { para_level };
+            let level_right = if g < n { logical[g].4 } else { para_level };
+
+            let (canon_aff, canon_slot) = if level_left <= level_right {
+                (CaretAffinity::Upstream, up_slot)
+            } else {
+                (CaretAffinity::Downstream, down_slot)
+            };
+
+            upstream_slots.push(up_slot);
+            downstream_slots.push(down_slot);
+            canonical_affinities.push(canon_aff);
+            canonical_slots.push(canon_slot);
+            if slot_to_canonical_grapheme[canon_slot] == usize::MAX {
+                slot_to_canonical_grapheme[canon_slot] = g;
             }
         }
-        best.map_or_else(|| self.leftmost(), |(_, g)| g)
-    }
 
-    /// Nearest caret stop strictly right of `grapheme`'s stop.
-    fn step_right(&self, grapheme: usize) -> Option<usize> {
-        let here = self.visual_col(grapheme);
-        let mut best: Option<(usize, usize)> = None;
-        for (g, &c) in self.stop_cols.iter().enumerate() {
-            if c > here && best.is_none_or(|(bc, _)| c < bc) {
-                best = Some((c, g));
+        // Belt-and-suspenders guard: for any valid L2 level ordering every slot
+        // 0..=n is filled bijectively above; fill any hypothetical gap from the
+        // nearest adjacent visual grapheme edge so indexing can never panic.
+        for s in 0..=n {
+            if slot_to_canonical_grapheme[s] == usize::MAX {
+                let fallback = if s < n {
+                    let vg = visual_graphemes[s];
+                    if vg.is_rtl() {
+                        vg.logical_index + 1
+                    } else {
+                        vg.logical_index
+                    }
+                } else {
+                    let vg = visual_graphemes[n - 1];
+                    if vg.is_rtl() {
+                        vg.logical_index
+                    } else {
+                        vg.logical_index + 1
+                    }
+                };
+                slot_to_canonical_grapheme[s] = fallback;
             }
         }
-        best.map(|(_, g)| g)
+
+        Self {
+            visual_graphemes,
+            slot_cols,
+            upstream_slots,
+            downstream_slots,
+            canonical_affinities,
+            canonical_slots,
+            slot_to_canonical_grapheme,
+            base_is_rtl,
+        }
     }
 
-    /// Nearest caret stop strictly left of `grapheme`'s stop.
-    fn step_left(&self, grapheme: usize) -> Option<usize> {
-        let here = self.visual_col(grapheme);
-        let mut best: Option<(usize, usize)> = None;
-        for (g, &c) in self.stop_cols.iter().enumerate() {
-            if c < here && best.is_none_or(|(bc, _)| c > bc) {
-                best = Some((c, g));
-            }
-        }
-        best.map(|(_, g)| g)
+    /// Grapheme clusters in visual left-to-right display order.
+    #[inline]
+    #[must_use]
+    pub fn visual_graphemes(&self) -> &[VisualGrapheme<'a>] {
+        &self.visual_graphemes
     }
 
-    /// Grapheme boundary with the leftmost caret stop (lowest index on ties).
-    fn leftmost(&self) -> usize {
-        let mut best = (usize::MAX, 0usize);
-        for (g, &c) in self.stop_cols.iter().enumerate() {
-            if c < best.0 {
-                best = (c, g);
-            }
-        }
-        best.1
+    /// Whether the enclosing paragraph's resolved base direction is RTL.
+    #[inline]
+    #[must_use]
+    pub const fn base_is_rtl(&self) -> bool {
+        self.base_is_rtl
     }
 
-    /// Grapheme boundary with the rightmost caret stop (lowest index on ties).
-    fn rightmost(&self) -> usize {
-        let mut best: Option<(usize, usize)> = None;
-        for (g, &c) in self.stop_cols.iter().enumerate() {
-            if best.is_none_or(|(bc, _)| c > bc) {
-                best = Some((c, g));
-            }
+    /// Number of grapheme clusters in this layout.
+    #[inline]
+    #[must_use]
+    pub fn grapheme_count(&self) -> usize {
+        self.visual_graphemes.len()
+    }
+
+    /// Total display width in cells.
+    #[inline]
+    #[must_use]
+    pub fn total_width(&self) -> usize {
+        self.slot_cols.last().copied().unwrap_or(0)
+    }
+
+    /// Canonical (lower-embedding-level) affinity for logical boundary `grapheme`.
+    #[inline]
+    #[must_use]
+    pub fn canonical_affinity(&self, grapheme: usize) -> CaretAffinity {
+        let last = self.canonical_affinities.len() - 1;
+        self.canonical_affinities[grapheme.min(last)]
+    }
+
+    /// Visual boundary slot (`0..=grapheme_count`) for `(grapheme, affinity)`.
+    #[inline]
+    #[must_use]
+    pub fn slot_for(&self, grapheme: usize, affinity: CaretAffinity) -> usize {
+        let last = self.upstream_slots.len() - 1;
+        let idx = grapheme.min(last);
+        match affinity {
+            CaretAffinity::Upstream => self.upstream_slots[idx],
+            CaretAffinity::Downstream => self.downstream_slots[idx],
         }
-        best.map_or(0, |(_, g)| g)
+    }
+
+    /// Display column (cells) for `(grapheme, affinity)`.
+    #[inline]
+    #[must_use]
+    pub fn visual_col(&self, grapheme: usize, affinity: CaretAffinity) -> usize {
+        let slot = self.slot_for(grapheme, affinity);
+        self.slot_cols[slot]
+    }
+
+    /// Canonical `(logical_grapheme, visual_col, affinity)` stop at visual `slot`.
+    #[inline]
+    #[must_use]
+    pub fn stop_at_slot(&self, slot: usize) -> (usize, usize, CaretAffinity) {
+        let last = self.slot_cols.len() - 1;
+        let slot = slot.min(last);
+        let grapheme = self.slot_to_canonical_grapheme[slot];
+        let affinity = if self.canonical_slots[grapheme] == slot {
+            self.canonical_affinities[grapheme]
+        } else if self.upstream_slots[grapheme] == slot {
+            CaretAffinity::Upstream
+        } else {
+            CaretAffinity::Downstream
+        };
+        (grapheme, self.slot_cols[slot], affinity)
+    }
+
+    /// Hit-test a display column against this visual layout, returning
+    /// `(logical_grapheme, snapped_visual_col, affinity)`.
+    ///
+    /// Clicks inside a multi-cell wide cluster snap cleanly to its left edge.
+    #[must_use]
+    pub fn hit_test(&self, visual_col: usize) -> (usize, usize, CaretAffinity) {
+        let slot = self
+            .slot_cols
+            .partition_point(|&c| c <= visual_col)
+            .saturating_sub(1);
+        self.stop_at_slot(slot)
+    }
+
+    /// Step one visual boundary slot right from `(grapheme, affinity)`.
+    #[must_use]
+    pub fn step_right(
+        &self,
+        grapheme: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(usize, usize, CaretAffinity)> {
+        let cur = self.slot_for(grapheme, affinity);
+        if cur + 1 < self.slot_cols.len() {
+            Some(self.stop_at_slot(cur + 1))
+        } else {
+            None
+        }
+    }
+
+    /// Step one visual boundary slot left from `(grapheme, affinity)`.
+    #[must_use]
+    pub fn step_left(
+        &self,
+        grapheme: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(usize, usize, CaretAffinity)> {
+        let cur = self.slot_for(grapheme, affinity);
+        cur.checked_sub(1).map(|prev| self.stop_at_slot(prev))
+    }
+
+    /// Leftmost display stop `(logical_grapheme, visual_col, affinity)` (col 0).
+    #[inline]
+    #[must_use]
+    pub fn leftmost(&self) -> (usize, usize, CaretAffinity) {
+        self.stop_at_slot(0)
+    }
+
+    /// Rightmost display stop `(logical_grapheme, visual_col, affinity)` (full width).
+    #[inline]
+    #[must_use]
+    pub fn rightmost(&self) -> (usize, usize, CaretAffinity) {
+        self.stop_at_slot(self.slot_cols.len() - 1)
     }
 }
 
@@ -1513,9 +1887,12 @@ mod tests {
         assert_eq!(nav.line_end(nav.document_end()).grapheme, 0);
     }
 
-    /// Issue #102 (2): on "ab \u{5D0}\u{5D1}" right-arrow from grapheme 4
-    /// used to land on grapheme 3 one column to the LEFT. Visual movement
-    /// must be strictly monotonic, terminate, and round-trip.
+    /// Issue #102 (2) & bd-b8isx: visual movement must be strictly monotonic
+    /// in visual slot order, non-decreasing in display column, visit every
+    /// logical grapheme boundary (including distinct stops around zero-width
+    /// controls like RLM/LRM without collapsing or looping), reach the logical
+    /// end of trailing RTL runs, and exact-round-trip in reverse at every
+    /// junction.
     #[cfg(feature = "bidi")]
     #[test]
     fn visual_bidi_moves_are_monotonic_and_round_trip() {
@@ -1527,6 +1904,12 @@ mod tests {
             right == at4 || right.visual_col > at4.visual_col,
             "{at4:?} -> {right:?}"
         );
+        // Logical end of a line ending in an RTL run in an LTR paragraph is
+        // cleanly reachable both at the visual right edge (Downstream) and
+        // immediately left of the trailing RTL glyph (Upstream).
+        assert_eq!(right.grapheme, 5);
+        assert_eq!(right.visual_col, 5);
+        assert_eq!(right.affinity, CaretAffinity::Downstream);
 
         for text in MIXED_FIXTURES {
             let r = rope(text);
@@ -1541,12 +1924,22 @@ mod tests {
                     break;
                 }
                 assert!(
-                    next.visual_col > pos.visual_col,
+                    next.visual_col >= pos.visual_col && next.grapheme != pos.grapheme,
                     "fixture={text:?} {pos:?} -> {next:?}"
                 );
                 pos = next;
                 stops.push(pos);
             }
+            assert_eq!(
+                stops.len(),
+                n + 1,
+                "fixture={text:?}: every logical boundary (including around zero-width marks) must be a distinct stop"
+            );
+            // Every logical boundary 0..=n must be visited exactly once.
+            let mut visited: Vec<usize> = stops.iter().map(|s| s.grapheme).collect();
+            visited.sort_unstable();
+            assert_eq!(visited, (0..=n).collect::<Vec<_>>(), "fixture={text:?}");
+
             assert_eq!(pos, nav.line_end(pos), "fixture={text:?}");
             assert_eq!(
                 pos.visual_col,
@@ -1557,14 +1950,158 @@ mod tests {
                 assert_eq!(nav.move_left(w[1]), w[0], "fixture={text:?}");
             }
             for stop in &stops {
-                assert_eq!(
-                    nav.from_visual_col(0, stop.visual_col),
-                    *stop,
-                    "fixture={text:?}"
-                );
+                let hit = nav.from_visual_col(0, stop.visual_col);
+                assert_eq!(hit.visual_col, stop.visual_col, "fixture={text:?}");
+                let same_col_count = stops
+                    .iter()
+                    .filter(|s| s.visual_col == stop.visual_col)
+                    .count();
+                if same_col_count == 1 {
+                    assert_eq!(hit, *stop, "fixture={text:?}");
+                }
                 assert_eq!(nav.from_byte_index(nav.to_byte_index(*stop)), *stop);
             }
         }
+    }
+
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn visual_bidi_caret_affinity_remembers_visual_edge_at_junctions() {
+        // LTR paragraph with embedded RTL run: "ab אב cd"
+        // Visual cells: 0:a 1:b 2:' ' 3:ב 4:א 5:' ' 6:c 7:d
+        let r = rope("ab \u{05D0}\u{05D1} cd");
+        let nav = CursorNavigator::new(&r).with_visual_bidi(true);
+
+        // Logical boundary g=3 (between ' ' and 'א') sits at col 3 Upstream
+        // and col 5 Downstream.
+        let g3_up = nav.from_line_grapheme_with_affinity(0, 3, CaretAffinity::Upstream);
+        let g3_down = nav.from_line_grapheme_with_affinity(0, 3, CaretAffinity::Downstream);
+        assert_eq!(g3_up.visual_col, 3);
+        assert_eq!(g3_down.visual_col, 5);
+        // Stepping from g3_up moves relative to col 3.
+        assert_eq!(nav.move_left(g3_up).visual_col, 2);
+        assert_eq!(nav.move_right(g3_up).visual_col, 4);
+        // Stepping from g3_down moves relative to col 5.
+        assert_eq!(nav.move_left(g3_down).visual_col, 4);
+        assert_eq!(nav.move_right(g3_down).visual_col, 6);
+
+        // Logical boundary g=5 (between 'ב' and ' ') sits at col 3 Upstream
+        // and col 5 Downstream.
+        let g5_up = nav.from_line_grapheme_with_affinity(0, 5, CaretAffinity::Upstream);
+        let g5_down = nav.from_line_grapheme_with_affinity(0, 5, CaretAffinity::Downstream);
+        assert_eq!(g5_up.visual_col, 3);
+        assert_eq!(g5_down.visual_col, 5);
+        assert_eq!(nav.move_left(g5_up).visual_col, 2);
+        assert_eq!(nav.move_right(g5_up).visual_col, 4);
+        assert_eq!(nav.move_left(g5_down).visual_col, 4);
+        assert_eq!(nav.move_right(g5_down).visual_col, 6);
+
+        // Stepping logically forward into g=3 sets Upstream (col 3), while
+        // stepping logically backward from g=4 into g=3 sets Downstream (col 5).
+        let from_ltr = nav.move_grapheme_forward(nav.from_line_grapheme(0, 2));
+        assert_eq!(from_ltr.grapheme, 3);
+        assert_eq!(from_ltr.affinity, CaretAffinity::Upstream);
+        assert_eq!(from_ltr.visual_col, 3);
+
+        let from_rtl = nav.move_grapheme_backward(nav.from_line_grapheme(0, 4));
+        assert_eq!(from_rtl.grapheme, 3);
+        assert_eq!(from_rtl.affinity, CaretAffinity::Downstream);
+        assert_eq!(from_rtl.visual_col, 5);
+
+        // Trailing RTL run in LTR paragraph: "ab אב"
+        // Logical end g=5 is reachable both Upstream (col 3, left of 'ב') and
+        // Downstream (col 5, visual right display edge).
+        let r2 = rope("ab \u{05D0}\u{05D1}");
+        let nav2 = CursorNavigator::new(&r2).with_visual_bidi(true);
+        let end_up = nav2.from_line_grapheme_with_affinity(0, 5, CaretAffinity::Upstream);
+        let end_down = nav2.from_line_grapheme_with_affinity(0, 5, CaretAffinity::Downstream);
+        assert_eq!(end_up.visual_col, 3);
+        assert_eq!(end_down.visual_col, 5);
+        assert_eq!(nav2.move_right(end_up).grapheme, 4);
+        assert_eq!(nav2.move_left(end_up).grapheme, 2);
+        assert_eq!(nav2.move_left(end_down).grapheme, 4);
+        assert_eq!(nav2.move_right(end_down), end_down);
+    }
+
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn visual_bidi_zero_width_marks_distinct_stops_no_loops() {
+        // RLM + 'a' + LRM + Hebrew Alef (4 graphemes, 5 distinct boundaries, total width 2).
+        let text = "\u{200F}a\u{200E}\u{05D0}";
+        let r = rope(text);
+        let nav = CursorNavigator::new(&r).with_visual_bidi(true);
+        let mut pos = nav.line_start(nav.document_start());
+        let mut forward = vec![pos];
+        for _ in 0..10 {
+            let next = nav.move_right(pos);
+            if next == pos {
+                break;
+            }
+            forward.push(next);
+            pos = next;
+        }
+        assert_eq!(
+            forward.len(),
+            5,
+            "all 5 boundaries around RLM/LRM must be distinct"
+        );
+        let mut backward = vec![pos];
+        for _ in 0..10 {
+            let prev = nav.move_left(pos);
+            if prev == pos {
+                break;
+            }
+            backward.push(prev);
+            pos = prev;
+        }
+        backward.reverse();
+        assert_eq!(
+            backward, forward,
+            "reverse traversal must round-trip identically"
+        );
+    }
+
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn visual_bidi_wide_cell_hit_test_snaps_to_left_edge() {
+        // Mixed CJK + Hebrew + Emoji:
+        // Visual cells: 0..2:世, 2..4:界, 4..5:' ', 5..6:ב, 6..7:א, 7..8:' ', 8..10:😀
+        let r = rope("\u{4E16}\u{754C} \u{05D0}\u{05D1} \u{1F600}");
+        let nav = CursorNavigator::new(&r).with_visual_bidi(true);
+        assert_eq!(nav.from_visual_col(0, 0).visual_col, 0);
+        assert_eq!(nav.from_visual_col(0, 1).visual_col, 0); // inside 世 -> snap left
+        assert_eq!(nav.from_visual_col(0, 2).visual_col, 2);
+        assert_eq!(nav.from_visual_col(0, 3).visual_col, 2); // inside 界 -> snap left
+        assert_eq!(nav.from_visual_col(0, 8).visual_col, 8);
+        assert_eq!(nav.from_visual_col(0, 9).visual_col, 8); // inside 😀 -> snap left
+        assert_eq!(nav.from_visual_col(0, 10).visual_col, 10);
+
+        // Wide emoji embedded inside RTL run: "א😀ב"
+        // Visual cells: 0..1:ב, 1..3:😀, 3..4:א
+        let r_rtl = rope("\u{05D0}\u{1F600}\u{05D1}");
+        let nav_rtl = CursorNavigator::new(&r_rtl).with_visual_bidi(true);
+        assert_eq!(nav_rtl.from_visual_col(0, 1), nav_rtl.from_visual_col(0, 2));
+        assert_eq!(nav_rtl.from_visual_col(0, 2).visual_col, 1);
+    }
+
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn visual_line_layout_wrapped_slice_preserves_paragraph_direction() {
+        // LTR paragraph wrapping onto an RTL-only second row.
+        let full = "hello \u{05D0}\u{05D1}\u{05D2}";
+        let split = "hello ".len();
+        let row0 = VisualLineLayout::for_wrapped_slice(full, 0..split);
+        let row1 = VisualLineLayout::for_wrapped_slice(full, split..full.len());
+        assert!(!row0.base_is_rtl());
+        assert!(!row1.base_is_rtl());
+        let row1_glyphs: Vec<&str> = row1.visual_graphemes().iter().map(|vg| vg.text).collect();
+        assert_eq!(row1_glyphs, vec!["\u{05D2}", "\u{05D1}", "\u{05D0}"]);
+        // Byte offsets remain relative to the slice so callers map back to original line bytes.
+        assert_eq!(
+            &full[split + row1.visual_graphemes()[0].byte_start
+                ..split + row1.visual_graphemes()[0].byte_end],
+            "\u{05D2}"
+        );
     }
 
     #[cfg(feature = "bidi")]

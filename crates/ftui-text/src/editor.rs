@@ -26,6 +26,8 @@
 //! assert_eq!(ed.text(), "helloworld");
 //! ```
 
+#[cfg(feature = "bidi")]
+use crate::cursor::CaretAffinity;
 use crate::cursor::{CursorNavigator, CursorPosition};
 use crate::rope::Rope;
 use std::time::Duration;
@@ -120,10 +122,11 @@ impl Selection {
         if a <= b { (a, b) } else { (b, a) }
     }
 
-    /// Whether the selection is empty (anchor == head).
+    /// Whether the selection is empty (anchor and head refer to the same logical
+    /// document position, regardless of visual caret affinity).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.anchor == self.head
+        self.anchor.line == self.head.line && self.anchor.grapheme == self.head.grapheme
     }
 }
 
@@ -152,6 +155,9 @@ pub struct Editor {
     max_undo_size: usize,
     now_tick: u64,
     coalesce_idle: Duration,
+    /// Opt-in UAX#9 visual-order bidi cursor navigation.
+    #[cfg(feature = "bidi")]
+    visual_bidi: bool,
 }
 
 impl Default for Editor {
@@ -175,6 +181,8 @@ impl Editor {
             max_undo_size: 10 * 1024 * 1024, // 10MB default
             now_tick: 0,
             coalesce_idle: Duration::from_millis(500),
+            #[cfg(feature = "bidi")]
+            visual_bidi: false,
         }
     }
 
@@ -195,7 +203,49 @@ impl Editor {
             max_undo_size: 10 * 1024 * 1024,
             now_tick: 0,
             coalesce_idle: Duration::from_millis(500),
+            #[cfg(feature = "bidi")]
+            visual_bidi: false,
         }
+    }
+
+    /// Opt in (or out) of UAX#9 visual-order bidi cursor navigation (builder).
+    ///
+    /// Off by default so logical-order renderers remain consistent. Enable this
+    /// when rendering text in UAX#9 visual order (e.g., via `TextArea::with_visual_bidi`).
+    #[cfg(feature = "bidi")]
+    #[must_use]
+    pub fn with_visual_bidi(mut self, enabled: bool) -> Self {
+        self.set_visual_bidi(enabled);
+        self
+    }
+
+    /// Enable or disable UAX#9 visual-order bidi cursor navigation.
+    #[cfg(feature = "bidi")]
+    pub fn set_visual_bidi(&mut self, enabled: bool) {
+        self.visual_bidi = enabled;
+        self.cursor = self
+            .navigator()
+            .from_line_grapheme(self.cursor.line, self.cursor.grapheme);
+        if let Some(mut sel) = self.selection {
+            let nav = self.navigator();
+            sel.anchor = nav.from_line_grapheme(sel.anchor.line, sel.anchor.grapheme);
+            sel.head = self.cursor;
+            self.selection = Some(sel);
+        }
+    }
+
+    /// Whether UAX#9 visual-order bidi cursor navigation is enabled.
+    #[cfg(feature = "bidi")]
+    #[must_use]
+    pub const fn visual_bidi(&self) -> bool {
+        self.visual_bidi
+    }
+
+    fn navigator(&self) -> CursorNavigator<'_> {
+        let nav = CursorNavigator::new(&self.rope);
+        #[cfg(feature = "bidi")]
+        let nav = nav.with_visual_bidi(self.visual_bidi);
+        nav
     }
 
     /// Set the maximum undo history depth.
@@ -272,7 +322,7 @@ impl Editor {
     /// Set cursor position (will be clamped to valid bounds). Clears selection.
     pub fn set_cursor(&mut self, pos: CursorPosition) {
         self.break_undo_group();
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.clamp(pos);
         self.selection = None;
     }
@@ -376,10 +426,21 @@ impl Editor {
             self.rope.insert(char_idx, &sanitized);
 
             let new_byte_idx = start_byte + sanitized.len();
-            let nav = CursorNavigator::new(&self.rope);
-            self.cursor = nav.from_byte_index(new_byte_idx);
+            let nav = self.navigator();
+            #[cfg(feature = "bidi")]
+            {
+                self.cursor = if self.visual_bidi {
+                    nav.from_byte_index_with_affinity(new_byte_idx, CaretAffinity::Upstream)
+                } else {
+                    nav.from_byte_index(new_byte_idx)
+                };
+            }
+            #[cfg(not(feature = "bidi"))]
+            {
+                self.cursor = nav.from_byte_index(new_byte_idx);
+            }
         } else {
-            let nav = CursorNavigator::new(&self.rope);
+            let nav = self.navigator();
             let byte_idx = nav.to_byte_index(self.cursor);
             let char_idx = self.rope.byte_to_char(byte_idx);
 
@@ -397,10 +458,22 @@ impl Editor {
 
             self.rope.insert(char_idx, &sanitized);
 
-            // Move cursor to end of inserted text
+            // Move cursor to end of inserted text, visually attached to the
+            // trailing edge of what was just typed when in visual-bidi mode.
             let new_byte_idx = byte_idx + sanitized.len();
-            let nav = CursorNavigator::new(&self.rope);
-            self.cursor = nav.from_byte_index(new_byte_idx);
+            let nav = self.navigator();
+            #[cfg(feature = "bidi")]
+            {
+                self.cursor = if self.visual_bidi {
+                    nav.from_byte_index_with_affinity(new_byte_idx, CaretAffinity::Upstream)
+                } else {
+                    nav.from_byte_index(new_byte_idx)
+                };
+            }
+            #[cfg(not(feature = "bidi"))]
+            {
+                self.cursor = nav.from_byte_index(new_byte_idx);
+            }
         }
         self.finish_edit();
     }
@@ -421,7 +494,7 @@ impl Editor {
         if self.delete_selection_inner() {
             return true;
         }
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         let old_pos = self.cursor;
         let new_pos = nav.move_grapheme_backward(old_pos);
 
@@ -445,7 +518,7 @@ impl Editor {
 
         self.rope.remove(start_char..end_char);
 
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.from_byte_index(start_byte);
         self.finish_edit();
         true
@@ -458,7 +531,7 @@ impl Editor {
         if self.delete_selection_inner() {
             return true;
         }
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         let old_pos = self.cursor;
         let next_pos = nav.move_grapheme_forward(old_pos);
 
@@ -483,7 +556,7 @@ impl Editor {
         self.rope.remove(start_char..end_char);
 
         // Cursor stays at same position, just re-clamp
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.clamp(self.cursor);
         self.finish_edit();
         true
@@ -497,7 +570,7 @@ impl Editor {
         if self.delete_selection_inner() {
             return true;
         }
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         let old_pos = self.cursor;
         let word_start = nav.move_word_left(old_pos);
 
@@ -521,7 +594,7 @@ impl Editor {
 
         self.rope.remove(start_char..end_char);
 
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.from_byte_index(start_byte);
         self.finish_edit();
         true
@@ -535,7 +608,7 @@ impl Editor {
         if self.delete_selection_inner() {
             return true;
         }
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         let old_pos = self.cursor;
         let word_end = nav.move_word_right(old_pos);
 
@@ -560,7 +633,7 @@ impl Editor {
         self.rope.remove(start_char..end_char);
 
         // Re-clamp cursor just in case, matching other forward deletions
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.clamp(self.cursor);
         self.finish_edit();
         true
@@ -574,7 +647,7 @@ impl Editor {
         if self.delete_selection_inner() {
             return true;
         }
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         let old_pos = self.cursor;
         let line_end = nav.logical_line_end(old_pos);
 
@@ -601,7 +674,7 @@ impl Editor {
 
         self.rope.remove(start_char..end_char);
 
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.clamp(self.cursor);
         self.finish_edit();
         true
@@ -678,7 +751,7 @@ impl Editor {
         for op in group.ops.iter().rev() {
             self.apply_op(&op.inverse());
         }
-        self.cursor = group.before;
+        self.cursor = self.navigator().clamp(group.before);
         self.redo_stack.push(group);
         self.selection = None;
         true
@@ -693,7 +766,7 @@ impl Editor {
         for op in &group.ops {
             self.apply_op(op);
         }
-        self.cursor = group.after;
+        self.cursor = self.navigator().clamp(group.after);
         self.current_undo_size += group.bytes;
         self.undo_stack.push(group);
         self.prune_undo();
@@ -739,7 +812,7 @@ impl Editor {
         if sel.is_empty() {
             return None;
         }
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         let (start_byte, end_byte) = sel.byte_range(&nav);
         let start_char = self.rope.byte_to_char(start_byte);
         let end_char = self.rope.byte_to_char(end_byte);
@@ -759,7 +832,7 @@ impl Editor {
                 },
                 GroupKind::Other,
             );
-            let nav = CursorNavigator::new(&self.rope);
+            let nav = self.navigator();
             self.cursor = nav.from_byte_index(start_byte);
             self.finish_edit();
             true
@@ -776,7 +849,7 @@ impl Editor {
     pub fn move_backward(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.move_grapheme_backward(self.cursor);
     }
 
@@ -784,7 +857,7 @@ impl Editor {
     pub fn move_forward(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.move_grapheme_forward(self.cursor);
     }
 
@@ -792,7 +865,7 @@ impl Editor {
     pub fn move_left(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.move_left(self.cursor);
     }
 
@@ -800,7 +873,7 @@ impl Editor {
     pub fn move_right(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.move_right(self.cursor);
     }
 
@@ -808,7 +881,7 @@ impl Editor {
     pub fn move_up(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.move_up(self.cursor);
     }
 
@@ -816,7 +889,7 @@ impl Editor {
     pub fn move_down(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.move_down(self.cursor);
     }
 
@@ -824,7 +897,7 @@ impl Editor {
     pub fn move_word_left(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.move_word_left(self.cursor);
     }
 
@@ -832,7 +905,7 @@ impl Editor {
     pub fn move_word_right(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.move_word_right(self.cursor);
     }
 
@@ -841,7 +914,7 @@ impl Editor {
     pub fn move_paragraph_up(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.move_paragraph_up(self.cursor);
     }
 
@@ -850,7 +923,7 @@ impl Editor {
     pub fn move_paragraph_down(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.move_paragraph_down(self.cursor);
     }
 
@@ -858,7 +931,7 @@ impl Editor {
     pub fn move_to_line_start(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.line_start(self.cursor);
     }
 
@@ -866,7 +939,7 @@ impl Editor {
     pub fn move_to_line_end(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.line_end(self.cursor);
     }
 
@@ -874,7 +947,7 @@ impl Editor {
     pub fn move_to_document_start(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.document_start();
     }
 
@@ -882,7 +955,7 @@ impl Editor {
     pub fn move_to_document_end(&mut self) {
         self.break_undo_group();
         self.selection = None;
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.document_end();
     }
 
@@ -935,7 +1008,7 @@ impl Editor {
     /// Select all text.
     pub fn select_all(&mut self) {
         self.break_undo_group();
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         let start = nav.document_start();
         let end = nav.document_end();
         self.selection = Some(Selection {
@@ -958,7 +1031,7 @@ impl Editor {
         if sel.is_empty() {
             return None;
         }
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         let (start, end) = sel.byte_range(&nav);
         let start_char = self.rope.byte_to_char(start);
         let end_char = self.rope.byte_to_char(end);
@@ -969,7 +1042,7 @@ impl Editor {
         &mut self,
         f: impl FnOnce(&CursorNavigator<'_>, CursorPosition) -> CursorPosition,
     ) {
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         let new_head = f(&nav, self.cursor);
         self.extend_selection_to(new_head);
     }
@@ -981,7 +1054,7 @@ impl Editor {
             Some(sel) => sel.anchor,
             None => self.cursor,
         };
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         let new_head = nav.clamp(new_head);
         self.cursor = new_head;
         self.selection = Some(Selection {
@@ -997,7 +1070,7 @@ impl Editor {
     /// Replace all content and reset cursor to end. Clears undo history.
     pub fn set_text(&mut self, text: &str) {
         self.rope.replace(text);
-        let nav = CursorNavigator::new(&self.rope);
+        let nav = self.navigator();
         self.cursor = nav.document_end();
         self.selection = None;
         self.undo_stack.clear();

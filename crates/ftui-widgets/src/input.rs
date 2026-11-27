@@ -49,6 +49,12 @@ pub struct TextInput {
     selection_style: Style,
     /// Whether the input is focused (controls cursor output).
     focused: bool,
+    /// Opt-in UAX#9 visual-order bidi rendering and cursor navigation.
+    #[cfg(feature = "bidi")]
+    visual_bidi: bool,
+    /// Caret affinity at bidi direction boundaries (only meaningful in visual bidi mode).
+    #[cfg(feature = "bidi")]
+    caret_affinity: ftui_text::CaretAffinity,
     /// Optional command-line style entry recall (see [`InputHistory`]).
     ///
     /// This is entry recall — the shell-style Up/Down list of submitted values
@@ -202,6 +208,7 @@ impl TextInput {
         self.value = value.into();
         self.cursor = self.value.graphemes(true).count();
         self.selection_anchor = None;
+        self.normalize_caret_affinity();
         self
     }
 
@@ -276,6 +283,83 @@ impl TextInput {
         self
     }
 
+    /// Opt in (or out) of UAX#9 visual-order bidi rendering and cursor navigation (builder).
+    ///
+    /// Off by default (logical order). When enabled on non-masked inputs that
+    /// contain RTL text:
+    /// - Grapheme clusters are drawn in UAX#9 visual order while selection
+    ///   highlights map back to the original logical bytes;
+    /// - Left/Right/Home/End navigate visual caret stops monotonically with
+    ///   [`ftui_text::CaretAffinity`], preserving distinct stops around
+    ///   zero-width marks (e.g. RLM/LRM) and reaching the logical end of
+    ///   trailing RTL runs;
+    /// - [`click_at`](Self::click_at) hit-tests against the visual layout with
+    ///   wide-cell snapping.
+    #[cfg(feature = "bidi")]
+    #[must_use]
+    pub fn with_visual_bidi(mut self, enabled: bool) -> Self {
+        self.set_visual_bidi(enabled);
+        self
+    }
+
+    /// Enable or disable UAX#9 visual-order bidi rendering and cursor navigation.
+    #[cfg(feature = "bidi")]
+    pub fn set_visual_bidi(&mut self, enabled: bool) {
+        self.visual_bidi = enabled;
+        self.normalize_caret_affinity();
+    }
+
+    /// Whether UAX#9 visual-order bidi rendering and cursor navigation is enabled.
+    #[cfg(feature = "bidi")]
+    #[must_use]
+    pub const fn visual_bidi(&self) -> bool {
+        self.visual_bidi
+    }
+
+    /// Current caret affinity at bidirectional run boundaries.
+    #[cfg(feature = "bidi")]
+    #[must_use]
+    pub const fn caret_affinity(&self) -> ftui_text::CaretAffinity {
+        self.caret_affinity
+    }
+
+    /// Place the cursor at the visual column corresponding to `screen_x`
+    /// within `area`, clearing any active selection.
+    ///
+    /// Returns `true` if `screen_x` falls inside `area`. In visual-bidi mode
+    /// (when `bidi` is enabled), hit-testing uses UAX#9 visual order with
+    /// wide-cell left-edge snapping.
+    pub fn click_at(&mut self, area: Rect, screen_x: u16) -> bool {
+        if area.is_empty() || screen_x < area.x || screen_x >= area.right() {
+            return false;
+        }
+        let rel_col = usize::from(screen_x - area.x);
+        let target_visual = self.effective_scroll(area.width as usize) + rel_col;
+        self.selection_anchor = None;
+
+        #[cfg(feature = "bidi")]
+        if let Some(layout) = self.visual_bidi_layout() {
+            let (g, _, affinity) = layout.hit_test(target_visual);
+            self.cursor = g;
+            self.caret_affinity = affinity;
+            return true;
+        }
+
+        let mut col = 0usize;
+        let mut idx = 0usize;
+        for g in self.value.graphemes(true) {
+            let w = self.grapheme_width(g);
+            if col.saturating_add(w) > target_visual {
+                break;
+            }
+            col = col.saturating_add(w);
+            idx = idx.saturating_add(1);
+        }
+        self.cursor = idx;
+        self.normalize_caret_affinity();
+        true
+    }
+
     // --- Value access ---
 
     /// Get the current value.
@@ -290,6 +374,7 @@ impl TextInput {
         self.cursor = self.cursor.min(max);
         self.scroll_cells.set(0);
         self.selection_anchor = None;
+        self.normalize_caret_affinity();
     }
 
     /// Clear all text.
@@ -298,6 +383,7 @@ impl TextInput {
         self.cursor = 0;
         self.scroll_cells.set(0);
         self.selection_anchor = None;
+        self.normalize_caret_affinity();
     }
 
     /// Get the cursor position (grapheme index).
@@ -383,6 +469,7 @@ impl TextInput {
         self.cursor = self.grapheme_count();
         self.scroll_cells.set(0);
         self.selection_anchor = None;
+        self.normalize_caret_affinity();
     }
 
     /// Get the cursor screen position relative to a render area.
@@ -639,8 +726,23 @@ impl TextInput {
                 } else {
                     self.selection_anchor = None;
                 }
-                self.cursor = 0;
-                self.scroll_cells.set(0);
+                #[cfg(feature = "bidi")]
+                if let Some(layout) = self.visual_bidi_layout() {
+                    let (g, _, aff) = layout.leftmost();
+                    self.cursor = g;
+                    self.caret_affinity = aff;
+                    self.scroll_cells.set(0);
+                } else {
+                    self.cursor = 0;
+                    self.scroll_cells.set(0);
+                    self.normalize_caret_affinity();
+                }
+                #[cfg(not(feature = "bidi"))]
+                {
+                    self.cursor = 0;
+                    self.scroll_cells.set(0);
+                    self.normalize_caret_affinity();
+                }
                 true
             }
             KeyCode::End => {
@@ -649,7 +751,20 @@ impl TextInput {
                 } else {
                     self.selection_anchor = None;
                 }
-                self.cursor = self.grapheme_count();
+                #[cfg(feature = "bidi")]
+                if let Some(layout) = self.visual_bidi_layout() {
+                    let (g, _, aff) = layout.rightmost();
+                    self.cursor = g;
+                    self.caret_affinity = aff;
+                } else {
+                    self.cursor = self.grapheme_count();
+                    self.normalize_caret_affinity();
+                }
+                #[cfg(not(feature = "bidi"))]
+                {
+                    self.cursor = self.grapheme_count();
+                    self.normalize_caret_affinity();
+                }
                 true
             }
             _ => false,
@@ -808,6 +923,14 @@ impl TextInput {
             .grapheme_indices(true)
             .take_while(|(i, _)| *i < byte_offset + to_insert.len())
             .count();
+        #[cfg(feature = "bidi")]
+        {
+            self.caret_affinity = if self.visual_bidi {
+                ftui_text::CaretAffinity::Upstream
+            } else {
+                ftui_text::CaretAffinity::Downstream
+            };
+        }
     }
 
     fn insert_char(&mut self, c: char) {
@@ -839,6 +962,14 @@ impl TextInput {
             .grapheme_indices(true)
             .take_while(|(i, _)| *i < byte_offset + char_len)
             .count();
+        #[cfg(feature = "bidi")]
+        {
+            self.caret_affinity = if self.visual_bidi {
+                ftui_text::CaretAffinity::Upstream
+            } else {
+                ftui_text::CaretAffinity::Downstream
+            };
+        }
     }
 
     fn delete_char_back(&mut self) {
@@ -851,6 +982,7 @@ impl TextInput {
             if self.cursor > gc {
                 self.cursor = gc;
             }
+            self.normalize_caret_affinity();
         }
     }
 
@@ -864,6 +996,7 @@ impl TextInput {
             if self.cursor > gc {
                 self.cursor = gc;
             }
+            self.normalize_caret_affinity();
         }
     }
 
@@ -886,6 +1019,7 @@ impl TextInput {
             if self.cursor > gc {
                 self.cursor = gc;
             }
+            self.normalize_caret_affinity();
         }
     }
 
@@ -905,6 +1039,7 @@ impl TextInput {
             if self.cursor > gc {
                 self.cursor = gc;
             }
+            self.normalize_caret_affinity();
         }
     }
 
@@ -914,6 +1049,7 @@ impl TextInput {
     pub fn select_all(&mut self) {
         self.selection_anchor = Some(0);
         self.cursor = self.grapheme_count();
+        self.normalize_caret_affinity();
     }
 
     /// Delete selected text. No-op if no selection.
@@ -928,6 +1064,7 @@ impl TextInput {
             if self.cursor > gc {
                 self.cursor = gc;
             }
+            self.normalize_caret_affinity();
         }
     }
 
@@ -958,22 +1095,74 @@ impl TextInput {
 
     fn move_cursor_left(&mut self) {
         if let Some(anchor) = self.selection_anchor.take() {
+            #[cfg(feature = "bidi")]
+            if let Some(layout) = self.visual_bidi_layout() {
+                let anchor_aff = layout.canonical_affinity(anchor);
+                let target_slot = layout
+                    .slot_for(anchor, anchor_aff)
+                    .min(layout.slot_for(self.cursor, self.caret_affinity));
+                let (g, _, aff) = layout.stop_at_slot(target_slot);
+                self.cursor = g;
+                self.caret_affinity = aff;
+                return;
+            }
             self.cursor = self.cursor.min(anchor);
-        } else if self.cursor > 0 {
-            self.cursor -= 1;
+            self.normalize_caret_affinity();
+        } else {
+            #[cfg(feature = "bidi")]
+            if let Some(layout) = self.visual_bidi_layout() {
+                if let Some((g, _, aff)) = layout.step_left(self.cursor, self.caret_affinity) {
+                    self.cursor = g;
+                    self.caret_affinity = aff;
+                }
+                return;
+            }
+            if self.cursor > 0 {
+                self.cursor -= 1;
+            }
         }
     }
 
     fn move_cursor_right(&mut self) {
         if let Some(anchor) = self.selection_anchor.take() {
+            #[cfg(feature = "bidi")]
+            if let Some(layout) = self.visual_bidi_layout() {
+                let anchor_aff = layout.canonical_affinity(anchor);
+                let target_slot = layout
+                    .slot_for(anchor, anchor_aff)
+                    .max(layout.slot_for(self.cursor, self.caret_affinity));
+                let (g, _, aff) = layout.stop_at_slot(target_slot);
+                self.cursor = g;
+                self.caret_affinity = aff;
+                return;
+            }
             self.cursor = self.cursor.max(anchor);
-        } else if self.cursor < self.grapheme_count() {
-            self.cursor += 1;
+            self.normalize_caret_affinity();
+        } else {
+            #[cfg(feature = "bidi")]
+            if let Some(layout) = self.visual_bidi_layout() {
+                if let Some((g, _, aff)) = layout.step_right(self.cursor, self.caret_affinity) {
+                    self.cursor = g;
+                    self.caret_affinity = aff;
+                }
+                return;
+            }
+            if self.cursor < self.grapheme_count() {
+                self.cursor += 1;
+            }
         }
     }
 
     fn move_cursor_left_select(&mut self) {
         self.ensure_selection_anchor();
+        #[cfg(feature = "bidi")]
+        if let Some(layout) = self.visual_bidi_layout() {
+            if let Some((g, _, aff)) = layout.step_left(self.cursor, self.caret_affinity) {
+                self.cursor = g;
+                self.caret_affinity = aff;
+            }
+            return;
+        }
         if self.cursor > 0 {
             self.cursor -= 1;
         }
@@ -981,6 +1170,14 @@ impl TextInput {
 
     fn move_cursor_right_select(&mut self) {
         self.ensure_selection_anchor();
+        #[cfg(feature = "bidi")]
+        if let Some(layout) = self.visual_bidi_layout() {
+            if let Some((g, _, aff)) = layout.step_right(self.cursor, self.caret_affinity) {
+                self.cursor = g;
+                self.caret_affinity = aff;
+            }
+            return;
+        }
         if self.cursor < self.grapheme_count() {
             self.cursor += 1;
         }
@@ -1108,17 +1305,51 @@ impl TextInput {
             .unwrap_or(0)
     }
 
+    #[cfg(feature = "bidi")]
+    fn visual_bidi_layout(&self) -> Option<ftui_text::VisualLineLayout<'_>> {
+        if self.visual_bidi && self.mask_char.is_none() {
+            ftui_text::VisualLineLayout::new(&self.value)
+        } else {
+            None
+        }
+    }
+
+    fn normalize_caret_affinity(&mut self) {
+        #[cfg(feature = "bidi")]
+        {
+            self.caret_affinity = self
+                .visual_bidi_layout()
+                .map_or(ftui_text::CaretAffinity::Downstream, |layout| {
+                    layout.canonical_affinity(self.cursor)
+                });
+        }
+    }
+
     fn cursor_visual_pos(&self) -> usize {
         let mut pos = 0;
         if !self.value.is_empty() {
-            // Logical order: TextInput renders its value in logical order, so
-            // the caret must be measured the same way (#102).
-            pos += self
-                .value
-                .graphemes(true)
-                .take(self.cursor)
-                .map(|g| self.grapheme_width(g))
-                .sum::<usize>();
+            #[cfg(feature = "bidi")]
+            if let Some(layout) = self.visual_bidi_layout() {
+                pos += layout.visual_col(self.cursor, self.caret_affinity);
+            } else {
+                pos += self
+                    .value
+                    .graphemes(true)
+                    .take(self.cursor)
+                    .map(|g| self.grapheme_width(g))
+                    .sum::<usize>();
+            }
+            #[cfg(not(feature = "bidi"))]
+            {
+                // Logical order: TextInput renders its value in logical order, so
+                // the caret must be measured the same way (#102).
+                pos += self
+                    .value
+                    .graphemes(true)
+                    .take(self.cursor)
+                    .map(|g| self.grapheme_width(g))
+                    .sum::<usize>();
+            }
         }
         if let Some(ime) = &self.ime_composition {
             pos += ime
@@ -1161,6 +1392,26 @@ impl TextInput {
     fn snap_scroll_to_grapheme_boundary(&self, scroll: usize, viewport_width: usize) -> usize {
         let mut pos = 0;
         let cursor_visual = self.cursor_visual_pos();
+
+        #[cfg(feature = "bidi")]
+        if let Some(layout) = self.visual_bidi_layout() {
+            for vg in layout.visual_graphemes() {
+                let w = vg.width;
+                let next_pos = pos + w;
+                if pos < scroll && scroll < next_pos {
+                    if cursor_visual <= pos + viewport_width {
+                        return pos;
+                    } else {
+                        return next_pos;
+                    }
+                }
+                if next_pos > scroll {
+                    break;
+                }
+                pos = next_pos;
+            }
+            return scroll;
+        }
 
         for g in self.value.graphemes(true) {
             let w = self.grapheme_width(g);
@@ -1299,8 +1550,65 @@ impl Widget for TextInput {
             }
         } else {
             let mut display_spans: Vec<(&str, Style, bool)> = Vec::new();
-            for (gi, g) in graphemes.iter().enumerate() {
-                if gi == self.cursor
+            #[cfg(feature = "bidi")]
+            let visual_layout = self.visual_bidi_layout();
+            #[cfg(feature = "bidi")]
+            if let Some(layout) = visual_layout.as_ref() {
+                let ime_slot = layout.slot_for(self.cursor, self.caret_affinity);
+                let ime_style = if deg.apply_styling() {
+                    self.style
+                } else {
+                    Style::default()
+                };
+                for (vi, vg) in layout.visual_graphemes().iter().enumerate() {
+                    if vi == ime_slot
+                        && let Some(ime) = &self.ime_composition
+                    {
+                        for ig in ime.graphemes(true) {
+                            display_spans.push((ig, ime_style, true));
+                        }
+                    }
+                    let cell_style = if !deg.apply_styling() {
+                        Style::default()
+                    } else if self.is_in_selection(vg.logical_index) {
+                        self.selection_style
+                    } else {
+                        self.style
+                    };
+                    display_spans.push((vg.text, cell_style, false));
+                }
+                if ime_slot == layout.grapheme_count()
+                    && let Some(ime) = &self.ime_composition
+                {
+                    for ig in ime.graphemes(true) {
+                        display_spans.push((ig, ime_style, true));
+                    }
+                }
+            } else {
+                for (gi, g) in graphemes.iter().enumerate() {
+                    if gi == self.cursor
+                        && let Some(ime) = &self.ime_composition
+                    {
+                        let ime_style = if deg.apply_styling() {
+                            self.style
+                        } else {
+                            Style::default()
+                        };
+                        for ig in ime.graphemes(true) {
+                            display_spans.push((ig, ime_style, true));
+                        }
+                    }
+
+                    let cell_style = if !deg.apply_styling() {
+                        Style::default()
+                    } else if self.is_in_selection(gi) {
+                        self.selection_style
+                    } else {
+                        self.style
+                    };
+                    display_spans.push((g, cell_style, false));
+                }
+                if self.cursor == graphemes.len()
                     && let Some(ime) = &self.ime_composition
                 {
                     let ime_style = if deg.apply_styling() {
@@ -1312,26 +1620,43 @@ impl Widget for TextInput {
                         display_spans.push((ig, ime_style, true));
                     }
                 }
-
-                let cell_style = if !deg.apply_styling() {
-                    Style::default()
-                } else if self.is_in_selection(gi) {
-                    self.selection_style
-                } else {
-                    self.style
-                };
-                display_spans.push((g, cell_style, false));
             }
-            if self.cursor == graphemes.len()
-                && let Some(ime) = &self.ime_composition
+            #[cfg(not(feature = "bidi"))]
             {
-                let ime_style = if deg.apply_styling() {
-                    self.style
-                } else {
-                    Style::default()
-                };
-                for ig in ime.graphemes(true) {
-                    display_spans.push((ig, ime_style, true));
+                for (gi, g) in graphemes.iter().enumerate() {
+                    if gi == self.cursor
+                        && let Some(ime) = &self.ime_composition
+                    {
+                        let ime_style = if deg.apply_styling() {
+                            self.style
+                        } else {
+                            Style::default()
+                        };
+                        for ig in ime.graphemes(true) {
+                            display_spans.push((ig, ime_style, true));
+                        }
+                    }
+
+                    let cell_style = if !deg.apply_styling() {
+                        Style::default()
+                    } else if self.is_in_selection(gi) {
+                        self.selection_style
+                    } else {
+                        self.style
+                    };
+                    display_spans.push((g, cell_style, false));
+                }
+                if self.cursor == graphemes.len()
+                    && let Some(ime) = &self.ime_composition
+                {
+                    let ime_style = if deg.apply_styling() {
+                        self.style
+                    } else {
+                        Style::default()
+                    };
+                    for ig in ime.graphemes(true) {
+                        display_spans.push((ig, ime_style, true));
+                    }
                 }
             }
 
@@ -1474,6 +1799,8 @@ pub struct TextInputSnapshot {
     value: String,
     cursor: usize,
     selection_anchor: Option<usize>,
+    #[cfg(feature = "bidi")]
+    caret_affinity: ftui_text::CaretAffinity,
 }
 
 impl UndoSupport for TextInput {
@@ -1486,6 +1813,8 @@ impl UndoSupport for TextInput {
             value: self.value.clone(),
             cursor: self.cursor,
             selection_anchor: self.selection_anchor,
+            #[cfg(feature = "bidi")]
+            caret_affinity: self.caret_affinity,
         })
     }
 
@@ -1494,6 +1823,10 @@ impl UndoSupport for TextInput {
             self.value = snap.value.clone();
             self.cursor = snap.cursor;
             self.selection_anchor = snap.selection_anchor;
+            #[cfg(feature = "bidi")]
+            {
+                self.caret_affinity = snap.caret_affinity;
+            }
             self.scroll_cells.set(0); // Reset scroll on restore
             true
         } else {
@@ -2984,6 +3317,149 @@ mod scroll_edge_tests {
                 .with_value("x\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} \u{05D0}");
             input.cursor = 2;
             assert_eq!(input.cursor_visual_pos(), 3);
+        }
+
+        /// bd-b8isx: TextInput in opt-in visual-bidi mode draws UAX#9 visual
+        /// order, maps selection highlights to original logical bytes, tracks
+        /// caret affinity on typing/junctions, keeps distinct zero-width stops,
+        /// and snaps wide-cell clicks cleanly.
+        #[cfg(feature = "bidi")]
+        #[test]
+        fn visual_bidi_input_render_selection_affinity_click_and_zero_width() {
+            use ftui_render::cell::StyleFlags;
+            use ftui_render::grapheme_pool::GraphemePool;
+
+            // 1. Combining Latin + RTL rendered in UAX#9 visual order: ["á", " ", "ב", "א"].
+            let mut input = TextInput::new()
+                .with_value("a\u{0301} \u{05D0}\u{05D1}")
+                .with_visual_bidi(true)
+                .with_selection_style(Style::new().reverse())
+                .with_focused(true);
+
+            let area = Rect::new(0, 0, 20, 1);
+            let render_cells = |inp: &TextInput| -> (Vec<String>, Vec<bool>, Option<(u16, u16)>) {
+                let mut pool = GraphemePool::new();
+                let mut frame = Frame::new(area.width, area.height, &mut pool);
+                Widget::render(inp, area, &mut frame);
+                let mut glyphs = Vec::new();
+                let mut reversed = Vec::new();
+                for x in 0..4u16 {
+                    let cell = frame.buffer.get(x, 0).unwrap();
+                    let g = cell
+                        .content
+                        .as_char()
+                        .map(String::from)
+                        .or_else(|| {
+                            cell.content
+                                .grapheme_id()
+                                .and_then(|id| frame.pool.get(id).map(str::to_string))
+                        })
+                        .unwrap_or_default();
+                    glyphs.push(g);
+                    reversed.push(cell.attrs.flags().contains(StyleFlags::REVERSE));
+                }
+                (glyphs, reversed, frame.cursor_position)
+            };
+
+            let (glyphs, _, cur_pos) = render_cells(&input);
+            assert_eq!(glyphs, vec!["a\u{0301}", " ", "\u{05D1}", "\u{05D0}"]);
+            assert_eq!(cur_pos, Some((4, 0)));
+
+            // Home/End hit visual display edges (0 and 4) and Left/Right round-trip monotonically.
+            input.handle_event(&key(KeyCode::Home));
+            assert_eq!(input.cursor(), 0);
+            assert_eq!(input.cursor_visual_pos(), 0);
+            let mut stops = vec![(
+                input.cursor(),
+                input.cursor_visual_pos(),
+                input.caret_affinity(),
+            )];
+            for _ in 0..8 {
+                let before = (input.cursor(), input.caret_affinity());
+                input.handle_event(&key(KeyCode::Right));
+                if (input.cursor(), input.caret_affinity()) == before {
+                    break;
+                }
+                stops.push((
+                    input.cursor(),
+                    input.cursor_visual_pos(),
+                    input.caret_affinity(),
+                ));
+            }
+            assert_eq!(stops.len(), 5);
+            assert_eq!(stops.last().unwrap().0, 4);
+            assert_eq!(stops.last().unwrap().1, 4);
+            for expected in stops.iter().rev().skip(1) {
+                input.handle_event(&key(KeyCode::Left));
+                assert_eq!(
+                    (
+                        input.cursor(),
+                        input.cursor_visual_pos(),
+                        input.caret_affinity()
+                    ),
+                    *expected
+                );
+            }
+
+            // Selection highlights map to original logical bytes (" א" = graphemes 1..3),
+            // lighting up visual cols 1 (' ') and 3 ('א') while leaving col 2 ('ב') clear.
+            input.set_focused(false);
+            input.cursor = 1;
+            input.selection_anchor = Some(1);
+            input.cursor = 3;
+            assert_eq!(input.selected_text(), Some(" \u{05D0}"));
+            let (_, reversed, _) = render_cells(&input);
+            assert_eq!(reversed, vec![false, true, false, true]);
+
+            // Typing RTL at the end of an LTR prefix retains Upstream affinity so
+            // the caret stays visually left of the newly inserted RTL glyph.
+            let mut typed = TextInput::new()
+                .with_value("ab ")
+                .with_visual_bidi(true)
+                .with_focused(true);
+            typed.handle_event(&key(KeyCode::Char('\u{05D0}')));
+            typed.handle_event(&key(KeyCode::Char('\u{05D1}')));
+            assert_eq!(typed.value(), "ab \u{05D0}\u{05D1}");
+            assert_eq!(typed.cursor(), 5);
+            assert_eq!(typed.caret_affinity(), ftui_text::CaretAffinity::Upstream);
+            assert_eq!(typed.cursor_visual_pos(), 3);
+            // Stepping Right from that remembered Upstream edge moves to col 4 (g=4).
+            typed.handle_event(&key(KeyCode::Right));
+            assert_eq!(typed.cursor(), 4);
+            assert_eq!(typed.cursor_visual_pos(), 4);
+
+            // Wide-cell click snapping (flag + keycap + ZWJ family + RTL).
+            let flag_w = grapheme_width("\u{1F1FA}\u{1F1F8}");
+            assert_eq!(flag_w, 2);
+            let keycap_w = grapheme_width("1\u{FE0F}\u{20E3}");
+            let mut wide = TextInput::new()
+                .with_value(
+                    "\u{1F1FA}\u{1F1F8} 1\u{FE0F}\u{20E3} \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} \u{05D0}\u{05D1} end",
+                )
+                .with_visual_bidi(true);
+            assert!(wide.click_at(area, 1)); // second cell of flag -> snaps to col 0 (g=0)
+            assert_eq!(wide.cursor(), 0);
+            assert_eq!(wide.cursor_visual_pos(), 0);
+            let zwj_start = (flag_w + 1 + keycap_w + 1) as u16;
+            assert!(wide.click_at(area, zwj_start + 1)); // second cell of ZWJ -> snaps to zwj_start (g=4)
+            assert_eq!(wide.cursor(), 4);
+            assert_eq!(wide.cursor_visual_pos(), usize::from(zwj_start));
+
+            // Zero-width controls (RLM/LRM): 5 distinct stops, no loops.
+            let mut zw = TextInput::new()
+                .with_value("\u{200F}a\u{200E}\u{05D0}")
+                .with_visual_bidi(true);
+            zw.handle_event(&key(KeyCode::Home));
+            let mut zw_stops = vec![zw.cursor()];
+            for _ in 0..10 {
+                let before = zw.cursor();
+                zw.handle_event(&key(KeyCode::Right));
+                if zw.cursor() == before {
+                    break;
+                }
+                zw_stops.push(zw.cursor());
+            }
+            assert_eq!(zw_stops.len(), 5);
         }
     }
 }

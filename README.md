@@ -406,7 +406,7 @@ See `docs/telemetry.md` for integration patterns and trace‑parent attachment.
 | `ftui-render` | `tracing` | Performance spans for diff/presenter |
 | `ftui-runtime` | `tracing` | Runtime loop instrumentation |
 | `ftui-runtime` | `telemetry` | OpenTelemetry export (OTLP) |
-| `ftui-widgets` | `bidi` | BiDi (UAX#9) visual reordering for `Paragraph`; editable widgets keep logical order |
+| `ftui-widgets` | `bidi` | BiDi (UAX#9) visual reordering for `Paragraph`, plus opt-in visual-order editing (`with_visual_bidi(true)`) on `TextInput` and `TextArea` |
 
 Enable features per-crate in your `Cargo.toml` as needed.
 
@@ -1740,7 +1740,7 @@ native OSC 52 commands do not grant browser clipboard permissions.
 
 ### BiDi & Shaping
 
-- **BiDi** (`bidi.rs`): Unicode Bidirectional Algorithm for mixed LTR/RTL text (feature `bidi`, used by `Paragraph` rendering and the opt-in `CursorNavigator::with_visual_bidi` caret mode)
+- **BiDi** (`bidi.rs`): Unicode Bidirectional Algorithm for mixed LTR/RTL text (feature `bidi`, used by `Paragraph` rendering and opt-in `with_visual_bidi(true)` visual-order editing with caret affinity across `CursorNavigator`, `Editor`, `TextInput`, and `TextArea`)
 - **Shaping** (`shaping.rs`): standalone script/run segmentation and ligature/fallback helpers in `ftui-text` (not invoked by the default widget render path)
 - **Normalization** (`normalization.rs`): opt-in NFC/NFD/NFKC/NFKD Unicode normalization helpers (feature `normalization` in `ftui-text`)
 
@@ -2944,7 +2944,7 @@ The `ftui-i18n` crate provides locale-aware rendering:
 
 - **Locale context** propagated through the runtime (`ProgramConfig::with_locale("fr")`, `LocaleContext::direction()`)
 - **String catalog** with fallback chains and CLDR-style plural rules (`StringCatalog`, `PluralRule`)
-- **Text direction** from locale with per-line, grapheme-cluster-preserving UAX#9 reordering in `Paragraph` (feature `bidi`, on by default in `ftui`). `TextInput` and `TextArea` draw and navigate editable text in logical order; `CursorNavigator::with_visual_bidi(true)` is an explicit opt-in visual caret for editors that also render in visual order
+- **Text direction** from locale with per-line, grapheme-cluster-preserving UAX#9 reordering in `Paragraph` (feature `bidi`, on by default in `ftui`). `TextInput` and `TextArea` default to logical order and expose opt-in `with_visual_bidi(true)` for coherent UAX#9 visual-order drawing, byte-accurate selection highlights, caret affinity, wrapped-line layout, and visual mouse hit-testing backed by `VisualLineLayout` and `CursorNavigator::with_visual_bidi(true)`
 
 - **Number & date formatting** backed by pinned Unicode CLDR v45.0 data for 7 declared locales (`ftui_i18n::{NumberFormatter, DateTimeFormatter}`, with locale-context convenience helpers `ftui_runtime::locale::{format_number, format_date}`)
 

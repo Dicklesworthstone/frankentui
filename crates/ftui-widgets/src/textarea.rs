@@ -163,6 +163,8 @@ struct WrappedSlice<'a> {
     start_byte: usize,
     start_col: usize,
     width: usize,
+    start_grapheme: usize,
+    grapheme_len: usize,
 }
 
 impl TextArea {
@@ -303,7 +305,7 @@ impl TextArea {
         let col = usize::from(x.saturating_sub(area.x.saturating_add(self.gutter_width())));
         let row = usize::from(y.saturating_sub(area.y));
         let rope = self.editor.rope();
-        let nav = CursorNavigator::new(rope);
+        let nav = self.navigator();
         let (top_line, top_vrow) = self.scroll_anchor.get();
         let top_line = if top_line == usize::MAX { 0 } else { top_line };
         let line_count = self.editor.line_count();
@@ -332,6 +334,19 @@ impl TextArea {
                 } else {
                     slice.width
                 };
+                #[cfg(feature = "bidi")]
+                if self.editor.visual_bidi() && ftui_text::bidi::has_rtl(line_text) {
+                    let layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+                        line_text,
+                        slice.start_byte..slice.start_byte + slice.text.len(),
+                    );
+                    let (local_g, _, affinity) = layout.hit_test(col.min(max));
+                    return nav.from_line_grapheme_with_affinity(
+                        line_idx,
+                        slice.start_grapheme + local_g,
+                        affinity,
+                    );
+                }
                 return nav.from_visual_col(line_idx, slice.start_col + col.min(max));
             }
             remaining -= visible;
@@ -343,7 +358,7 @@ impl TextArea {
     /// of spaces, or one punctuation mark.
     fn select_word_at(&mut self, pos: CursorPosition) {
         let rope = self.editor.rope();
-        let nav = CursorNavigator::new(rope);
+        let nav = self.navigator();
         let line_text = rope
             .line(pos.line)
             .unwrap_or(std::borrow::Cow::Borrowed(""));
@@ -366,7 +381,7 @@ impl TextArea {
 
     /// Select the whole logical line under `pos`, without its newline.
     fn select_line_at(&mut self, pos: CursorPosition) {
-        let nav = CursorNavigator::new(self.editor.rope());
+        let nav = self.navigator();
         let from = nav.from_line_grapheme(pos.line, 0);
         let to = nav.from_line_grapheme(pos.line, usize::MAX);
         self.editor.set_cursor(from);
@@ -622,6 +637,54 @@ impl TextArea {
         self
     }
 
+    /// Opt in (or out) of UAX#9 visual-order bidi rendering, cursor movement,
+    /// selection mapping, and mouse hit-testing (builder).
+    ///
+    /// Off by default (logical order). When enabled on lines containing RTL
+    /// text, both wrapped and unwrapped views render grapheme clusters in
+    /// UAX#9 visual order via [`ftui_text::VisualLineLayout`], highlight
+    /// selections and syntax spans using original byte offsets, track
+    /// [`ftui_text::CaretAffinity`], and snap wide-cell clicks cleanly.
+    #[cfg(feature = "bidi")]
+    #[must_use]
+    pub fn with_visual_bidi(mut self, enabled: bool) -> Self {
+        self.set_visual_bidi(enabled);
+        self
+    }
+
+    /// Enable or disable UAX#9 visual-order bidi editing.
+    #[cfg(feature = "bidi")]
+    pub fn set_visual_bidi(&mut self, enabled: bool) {
+        self.editor.set_visual_bidi(enabled);
+        self.ensure_cursor_visible();
+    }
+
+    /// Whether UAX#9 visual-order bidi editing is enabled.
+    #[cfg(feature = "bidi")]
+    #[must_use]
+    pub const fn visual_bidi(&self) -> bool {
+        self.editor.visual_bidi()
+    }
+
+    fn navigator(&self) -> CursorNavigator<'_> {
+        let nav = CursorNavigator::new(self.editor.rope());
+        #[cfg(feature = "bidi")]
+        let nav = nav.with_visual_bidi(self.editor.visual_bidi());
+        nav
+    }
+
+    #[inline]
+    fn is_visual_bidi(&self) -> bool {
+        #[cfg(feature = "bidi")]
+        {
+            self.editor.visual_bidi()
+        }
+        #[cfg(not(feature = "bidi"))]
+        {
+            false
+        }
+    }
+
     /// Set maximum height in lines (builder). 0 = fill available area.
     #[must_use]
     pub fn with_max_height(mut self, max: usize) -> Self {
@@ -797,12 +860,22 @@ impl TextArea {
 
     /// Move cursor left.
     pub fn move_left(&mut self) {
+        #[cfg(feature = "bidi")]
+        if self.move_wrapped_bidi_horizontal(-1, false) {
+            self.ensure_cursor_visible();
+            return;
+        }
         self.editor.move_left();
         self.ensure_cursor_visible();
     }
 
     /// Move cursor right.
     pub fn move_right(&mut self) {
+        #[cfg(feature = "bidi")]
+        if self.move_wrapped_bidi_horizontal(1, false) {
+            self.ensure_cursor_visible();
+            return;
+        }
         self.editor.move_right();
         self.ensure_cursor_visible();
     }
@@ -881,12 +954,22 @@ impl TextArea {
 
     /// Move to start of line.
     pub fn move_to_line_start(&mut self) {
+        #[cfg(feature = "bidi")]
+        if self.move_wrapped_bidi_edge(false) {
+            self.ensure_cursor_visible();
+            return;
+        }
         self.editor.move_to_line_start();
         self.ensure_cursor_visible();
     }
 
     /// Move to end of line.
     pub fn move_to_line_end(&mut self) {
+        #[cfg(feature = "bidi")]
+        if self.move_wrapped_bidi_edge(true) {
+            self.ensure_cursor_visible();
+            return;
+        }
         self.editor.move_to_line_end();
         self.ensure_cursor_visible();
     }
@@ -903,6 +986,176 @@ impl TextArea {
         self.ensure_cursor_visible();
     }
 
+    #[cfg(feature = "bidi")]
+    fn move_wrapped_bidi_horizontal(&mut self, dir: isize, extend_selection: bool) -> bool {
+        let width = self.last_viewport_width.get();
+        if !self.soft_wrap || !self.editor.visual_bidi() || width == 0 {
+            return false;
+        }
+
+        let cursor = self.editor.cursor();
+        let line_owned = self
+            .editor
+            .rope()
+            .line(cursor.line)
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_default();
+        let line_text = line_owned.trim_end_matches(['\n', '\r']);
+        if !ftui_text::bidi::has_rtl(line_text) {
+            return false;
+        }
+
+        let slices = Self::wrap_line_slices(line_text, width);
+        if slices.len() <= 1 {
+            return false;
+        }
+
+        let (slice_idx, _) = Self::cursor_wrap_position_for_cursor(line_text, width, cursor, true);
+        let slice = &slices[slice_idx];
+        let layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+            line_text,
+            slice.start_byte..slice.start_byte + slice.text.len(),
+        );
+        let local_g = cursor.grapheme.saturating_sub(slice.start_grapheme);
+        let stepped = if dir < 0 {
+            layout.step_left(local_g, cursor.affinity)
+        } else {
+            layout.step_right(local_g, cursor.affinity)
+        };
+
+        let target = if let Some((next_local_g, _, next_aff)) = stepped {
+            let next_g = slice.start_grapheme + next_local_g;
+            let nav = self.navigator();
+            if slice_idx + 1 < slices.len() && next_g == slice.start_grapheme + slice.grapheme_len {
+                // Transitioning onto the next wrapped slice at its start boundary:
+                // use canonical affinity for that slice's starting grapheme.
+                let next_slice = &slices[slice_idx + 1];
+                let next_layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+                    line_text,
+                    next_slice.start_byte..next_slice.start_byte + next_slice.text.len(),
+                );
+                let next_slice_aff = next_layout.canonical_affinity(0);
+                nav.from_line_grapheme_with_affinity(cursor.line, next_g, next_slice_aff)
+            } else {
+                nav.from_line_grapheme_with_affinity(cursor.line, next_g, next_aff)
+            }
+        } else if dir < 0 {
+            let nav = self.navigator();
+            if slice_idx > 0 {
+                let prev_slice = &slices[slice_idx - 1];
+                let prev_layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+                    line_text,
+                    prev_slice.start_byte..prev_slice.start_byte + prev_slice.text.len(),
+                );
+                let (mut pg, _, mut paff) = prev_layout.rightmost();
+                if prev_slice.start_grapheme + pg == slice.start_grapheme
+                    && let Some((inner_g, _, inner_aff)) = prev_layout.step_left(pg, paff)
+                {
+                    pg = inner_g;
+                    paff = inner_aff;
+                }
+                nav.from_line_grapheme_with_affinity(
+                    cursor.line,
+                    prev_slice.start_grapheme + pg,
+                    paff,
+                )
+            } else if cursor.line > 0 {
+                nav.line_end(nav.from_line_grapheme(cursor.line - 1, 0))
+            } else {
+                cursor
+            }
+        } else {
+            let nav = self.navigator();
+            if slice_idx + 1 < slices.len() {
+                let next_slice = &slices[slice_idx + 1];
+                let next_layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+                    line_text,
+                    next_slice.start_byte..next_slice.start_byte + next_slice.text.len(),
+                );
+                let (mut ng, _, mut naff) = next_layout.leftmost();
+                if next_slice.start_grapheme + ng == cursor.grapheme
+                    && let Some((inner_g, _, inner_aff)) = next_layout.step_right(ng, naff)
+                {
+                    ng = inner_g;
+                    naff = inner_aff;
+                }
+                nav.from_line_grapheme_with_affinity(
+                    cursor.line,
+                    next_slice.start_grapheme + ng,
+                    naff,
+                )
+            } else if cursor.line + 1 < self.editor.line_count() {
+                nav.line_start(nav.from_line_grapheme(cursor.line + 1, 0))
+            } else {
+                cursor
+            }
+        };
+
+        if extend_selection {
+            self.editor.extend_selection_to(target);
+        } else {
+            self.editor.set_cursor(target);
+        }
+        true
+    }
+
+    #[cfg(feature = "bidi")]
+    fn move_wrapped_bidi_edge(&mut self, to_end: bool) -> bool {
+        let width = self.last_viewport_width.get();
+        if !self.soft_wrap || !self.editor.visual_bidi() || width == 0 {
+            return false;
+        }
+
+        let cursor = self.editor.cursor();
+        let line_owned = self
+            .editor
+            .rope()
+            .line(cursor.line)
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_default();
+        let line_text = line_owned.trim_end_matches(['\n', '\r']);
+        if !ftui_text::bidi::has_rtl(line_text) {
+            return false;
+        }
+
+        let slices = Self::wrap_line_slices(line_text, width);
+        if slices.len() <= 1 {
+            return false;
+        }
+
+        let (slice_idx, _) = Self::cursor_wrap_position_for_cursor(line_text, width, cursor, true);
+        let slice = &slices[slice_idx];
+        let layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+            line_text,
+            slice.start_byte..slice.start_byte + slice.text.len(),
+        );
+        let (mut local_g, _, mut aff) = if to_end {
+            layout.rightmost()
+        } else {
+            layout.leftmost()
+        };
+        // On non-final slices, the boundary equal to `slice.grapheme_len` maps
+        // onto the next wrapped row; step one slot inward to remain on this row.
+        if slice_idx + 1 < slices.len() && local_g == slice.grapheme_len {
+            let inward = if to_end {
+                layout.step_left(local_g, aff)
+            } else {
+                layout.step_right(local_g, aff)
+            };
+            if let Some((ig, _, iaff)) = inward {
+                local_g = ig;
+                aff = iaff;
+            }
+        }
+        let target = self.navigator().from_line_grapheme_with_affinity(
+            cursor.line,
+            slice.start_grapheme + local_g,
+            aff,
+        );
+        self.editor.set_cursor(target);
+        true
+    }
+
     fn move_cursor_visual_down(&mut self, count: usize, extend_selection: bool) {
         let width = self.last_viewport_width.get();
         if width == 0 {
@@ -916,6 +1169,7 @@ impl TextArea {
             return;
         }
 
+        let visual_bidi = self.is_visual_bidi();
         let rope = self.editor.rope();
         let mut cursor = self.editor.cursor();
         let mut remaining = count;
@@ -924,16 +1178,8 @@ impl TextArea {
             .line(cursor.line)
             .unwrap_or(std::borrow::Cow::Borrowed(""));
         let line_text = line_text.trim_end_matches(['\n', '\r']);
-        let (mut current_v_row, _) =
-            Self::cursor_wrap_position(line_text, width, cursor.visual_col);
-
-        // Calculate target screen X (relative to slice start) to preserve column
-        let initial_slices = Self::wrap_line_slices(line_text, width);
-        let initial_slice_start = initial_slices
-            .get(current_v_row)
-            .map(|s| s.start_col)
-            .unwrap_or(0);
-        let target_screen_x = cursor.visual_col.saturating_sub(initial_slice_start);
+        let (mut current_v_row, target_screen_x) =
+            Self::cursor_wrap_position_for_cursor(line_text, width, cursor, visual_bidi);
 
         while remaining > 0 {
             let line_text = rope
@@ -967,28 +1213,49 @@ impl TextArea {
 
         if let Some(slice) = slices.get(current_v_row) {
             let target_in_slice = target_screen_x.min(slice.width);
+            let nav = self.navigator();
+            #[cfg(feature = "bidi")]
+            let mapped = if visual_bidi && ftui_text::bidi::has_rtl(line_text) {
+                let layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+                    line_text,
+                    slice.start_byte..slice.start_byte + slice.text.len(),
+                );
+                let (local_g, _, aff) = layout.hit_test(target_in_slice);
+                Some(nav.from_line_grapheme_with_affinity(
+                    cursor.line,
+                    slice.start_grapheme + local_g,
+                    aff,
+                ))
+            } else {
+                None
+            };
+            #[cfg(not(feature = "bidi"))]
+            let mapped: Option<CursorPosition> = None;
 
-            let mut g_idx = 0;
-            let mut v_w = 0;
-            for g in slice.text.graphemes(true) {
-                let w = display_width(g);
-                if v_w + w > target_in_slice {
-                    break;
+            if let Some(pos) = mapped {
+                cursor = pos;
+            } else {
+                let mut g_idx = 0;
+                let mut v_w = 0;
+                for g in slice.text.graphemes(true) {
+                    let w = display_width(g);
+                    if v_w + w > target_in_slice {
+                        break;
+                    }
+                    v_w += w;
+                    g_idx += 1;
                 }
-                v_w += w;
-                g_idx += 1;
-            }
 
-            let nav = CursorNavigator::new(rope);
-            let line_start_byte = nav.to_byte_index(nav.from_line_grapheme(cursor.line, 0));
-            let slice_byte_offset: usize = slice
-                .text
-                .graphemes(true)
-                .take(g_idx)
-                .map(|g| g.len())
-                .sum();
-            let final_byte = line_start_byte + slice.start_byte + slice_byte_offset;
-            cursor = nav.from_byte_index(final_byte);
+                let line_start_byte = nav.to_byte_index(nav.from_line_grapheme(cursor.line, 0));
+                let slice_byte_offset: usize = slice
+                    .text
+                    .graphemes(true)
+                    .take(g_idx)
+                    .map(|g| g.len())
+                    .sum();
+                let final_byte = line_start_byte + slice.start_byte + slice_byte_offset;
+                cursor = nav.from_byte_index(final_byte);
+            }
         }
 
         if extend_selection {
@@ -1011,6 +1278,7 @@ impl TextArea {
             return;
         }
 
+        let visual_bidi = self.is_visual_bidi();
         let rope = self.editor.rope();
         let mut cursor = self.editor.cursor();
         let mut remaining = count;
@@ -1019,16 +1287,8 @@ impl TextArea {
             .line(cursor.line)
             .unwrap_or(std::borrow::Cow::Borrowed(""));
         let line_text = line_text.trim_end_matches(['\n', '\r']);
-        let (mut current_v_row, _) =
-            Self::cursor_wrap_position(line_text, width, cursor.visual_col);
-
-        // Calculate target screen X (relative to slice start) to preserve column
-        let initial_slices = Self::wrap_line_slices(line_text, width);
-        let initial_slice_start = initial_slices
-            .get(current_v_row)
-            .map(|s| s.start_col)
-            .unwrap_or(0);
-        let target_screen_x = cursor.visual_col.saturating_sub(initial_slice_start);
+        let (mut current_v_row, target_screen_x) =
+            Self::cursor_wrap_position_for_cursor(line_text, width, cursor, visual_bidi);
 
         while remaining > 0 {
             if remaining <= current_v_row {
@@ -1059,28 +1319,49 @@ impl TextArea {
 
         if let Some(slice) = slices.get(current_v_row) {
             let target_in_slice = target_screen_x.min(slice.width);
+            let nav = self.navigator();
+            #[cfg(feature = "bidi")]
+            let mapped = if visual_bidi && ftui_text::bidi::has_rtl(line_text) {
+                let layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+                    line_text,
+                    slice.start_byte..slice.start_byte + slice.text.len(),
+                );
+                let (local_g, _, aff) = layout.hit_test(target_in_slice);
+                Some(nav.from_line_grapheme_with_affinity(
+                    cursor.line,
+                    slice.start_grapheme + local_g,
+                    aff,
+                ))
+            } else {
+                None
+            };
+            #[cfg(not(feature = "bidi"))]
+            let mapped: Option<CursorPosition> = None;
 
-            let mut g_idx = 0;
-            let mut v_w = 0;
-            for g in slice.text.graphemes(true) {
-                let w = display_width(g);
-                if v_w + w > target_in_slice {
-                    break;
+            if let Some(pos) = mapped {
+                cursor = pos;
+            } else {
+                let mut g_idx = 0;
+                let mut v_w = 0;
+                for g in slice.text.graphemes(true) {
+                    let w = display_width(g);
+                    if v_w + w > target_in_slice {
+                        break;
+                    }
+                    v_w += w;
+                    g_idx += 1;
                 }
-                v_w += w;
-                g_idx += 1;
-            }
 
-            let nav = CursorNavigator::new(rope);
-            let line_start_byte = nav.to_byte_index(nav.from_line_grapheme(cursor.line, 0));
-            let slice_byte_offset: usize = slice
-                .text
-                .graphemes(true)
-                .take(g_idx)
-                .map(|g| g.len())
-                .sum();
-            let final_byte = line_start_byte + slice.start_byte + slice_byte_offset;
-            cursor = nav.from_byte_index(final_byte);
+                let line_start_byte = nav.to_byte_index(nav.from_line_grapheme(cursor.line, 0));
+                let slice_byte_offset: usize = slice
+                    .text
+                    .graphemes(true)
+                    .take(g_idx)
+                    .map(|g| g.len())
+                    .sum();
+                let final_byte = line_start_byte + slice.start_byte + slice_byte_offset;
+                cursor = nav.from_byte_index(final_byte);
+            }
         }
 
         if extend_selection {
@@ -1094,12 +1375,22 @@ impl TextArea {
 
     /// Extend selection left.
     pub fn select_left(&mut self) {
+        #[cfg(feature = "bidi")]
+        if self.move_wrapped_bidi_horizontal(-1, true) {
+            self.ensure_cursor_visible();
+            return;
+        }
         self.editor.select_left();
         self.ensure_cursor_visible();
     }
 
     /// Extend selection right.
     pub fn select_right(&mut self) {
+        #[cfg(feature = "bidi")]
+        if self.move_wrapped_bidi_horizontal(1, true) {
+            self.ensure_cursor_visible();
+            return;
+        }
         self.editor.select_right();
         self.ensure_cursor_visible();
     }
@@ -1289,6 +1580,8 @@ impl TextArea {
                 start_byte: 0,
                 start_col: 0,
                 width: 0,
+                start_grapheme: 0,
+                grapheme_len: 0,
             }];
         }
 
@@ -1296,15 +1589,20 @@ impl TextArea {
         let mut current_width = 0;
         let mut slice_start_byte = 0;
         let mut slice_start_col = 0;
+        let mut slice_start_grapheme = 0;
         let mut byte_cursor = 0;
         let mut col_cursor = 0;
+        let mut grapheme_cursor = 0;
 
+        #[allow(clippy::too_many_arguments)]
         let push_current = |slices: &mut Vec<WrappedSlice<'a>>,
                             width: &mut usize,
                             start_byte: &mut usize,
                             start_col: &mut usize,
+                            start_grapheme: &mut usize,
                             byte_cursor: usize,
-                            col_cursor: usize| {
+                            col_cursor: usize,
+                            grapheme_cursor: usize| {
             if byte_cursor == *start_byte && *width == 0 {
                 return;
             }
@@ -1313,15 +1611,23 @@ impl TextArea {
                 start_byte: *start_byte,
                 start_col: *start_col,
                 width: *width,
+                start_grapheme: *start_grapheme,
+                grapheme_len: grapheme_cursor.saturating_sub(*start_grapheme),
             });
             *start_byte = byte_cursor;
             *start_col = col_cursor;
+            *start_grapheme = grapheme_cursor;
             *width = 0;
         };
 
         for segment in line_text.split_word_bounds() {
             let seg_len = segment.len();
-            let seg_width: usize = segment.graphemes(true).map(display_width).sum();
+            let mut seg_width = 0usize;
+            let mut seg_graphemes = 0usize;
+            for g in segment.graphemes(true) {
+                seg_width += display_width(g);
+                seg_graphemes += 1;
+            }
 
             if max_width > 0 && current_width + seg_width > max_width {
                 push_current(
@@ -1329,8 +1635,10 @@ impl TextArea {
                     &mut current_width,
                     &mut slice_start_byte,
                     &mut slice_start_col,
+                    &mut slice_start_grapheme,
                     byte_cursor,
                     col_cursor,
+                    grapheme_cursor,
                 );
             }
 
@@ -1345,14 +1653,17 @@ impl TextArea {
                             &mut current_width,
                             &mut slice_start_byte,
                             &mut slice_start_col,
+                            &mut slice_start_grapheme,
                             byte_cursor,
                             col_cursor,
+                            grapheme_cursor,
                         );
                     }
 
                     current_width += g_width;
                     byte_cursor += g_len;
                     col_cursor += g_width;
+                    grapheme_cursor += 1;
                 }
                 continue;
             }
@@ -1360,6 +1671,7 @@ impl TextArea {
             current_width += seg_width;
             byte_cursor += seg_len;
             col_cursor += seg_width;
+            grapheme_cursor += seg_graphemes;
         }
 
         if byte_cursor > slice_start_byte || current_width > 0 || slices.is_empty() {
@@ -1368,34 +1680,63 @@ impl TextArea {
                 start_byte: slice_start_byte,
                 start_col: slice_start_col,
                 width: current_width,
+                start_grapheme: slice_start_grapheme,
+                grapheme_len: grapheme_cursor.saturating_sub(slice_start_grapheme),
             });
         }
 
         slices
     }
 
-    fn cursor_wrap_position(
+    fn cursor_wrap_position_for_cursor(
         line_text: &str,
         max_width: usize,
-        cursor_col: usize,
+        cursor: CursorPosition,
+        visual_bidi: bool,
     ) -> (usize, usize) {
         let slices = Self::wrap_line_slices(line_text, max_width);
         if slices.is_empty() {
             return (0, 0);
         }
 
+        #[cfg(not(feature = "bidi"))]
+        let _ = visual_bidi;
+
         for (idx, slice) in slices.iter().enumerate() {
-            let end_col = slice.start_col.saturating_add(slice.width);
-            // If cursor is at the wrap boundary (equal to end_col), we prefer the start
+            let end_g = slice.start_grapheme.saturating_add(slice.grapheme_len);
+            // If cursor is at the wrap boundary (equal to end_g), we prefer the start
             // of the *next* slice (by skipping this one) unless this is the last slice.
             let is_last = idx == slices.len().saturating_sub(1);
-            if cursor_col < end_col || (cursor_col == end_col && is_last) {
-                let col_in_slice = cursor_col.saturating_sub(slice.start_col);
+            if cursor.grapheme < end_g || (cursor.grapheme == end_g && is_last) {
+                let local_g = cursor.grapheme.saturating_sub(slice.start_grapheme);
+                #[cfg(feature = "bidi")]
+                let col_in_slice = if visual_bidi && ftui_text::bidi::has_rtl(line_text) {
+                    let layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+                        line_text,
+                        slice.start_byte..slice.start_byte + slice.text.len(),
+                    );
+                    layout.visual_col(local_g, cursor.affinity)
+                } else {
+                    slice
+                        .text
+                        .graphemes(true)
+                        .take(local_g)
+                        .map(display_width)
+                        .sum()
+                };
+                #[cfg(not(feature = "bidi"))]
+                let col_in_slice: usize = slice
+                    .text
+                    .graphemes(true)
+                    .take(local_g)
+                    .map(display_width)
+                    .sum();
                 return (idx, col_in_slice.min(slice.width));
             }
         }
 
-        (0, 0)
+        let last_idx = slices.len().saturating_sub(1);
+        (last_idx, slices[last_idx].width)
     }
 
     /// Get the visual width of the character immediately before the cursor.
@@ -1473,6 +1814,7 @@ impl TextArea {
 
         // Soft wrap logic
         let rope = self.editor.rope();
+        let visual_bidi = self.is_visual_bidi();
 
         // 1. Is cursor before anchor?
         if cursor.line < anchor_line {
@@ -1480,7 +1822,8 @@ impl TextArea {
                 .line(cursor.line)
                 .unwrap_or(std::borrow::Cow::Borrowed(""));
             let line_text = line_text.trim_end_matches(['\n', '\r']);
-            let (v_row, _) = Self::cursor_wrap_position(line_text, vp_width, cursor.visual_col);
+            let (v_row, _) =
+                Self::cursor_wrap_position_for_cursor(line_text, vp_width, cursor, visual_bidi);
             self.scroll_anchor.set((cursor.line, v_row));
             return;
         }
@@ -1490,7 +1833,8 @@ impl TextArea {
                 .line(cursor.line)
                 .unwrap_or(std::borrow::Cow::Borrowed(""));
             let line_text = line_text.trim_end_matches(['\n', '\r']);
-            let (v_row, _) = Self::cursor_wrap_position(line_text, vp_width, cursor.visual_col);
+            let (v_row, _) =
+                Self::cursor_wrap_position_for_cursor(line_text, vp_width, cursor, visual_bidi);
             if v_row < anchor_vrow {
                 self.scroll_anchor.set((cursor.line, v_row));
                 return;
@@ -1516,7 +1860,7 @@ impl TextArea {
 
             if current_line == cursor.line {
                 let (cursor_v_row, _) =
-                    Self::cursor_wrap_position(line_text, vp_width, cursor.visual_col);
+                    Self::cursor_wrap_position_for_cursor(line_text, vp_width, cursor, visual_bidi);
                 if cursor_v_row >= current_v_start {
                     let displayed_row_index = cursor_v_row - current_v_start;
                     if displayed_row_index < visual_rows_capacity {
@@ -1555,7 +1899,8 @@ impl TextArea {
             .line(scan_line)
             .unwrap_or(std::borrow::Cow::Borrowed(""));
         let line_text = line_text.trim_end_matches(['\n', '\r']);
-        let (cursor_v, _) = Self::cursor_wrap_position(line_text, vp_width, cursor.visual_col);
+        let (cursor_v, _) =
+            Self::cursor_wrap_position_for_cursor(line_text, vp_width, cursor, visual_bidi);
 
         let rows_above = cursor_v + 1;
         if rows_above >= needed {
@@ -1625,7 +1970,8 @@ impl Widget for TextArea {
         let scroll_left = self.scroll_left.get();
 
         let rope = self.editor.rope();
-        let nav = CursorNavigator::new(rope);
+        let nav = self.navigator();
+        let visual_bidi = self.is_visual_bidi();
 
         // Selection byte range for highlighting
         let sel_range = self.editor.selection().and_then(|sel| {
@@ -1666,8 +2012,12 @@ impl Widget for TextArea {
                 .line(cursor.line)
                 .unwrap_or(std::borrow::Cow::Borrowed(""));
             let cursor_line_text = cursor_line_text.trim_end_matches(['\n', '\r']);
-            let (cursor_wrap_idx, cursor_col_in_wrap) =
-                Self::cursor_wrap_position(cursor_line_text, text_area_w, cursor.visual_col);
+            let (cursor_wrap_idx, cursor_col_in_wrap) = Self::cursor_wrap_position_for_cursor(
+                cursor_line_text,
+                text_area_w,
+                cursor,
+                visual_bidi,
+            );
 
             // Render wrapped lines starting from anchor
             let mut current_y = area.y;
@@ -1728,41 +2078,85 @@ impl Widget for TextArea {
                     }
 
                     // Render graphemes inside the wrapped slice
-                    let mut visual_x: usize = 0;
-                    let mut grapheme_byte_offset = line_start_byte + slice.start_byte;
-
-                    for g in slice.text.graphemes(true) {
-                        let g_width = display_width(g);
-                        let g_byte_len = g.len();
-
-                        if visual_x >= text_area_w {
-                            break;
+                    #[cfg(feature = "bidi")]
+                    let drew_bidi = if visual_bidi && ftui_text::bidi::has_rtl(line_text) {
+                        let layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+                            line_text,
+                            slice.start_byte..slice.start_byte + slice.text.len(),
+                        );
+                        for vg in layout.visual_graphemes() {
+                            if vg.visual_col >= text_area_w {
+                                break;
+                            }
+                            let line_byte_off = slice.start_byte + vg.byte_start;
+                            let rope_byte_off = line_start_byte + line_byte_off;
+                            let mut g_style = base_style;
+                            if let Some(hl) = style_at(&hl_spans, line_byte_off) {
+                                g_style = g_style.patch(&hl);
+                            }
+                            if let Some((sel_start, sel_end)) = sel_range
+                                && rope_byte_off >= sel_start
+                                && rope_byte_off < sel_end
+                                && deg.apply_styling()
+                            {
+                                g_style = g_style.patch(&self.selection_style);
+                            }
+                            if vg.width > 0 {
+                                let px = text_area_x + vg.visual_col as u16;
+                                draw_text_span(
+                                    frame,
+                                    px,
+                                    current_y,
+                                    vg.text,
+                                    g_style,
+                                    area.right(),
+                                );
+                            }
                         }
+                        true
+                    } else {
+                        false
+                    };
+                    #[cfg(not(feature = "bidi"))]
+                    let drew_bidi = false;
 
-                        let px = text_area_x + visual_x as u16;
+                    if !drew_bidi {
+                        let mut visual_x: usize = 0;
+                        let mut grapheme_byte_offset = line_start_byte + slice.start_byte;
 
-                        // Syntax highlight first, then selection over it.
-                        let mut g_style = base_style;
-                        if let Some(hl) = style_at(
-                            &hl_spans,
-                            grapheme_byte_offset.saturating_sub(line_start_byte),
-                        ) {
-                            g_style = g_style.patch(&hl);
+                        for g in slice.text.graphemes(true) {
+                            let g_width = display_width(g);
+                            let g_byte_len = g.len();
+
+                            if visual_x >= text_area_w {
+                                break;
+                            }
+
+                            let px = text_area_x + visual_x as u16;
+
+                            // Syntax highlight first, then selection over it.
+                            let mut g_style = base_style;
+                            if let Some(hl) = style_at(
+                                &hl_spans,
+                                grapheme_byte_offset.saturating_sub(line_start_byte),
+                            ) {
+                                g_style = g_style.patch(&hl);
+                            }
+                            if let Some((sel_start, sel_end)) = sel_range
+                                && grapheme_byte_offset >= sel_start
+                                && grapheme_byte_offset < sel_end
+                                && deg.apply_styling()
+                            {
+                                g_style = g_style.patch(&self.selection_style);
+                            }
+
+                            if g_width > 0 {
+                                draw_text_span(frame, px, current_y, g, g_style, area.right());
+                            }
+
+                            visual_x += g_width;
+                            grapheme_byte_offset += g_byte_len;
                         }
-                        if let Some((sel_start, sel_end)) = sel_range
-                            && grapheme_byte_offset >= sel_start
-                            && grapheme_byte_offset < sel_end
-                            && deg.apply_styling()
-                        {
-                            g_style = g_style.patch(&self.selection_style);
-                        }
-
-                        if g_width > 0 {
-                            draw_text_span(frame, px, current_y, g, g_style, area.right());
-                        }
-
-                        visual_x += g_width;
-                        grapheme_byte_offset += g_byte_len;
                     }
 
                     // Set cursor position if focused
@@ -1822,73 +2216,124 @@ impl Widget for TextArea {
             let line_start_byte = nav.to_byte_index(nav.from_line_grapheme(line_idx, 0));
             let hl_spans = self.line_spans(line_idx, line_text, deg.apply_styling());
 
-            // Render each grapheme
-            let mut visual_x: usize = 0;
-            let graphemes: Vec<&str> = line_text.graphemes(true).collect();
-            let mut grapheme_byte_offset = line_start_byte;
+            // Render each grapheme (UAX#9 visual order when visual_bidi is enabled on RTL lines)
+            #[cfg(feature = "bidi")]
+            let drew_bidi = if visual_bidi && ftui_text::bidi::has_rtl(line_text) {
+                let layout = ftui_text::cursor::VisualLineLayout::for_line(line_text);
+                for vg in layout.visual_graphemes() {
+                    let g_width = vg.width;
+                    let visual_x = vg.visual_col;
+                    let rope_byte_off = line_start_byte + vg.byte_start;
 
-            for g in &graphemes {
-                let g_width = display_width(g);
-                let g_byte_len = g.len();
+                    let mut g_style = base_style;
+                    if let Some(hl) = style_at(&hl_spans, vg.byte_start) {
+                        g_style = g_style.patch(&hl);
+                    }
+                    if let Some((sel_start, sel_end)) = sel_range
+                        && rope_byte_off >= sel_start
+                        && rope_byte_off < sel_end
+                        && deg.apply_styling()
+                    {
+                        g_style = g_style.patch(&self.selection_style);
+                    }
 
-                // Syntax highlight first, then selection over it.
-                let mut g_style = base_style;
-                if let Some(hl) = style_at(
-                    &hl_spans,
-                    grapheme_byte_offset.saturating_sub(line_start_byte),
-                ) {
-                    g_style = g_style.patch(&hl);
-                }
-                if let Some((sel_start, sel_end)) = sel_range
-                    && grapheme_byte_offset >= sel_start
-                    && grapheme_byte_offset < sel_end
-                    && deg.apply_styling()
-                {
-                    g_style = g_style.patch(&self.selection_style);
-                }
-
-                // Skip graphemes before horizontal scroll
-                if visual_x + g_width <= scroll_left {
-                    visual_x += g_width;
-                    grapheme_byte_offset += g_byte_len;
-                    continue;
-                }
-
-                // Handle partial overlap at left edge
-                if visual_x < scroll_left {
-                    // Calculate visible width of the partially scrolled grapheme
-                    let end_x = visual_x + g_width;
-                    let visible_width = end_x.saturating_sub(scroll_left);
-
-                    // Render padding spaces for the visible portion to preserve background style
-                    for i in 0..visible_width {
-                        let screen_x = i; // Starts at 0 relative to text area
-                        let px = text_area_x + screen_x as u16;
-                        if px < area.right() {
-                            draw_text_span(frame, px, y, " ", g_style, area.right());
+                    if visual_x + g_width <= scroll_left {
+                        continue;
+                    }
+                    if visual_x < scroll_left {
+                        let visible_width = (visual_x + g_width).saturating_sub(scroll_left);
+                        for i in 0..visible_width {
+                            let px = text_area_x + i as u16;
+                            if px < area.right() {
+                                draw_text_span(frame, px, y, " ", g_style, area.right());
+                            }
                         }
+                        continue;
+                    }
+                    let screen_x = visual_x.saturating_sub(scroll_left);
+                    if screen_x >= text_area_w {
+                        break;
+                    }
+                    let px = text_area_x + screen_x as u16;
+                    if g_width > 0 {
+                        draw_text_span(frame, px, y, vg.text, g_style, area.right());
+                    }
+                }
+                true
+            } else {
+                false
+            };
+            #[cfg(not(feature = "bidi"))]
+            let drew_bidi = false;
+
+            if !drew_bidi {
+                let mut visual_x: usize = 0;
+                let graphemes: Vec<&str> = line_text.graphemes(true).collect();
+                let mut grapheme_byte_offset = line_start_byte;
+
+                for g in &graphemes {
+                    let g_width = display_width(g);
+                    let g_byte_len = g.len();
+
+                    // Syntax highlight first, then selection over it.
+                    let mut g_style = base_style;
+                    if let Some(hl) = style_at(
+                        &hl_spans,
+                        grapheme_byte_offset.saturating_sub(line_start_byte),
+                    ) {
+                        g_style = g_style.patch(&hl);
+                    }
+                    if let Some((sel_start, sel_end)) = sel_range
+                        && grapheme_byte_offset >= sel_start
+                        && grapheme_byte_offset < sel_end
+                        && deg.apply_styling()
+                    {
+                        g_style = g_style.patch(&self.selection_style);
+                    }
+
+                    // Skip graphemes before horizontal scroll
+                    if visual_x + g_width <= scroll_left {
+                        visual_x += g_width;
+                        grapheme_byte_offset += g_byte_len;
+                        continue;
+                    }
+
+                    // Handle partial overlap at left edge
+                    if visual_x < scroll_left {
+                        // Calculate visible width of the partially scrolled grapheme
+                        let end_x = visual_x + g_width;
+                        let visible_width = end_x.saturating_sub(scroll_left);
+
+                        // Render padding spaces for the visible portion to preserve background style
+                        for i in 0..visible_width {
+                            let screen_x = i; // Starts at 0 relative to text area
+                            let px = text_area_x + screen_x as u16;
+                            if px < area.right() {
+                                draw_text_span(frame, px, y, " ", g_style, area.right());
+                            }
+                        }
+
+                        visual_x += g_width;
+                        grapheme_byte_offset += g_byte_len;
+                        continue;
+                    }
+
+                    // Stop if past viewport
+                    let screen_x = visual_x.saturating_sub(scroll_left);
+                    if screen_x >= text_area_w {
+                        break;
+                    }
+
+                    let px = text_area_x + screen_x as u16;
+
+                    // Write grapheme to buffer
+                    if g_width > 0 {
+                        draw_text_span(frame, px, y, g, g_style, area.right());
                     }
 
                     visual_x += g_width;
                     grapheme_byte_offset += g_byte_len;
-                    continue;
                 }
-
-                // Stop if past viewport
-                let screen_x = visual_x.saturating_sub(scroll_left);
-                if screen_x >= text_area_w {
-                    break;
-                }
-
-                let px = text_area_x + screen_x as u16;
-
-                // Write grapheme to buffer
-                if g_width > 0 {
-                    draw_text_span(frame, px, y, g, g_style, area.right());
-                }
-
-                visual_x += g_width;
-                grapheme_byte_offset += g_byte_len;
             }
         }
 
@@ -2155,6 +2600,225 @@ mod tests {
                 key(&mut ta, KeyCode::Backspace, Modifiers::NONE);
                 assert_eq!(ta.text(), " \u{05D0}\u{05D1}", "wrap={wrap}");
             }
+        }
+
+        /// bd-b8isx: coherent UAX#9 visual-order bidi TextArea across both
+        /// unwrapped and soft-wrapped modes — visual glyph order, selection
+        /// highlights mapped to original bytes, caret affinity, wide-cell
+        /// snapping, zero-width controls, mouse click, delete, and undo.
+        #[cfg(feature = "bidi")]
+        #[test]
+        fn visual_bidi_textarea_unwrapped_and_wrapped_render_click_select_delete_undo() {
+            let text = "a\u{0301} \u{05D0}\u{05D1}";
+            for wrap in [false, true] {
+                let mut ta = TextArea::new()
+                    .with_text(text)
+                    .with_soft_wrap(wrap)
+                    .with_visual_bidi(true)
+                    .with_focus(true);
+
+                // UAX#9 visual order: "á", " ", "ב", "א"
+                let (_, row) = drawn_cursor(&ta, AREA);
+                assert_eq!(
+                    &row[..4],
+                    ["a\u{0301}", " ", "\u{05D1}", "\u{05D0}"],
+                    "wrap={wrap}: visual RTL run must reorder clusters cleanly"
+                );
+
+                // Home / End go to real visual display edges (col 0 and col 4).
+                key(&mut ta, KeyCode::Home, Modifiers::NONE);
+                assert_eq!(ta.cursor().grapheme, 0, "wrap={wrap}");
+                assert_eq!(drawn_cursor(&ta, AREA).0, Some((AREA.x, AREA.y)));
+
+                key(&mut ta, KeyCode::End, Modifiers::NONE);
+                assert_eq!(
+                    ta.cursor().grapheme,
+                    4,
+                    "wrap={wrap}: logical end of trailing RTL run is reachable at right edge"
+                );
+                assert_eq!(drawn_cursor(&ta, AREA).0, Some((AREA.x + 4, AREA.y)));
+
+                // Monotonic right-then-left traversal from Home to End and back.
+                key(&mut ta, KeyCode::Home, Modifiers::NONE);
+                let mut forward = vec![ta.cursor()];
+                for _ in 0..8 {
+                    let prev = ta.cursor();
+                    key(&mut ta, KeyCode::Right, Modifiers::NONE);
+                    if ta.cursor() == prev {
+                        break;
+                    }
+                    assert!(ta.cursor().visual_col >= prev.visual_col);
+                    forward.push(ta.cursor());
+                }
+                assert_eq!(forward.len(), 5, "wrap={wrap}");
+                for expected in forward.iter().rev().skip(1) {
+                    key(&mut ta, KeyCode::Left, Modifiers::NONE);
+                    assert_eq!(ta.cursor(), *expected, "wrap={wrap}");
+                }
+
+                // Click at visual col 3 (between 'ב' and 'א') -> logical grapheme 3.
+                // Backspace deletes logical grapheme 2 ('א'), leaving "á ב".
+                press(&mut ta, AREA.x + 3, AREA.y, 100);
+                assert_eq!(ta.cursor().grapheme, 3, "wrap={wrap}");
+                assert_eq!(ta.editor().rope().to_string().as_bytes(), text.as_bytes());
+                key(&mut ta, KeyCode::Backspace, Modifiers::NONE);
+                assert_eq!(
+                    ta.text().as_bytes(),
+                    "a\u{0301} \u{05D1}".as_bytes(),
+                    "wrap={wrap}: backspace after visual click removes logical Alef bytes"
+                );
+                ta.undo();
+                assert_eq!(ta.text().as_bytes(), text.as_bytes(), "wrap={wrap}");
+
+                // Selection highlight maps to original bytes even across direction change:
+                // Select logical graphemes 1..3 (" א") — visually cols 1 (' ') and 3 ('א'),
+                // leaving col 2 ('ב') UNSELECTED!
+                ta.set_cursor_position(CursorPosition::new(0, 1, 1));
+                let target = ta.navigator().from_line_grapheme(0, 3);
+                ta.editor_mut().extend_selection_to(target);
+                assert_eq!(ta.selected_text().as_deref(), Some(" \u{05D0}"));
+
+                let mut pool = GraphemePool::new();
+                let mut frame = Frame::new(AREA.right(), AREA.bottom(), &mut pool);
+                Widget::render(&ta, AREA, &mut frame);
+                let is_reversed = |dx: u16| {
+                    frame
+                        .buffer
+                        .get(AREA.x + dx, AREA.y)
+                        .unwrap()
+                        .attrs
+                        .flags()
+                        .contains(ftui_render::cell::StyleFlags::REVERSE)
+                };
+                assert!(!is_reversed(0), "wrap={wrap}: 'á' not selected");
+                assert!(is_reversed(1), "wrap={wrap}: ' ' selected");
+                assert!(!is_reversed(2), "wrap={wrap}: 'ב' (logical 3) NOT selected");
+                assert!(is_reversed(3), "wrap={wrap}: 'א' (logical 2) selected");
+            }
+        }
+
+        /// bd-b8isx: wrapped multi-row bidi line renders each row in UAX#9 order
+        /// preserving paragraph direction, clicks map into wrapped visual slices,
+        /// and typing/delete/undo preserve exact bytes.
+        #[cfg(feature = "bidi")]
+        #[test]
+        fn visual_bidi_textarea_wrapped_multiline_render_click_delete_undo() {
+            // Width 6: row 0 = "hello " (LTR), row 1 = "אבג" -> visual "גבא".
+            let text = "hello \u{05D0}\u{05D1}\u{05D2}";
+            let wrap_area = Rect::new(0, 0, 6, 3);
+            let mut ta = TextArea::new()
+                .with_text(text)
+                .with_soft_wrap(true)
+                .with_visual_bidi(true)
+                .with_focus(true);
+
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(wrap_area.right(), wrap_area.bottom(), &mut pool);
+            Widget::render(&ta, wrap_area, &mut frame);
+
+            let row1: Vec<String> = (0..3)
+                .map(|x| {
+                    frame
+                        .buffer
+                        .get(x, 1)
+                        .unwrap()
+                        .content
+                        .as_char()
+                        .map(String::from)
+                        .unwrap_or_default()
+                })
+                .collect();
+            assert_eq!(row1, vec!["\u{05D2}", "\u{05D1}", "\u{05D0}"]);
+
+            // Click on wrapped row 1, col 1 (between 'ג' and 'ב' -> local_g=2, logical g=8).
+            press(&mut ta, 1, 1, 100);
+            assert_eq!(ta.cursor().grapheme, 8);
+            // Backspace deletes logical g=7 ('ב'), leaving "hello אג".
+            key(&mut ta, KeyCode::Backspace, Modifiers::NONE);
+            assert_eq!(ta.text().as_bytes(), "hello \u{05D0}\u{05D2}".as_bytes());
+            ta.undo();
+            assert_eq!(ta.text().as_bytes(), text.as_bytes());
+
+            // Wide-cell click snapping on mixed ZWJ/flag/Hebrew line.
+            let wide = "x\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} \u{05D0}\u{05D1}";
+            let mut ta_wide = TextArea::new()
+                .with_text(wide)
+                .with_visual_bidi(true)
+                .with_focus(true);
+            rendered(&ta_wide, AREA);
+            // Cells 1 and 2 belong to the width-2 ZWJ family cluster -> both snap to g=1 (col 1).
+            press(&mut ta_wide, AREA.x + 2, AREA.y, 100);
+            assert_eq!(ta_wide.cursor().grapheme, 1);
+            assert_eq!(ta_wide.cursor().visual_col, 1);
+            // Delete removes the whole ZWJ cluster atomically.
+            key(&mut ta_wide, KeyCode::Delete, Modifiers::NONE);
+            assert_eq!(ta_wide.text().as_bytes(), "x \u{05D0}\u{05D1}".as_bytes());
+            ta_wide.undo();
+            assert_eq!(ta_wide.text().as_bytes(), wide.as_bytes());
+        }
+
+        /// bd-b8isx: pointed Hebrew, pointed Arabic with mixed-run punctuation,
+        /// and zero-width marks (RLM/LRM) render intact and navigate without loops.
+        #[cfg(feature = "bidi")]
+        #[test]
+        fn visual_bidi_textarea_pointed_scripts_and_zero_width_controls() {
+            // Pointed Hebrew (4 clusters, pure RTL).
+            let pointed_heb = "\u{05E9}\u{05B8}\u{05C1}\u{05DC}\u{05D5}\u{05B9}\u{05DD}";
+            let ta = TextArea::new()
+                .with_text(pointed_heb)
+                .with_visual_bidi(true)
+                .with_focus(true);
+            let (_, row) = drawn_cursor(&ta, AREA);
+            assert_eq!(
+                &row[..4],
+                [
+                    "\u{05DD}",
+                    "\u{05D5}\u{05B9}",
+                    "\u{05DC}",
+                    "\u{05E9}\u{05B8}\u{05C1}"
+                ]
+            );
+
+            // Pointed Arabic + mixed-run punctuation.
+            let pointed_ar =
+                "\u{0628}\u{0650}\u{0633}\u{0652}\u{0645}\u{0650} abc, (\u{05D0}!) e\u{0301}";
+            let mut ta_ar = TextArea::new()
+                .with_text(pointed_ar)
+                .with_visual_bidi(true)
+                .with_focus(true);
+            rendered(&ta_ar, AREA);
+            key(&mut ta_ar, KeyCode::Home, Modifiers::NONE);
+            assert_eq!(ta_ar.cursor().visual_col, 0);
+            let mut steps = 0usize;
+            for _ in 0..40 {
+                let prev = ta_ar.cursor();
+                key(&mut ta_ar, KeyCode::Right, Modifiers::NONE);
+                if ta_ar.cursor() == prev {
+                    break;
+                }
+                assert!(ta_ar.cursor().visual_col >= prev.visual_col);
+                steps += 1;
+            }
+            assert_eq!(steps, pointed_ar.graphemes(true).count());
+
+            // Zero-width controls (RLM/LRM): all 5 boundaries distinct, zero loops.
+            let zw = "\u{200F}a\u{200E}\u{05D0}";
+            let mut ta_zw = TextArea::new()
+                .with_text(zw)
+                .with_visual_bidi(true)
+                .with_focus(true);
+            rendered(&ta_zw, AREA);
+            key(&mut ta_zw, KeyCode::Home, Modifiers::NONE);
+            let mut visited = vec![ta_zw.cursor()];
+            for _ in 0..10 {
+                let prev = ta_zw.cursor();
+                key(&mut ta_zw, KeyCode::Right, Modifiers::NONE);
+                if ta_zw.cursor() == prev {
+                    break;
+                }
+                visited.push(ta_zw.cursor());
+            }
+            assert_eq!(visited.len(), 5);
         }
     }
 
