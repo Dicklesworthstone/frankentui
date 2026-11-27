@@ -1,5 +1,29 @@
 # FrankenTUI Reality Check and Bridge Plan (updated 2026-11-27)
 
+## Current assessment: 2026-11-27, Wave 4 post-v0.11.1 (delta from `b1dbb830`)
+
+### Verdict
+
+Wave 4 completed the DSR RCH shim v9 fix (`bd-o56er` — CLOSED, `3f639e0f`), ran an `--all-features` compilation and rustdoc rot sweep across all 26 crates (0 warnings, 0 errors), diagnosed the exact LLVM feature-table root cause of `bd-9mleu`, and implemented (but intentionally kept uncommitted in the working tree pending RCH `RCH-E330` recovery for test/snapshot execution) a broad 11-widget accessibility coverage expansion in `ftui-widgets`:
+
+1. **DSR quality config & remaining E2E script RCH shim v9 compatibility (`bd-o56er` — CLOSED, `3f639e0f`):**
+   - Replaced all 19 remaining hardcoded `RCH_CARGO_WRAPPER_BYPASS=1` prefixes in `.config/dsr-quality.yaml` with POSIX self-probing (preserving local bypass where supported while cleanly falling through to RCH with `RCH_QUEUE_WHEN_BUSY=1` on shim v9), added matching shim-v9 probes to `scripts/pane_e2e.sh`, `scripts/fuzz_campaign_e2e.sh`, and `scripts/perf_regression_gate.sh`, and updated the stale `27-threshold` comment on `frankentui-perf-gate` to `28-threshold`.
+   - **Verified live on RCH shim v9:** `bash -n` on all 3 scripts, `python3 -B scripts/check_workflows.py --self-test` + `check_workflows.py`, `DSR_REPOS_FILE="$PWD/.config/dsr-quality.yaml" dsr quality --tool frankentui-truth-gates -w "$PWD"` (**30/30 passed**, receipt `20261127T132226-NIjRqWQ4`), and `dsr quality --tool frankentui-wasm-matrix` (cleanly executed all Cargo lines without exit-1 bypass refusal; checks 1/2/4 passed and check 3 only hit worker `vmi1167313` lacking `rust-std-wasm32-unknown-unknown`).
+2. **`--all-features` workspace rot sweep (verified clean):**
+   - `cargo check --workspace --all-targets --all-features`: **0 errors, 0 warnings**.
+   - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: **0 errors, 0 warnings** across all 26 crates and all gated/experimental modules.
+3. **`bd-9mleu` aarch64 `cargo-zigbuild` linker warning diagnosis (annotated on bead, kept open):**
+   - Confirmed exact root cause on `zig 0.14.1` (LLVM 19.1.7) vs `rustc 1.100.0-nightly (908501772 2026-08-30)` (LLVM 23.1.0): `/opt/zig-0.14.1/lib/std/Target/aarch64.zig:301-302,1344` emits `-b16b16` and `-use-scalar-inc-vl`, which LLVM 19.1.7 recognizes but LLVM 20+ removed/split (`sve-b16b16`/`sme-b16b16`; reproduced live with `zig cc -target aarch64-linux-gnu.2.28 -emit-llvm -S`, `ld.lld-21`, `ld.lld-22`, and `rust-lld` 23.1.0). Kept open pending an actual aarch64 release `profile_sweep` build and `qemu-aarch64` run.
+4. **In-progress / uncommitted (held out of `main` pending RCH `RCH-E330` test execution):**
+   - Implemented scissor-clipped, zero-overhead accessibility tree emission across 11 `ftui-widgets` widgets (`ErrorBoundary`, `StatusLine`, `Panel`, `Popover`, `Paginator`, `Badge`, `Stopwatch`, `Timer`, `LogViewer`/`VirtualizedList` via `RenderItem::accessible_label` + `is_accessible_selected`, `JsonView`, `Help`, plus `Tabs::render_panel`), 4 new integration tests in `crates/ftui-widgets/tests/accessibility_keyboard_navigation.rs`, and `docs/ACCESSIBILITY.md`.
+   - Passed `cargo check -p ftui-widgets --all-targets`, `cargo build -p ftui-widgets --test accessibility_keyboard_navigation --test modal_dialog_accessibility --test virtualized_list_regression`, `cargo fmt --all --check`, and `make gates`, but execution of `cargo test` (`ftui-widgets` + `ftui-demo-showcase` including `a11y_tree_dump_dashboard_80x24` which renders `Badge`), `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo doc --workspace --no-deps` hit fleet-wide RCH disk-budget admission saturation (`RCH-E330`, 10–30 GiB budgets rejected across all 7 large workers). Kept uncommitted in the working tree so `main` stays 100% test-verified.
+
+### Remaining Open Beads (40 total — External-Host / Owner-Decision Bounded)
+
+With `bd-o56er` closed, the remaining 40 open/in_progress beads require either external hosts/tooling not available locally (native macOS `mmini` / Windows `wlap` / live `zellij` / real browser WebGPU / `frankentui.com/web` deploy / `aarch64` release `profile_sweep` execution / real AT host bridge) or explicit owner decisions (`.49.3`, `bd-qicyr`, `bd-gqit2`, `bd-5h57k`).
+
+---
+
 ## Current assessment: 2026-11-27, Wave 3 post-v0.11.1 (delta from `abe4ab1a`)
 
 ### Verdict
