@@ -7514,6 +7514,31 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         Ok(())
     }
 
+    /// While an inline DECSTBM scroll region is active, check the terminal's
+    /// live kernel `winsize` synchronously before writing log lines or
+    /// presenting a frame (`bd-d5lro`).
+    ///
+    /// Terminal emulators reset DECSTBM margins synchronously inside `resize()`
+    /// before `SIGWINCH` wakes the event loop. Transitioning to `OverlayRedraw`
+    /// via `notify_resize` as soon as the kernel reports a new size prevents
+    /// bursts of `Cmd::Log` messages in `process_subscription_messages()` from
+    /// overwriting each other on a stale `log_row`. Once transitioned to
+    /// `OverlayRedraw`, `scroll_region_active()` is permanently `false` and
+    /// this check is a single boolean branch.
+    #[inline]
+    fn sync_live_size_if_scroll_region_active(&mut self) {
+        if self.forced_size.is_some() || !self.presenter.scroll_region_active() {
+            return;
+        }
+        if let Ok((raw_w, raw_h)) = self.events.size() {
+            let live_w = raw_w.max(1);
+            let live_h = raw_h.max(1);
+            if (live_w, live_h) != (self.width, self.height) {
+                self.presenter.notify_resize(live_w, live_h);
+            }
+        }
+    }
+
     /// Process results from background tasks.
     fn process_task_results(&mut self) -> io::Result<()> {
         while let Ok(msg) = self.task_receiver.try_recv() {
@@ -7616,6 +7641,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 self.last_tick = Instant::now();
             }
             Cmd::Log { text, mode } => {
+                self.sync_live_size_if_scroll_region_active();
                 self.presenter.write_log_line_with_mode(&text, mode)?;
             }
             Cmd::Task(spec, f) => {
@@ -8099,6 +8125,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         } else {
             None
         };
+        self.sync_live_size_if_scroll_region_active();
         let present_start = Instant::now();
         {
             let _present_span =

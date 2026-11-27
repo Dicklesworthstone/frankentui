@@ -1502,93 +1502,119 @@ impl BufferDiff {
                 self.compute_into(old, new);
             }
             DiffSkipHint::SkipDiff => {
-                // Certificate guarantees buffers are identical — skip all work
-                self.changes.clear();
-                self.last_tile_stats = None;
-                self.last_scanned_cells = 0;
-                #[cfg(feature = "tracing")]
-                tracing::debug!(
-                    event = "diff_skip_certified",
-                    hint = "skip_diff",
-                    changes = 0,
-                );
+                self.skip_certified_diff();
             }
             DiffSkipHint::NarrowToRows(ref rows) => {
-                // Only diff the specified rows
-                self.changes.clear();
-                self.last_tile_stats = None;
-                self.last_scanned_cells = 0;
+                self.compute_narrow_rows_into(old, new, rows.as_slice());
+            }
+        }
+    }
 
-                let w = old.width();
-                let h = old.height();
-                // Hard assert for parity with the full/dirty paths: a
-                // dimension mismatch here would scan `new` with `old`'s
-                // stride and produce coordinates matching neither buffer.
-                assert_eq!(w, new.width(), "diff dimension mismatch");
-                assert_eq!(h, new.height(), "diff dimension mismatch");
+    /// Compute diff using a borrowed [`crate::render_certificate::RenderCertificate`]
+    /// without cloning its `dirty_rows` vector on the hot frame-presentation path.
+    pub fn compute_certified_with_certificate_into(
+        &mut self,
+        old: &Buffer,
+        new: &Buffer,
+        certificate: &crate::render_certificate::RenderCertificate,
+    ) {
+        use crate::render_certificate::RenderCertificateLevel;
+        match certificate.level {
+            RenderCertificateLevel::FullRequired => self.compute_into(old, new),
+            RenderCertificateLevel::SkipAll => self.skip_certified_diff(),
+            RenderCertificateLevel::NarrowToDirty => {
+                self.compute_narrow_rows_into(old, new, certificate.dirty_rows.as_slice());
+            }
+        }
+    }
 
-                let old_cells = old.cells();
-                let new_cells = new.cells();
-                let stride = w as usize;
+    fn skip_certified_diff(&mut self) {
+        // Certificate guarantees buffers are identical — skip all work
+        self.changes.clear();
+        self.last_tile_stats = None;
+        self.last_scanned_cells = 0;
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            event = "diff_skip_certified",
+            hint = "skip_diff",
+            changes = 0,
+        );
+    }
 
-                // Avoid heap allocation on the production fast path where
-                // `dirty_row_indices()` is already strictly ascending.
-                let mut owned_sorted: Vec<u16>;
-                let sorted_rows: &[u16] = if rows.windows(2).all(|pair| pair[0] < pair[1]) {
-                    rows.as_slice()
-                } else {
-                    owned_sorted = rows.clone();
-                    owned_sorted.sort_unstable();
-                    owned_sorted.dedup();
-                    owned_sorted.as_slice()
-                };
+    fn compute_narrow_rows_into(&mut self, old: &Buffer, new: &Buffer, rows: &[u16]) {
+        // Only diff the specified rows
+        self.changes.clear();
+        self.last_tile_stats = None;
+        self.last_scanned_cells = 0;
 
-                for &row in sorted_rows {
-                    if row >= h {
-                        continue;
-                    }
-                    let start = row as usize * stride;
-                    let end = start + stride;
-                    if end > old_cells.len() || end > new_cells.len() {
-                        continue;
-                    }
-                    let old_row = &old_cells[start..end];
-                    let new_row = &new_cells[start..end];
+        let w = old.width();
+        let h = old.height();
+        // Hard assert for parity with the full/dirty paths: a
+        // dimension mismatch here would scan `new` with `old`'s
+        // stride and produce coordinates matching neither buffer.
+        assert_eq!(w, new.width(), "diff dimension mismatch");
+        assert_eq!(h, new.height(), "diff dimension mismatch");
 
-                    if let Some(span_row) = new.dirty_span_row(row)
-                        && !span_row.is_full()
-                    {
-                        let spans = span_row.spans();
-                        if !spans.is_empty() {
-                            scan_row_changes_spans(
-                                old_row,
-                                new_row,
-                                row,
-                                spans,
-                                &mut self.changes,
-                                &mut self.last_scanned_cells,
-                            );
-                            continue;
-                        }
-                    }
-                    scan_row_changes(
+        let old_cells = old.cells();
+        let new_cells = new.cells();
+        let stride = w as usize;
+
+        // Avoid heap allocation on the production fast path where
+        // `dirty_row_indices()` is already strictly ascending.
+        let mut owned_sorted: Vec<u16>;
+        let sorted_rows: &[u16] = if rows.windows(2).all(|pair| pair[0] < pair[1]) {
+            rows
+        } else {
+            owned_sorted = rows.to_vec();
+            owned_sorted.sort_unstable();
+            owned_sorted.dedup();
+            owned_sorted.as_slice()
+        };
+
+        for &row in sorted_rows {
+            if row >= h {
+                continue;
+            }
+            let start = row as usize * stride;
+            let end = start + stride;
+            if end > old_cells.len() || end > new_cells.len() {
+                continue;
+            }
+            let old_row = &old_cells[start..end];
+            let new_row = &new_cells[start..end];
+
+            if let Some(span_row) = new.dirty_span_row(row)
+                && !span_row.is_full()
+            {
+                let spans = span_row.spans();
+                if !spans.is_empty() {
+                    scan_row_changes_spans(
                         old_row,
                         new_row,
                         row,
+                        spans,
                         &mut self.changes,
                         &mut self.last_scanned_cells,
                     );
+                    continue;
                 }
-
-                #[cfg(feature = "tracing")]
-                tracing::debug!(
-                    event = "diff_narrow_certified",
-                    hint = "narrow_to_rows",
-                    rows_checked = sorted_rows.len(),
-                    changes = self.changes.len(),
-                );
             }
+            scan_row_changes(
+                old_row,
+                new_row,
+                row,
+                &mut self.changes,
+                &mut self.last_scanned_cells,
+            );
         }
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            event = "diff_narrow_certified",
+            hint = "narrow_to_rows",
+            rows_checked = sorted_rows.len(),
+            changes = self.changes.len(),
+        );
     }
 
     /// Pre-`.48.2` whole-row-slice narrow scan retained for paired A/B benchmarking.

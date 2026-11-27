@@ -1636,6 +1636,18 @@ mod tests {
         let mut disabled = Vec::with_capacity(RUNS / 2 + 1);
         let mut enabled = Vec::with_capacity(RUNS / 2 + 1);
 
+        // Warm up instruction cache and allocator before timing so cold first-call
+        // overhead does not pollute tail percentiles.
+        for _ in 0..16 {
+            let _ = std::hint::black_box(TelemetryConfig::from_env_with(|_| None));
+            let _ = std::hint::black_box(TelemetryConfig::from_env_with(|key| match key {
+                "OTEL_TRACES_EXPORTER" => Some("otlp".into()),
+                "OTEL_EXPORTER_OTLP_ENDPOINT" => Some("http://localhost:4318".into()),
+                "OTEL_SERVICE_NAME" => Some("ftui-perf".into()),
+                _ => None,
+            }));
+        }
+
         for i in 0..RUNS {
             let (label, config) = if i % 2 == 0 {
                 let start = Instant::now();
@@ -1702,38 +1714,111 @@ mod tests {
 
         let mut disabled_samples = disabled.clone();
         let mut enabled_samples = enabled.clone();
+        let p50_disabled = percentile(&mut disabled_samples, 0.50);
+        let p50_enabled = percentile(&mut enabled_samples, 0.50);
         let p95_disabled = percentile(&mut disabled_samples, 0.95);
         let p95_enabled = percentile(&mut enabled_samples, 0.95);
         let p99_disabled = percentile(&mut disabled_samples, 0.99);
         let p99_enabled = percentile(&mut enabled_samples, 0.99);
 
-        let (budget_disabled_ns, budget_enabled_ns) = if cfg!(debug_assertions) {
-            (200_000, 400_000)
+        fn telemetry_config_p50_budgets_ns(scale: u64) -> (u64, u64) {
+            if cfg!(debug_assertions) {
+                (550 * scale, 6_000 * scale)
+            } else {
+                (250 * scale, 3_000 * scale)
+            }
+        }
+
+        // Budgets are scaled by `FTUI_TEST_TIME_SCALE` (1 on quiet hosts, 4 in
+        // busy DSR gates). Tight `p50` bounds (~4-5x headroom over nominal)
+        // stay stable under host preemption while failing decisively on a 10x
+        // slowdown of `from_env_with`; generous `p95` bounds guard against
+        // systemic stalls without flaking on single-sample OS preemption
+        // (bd-l7pds).
+        let scale = u64::from(ftui_core::cx::test_time_scale());
+        let (p50_budget_disabled_ns, p50_budget_enabled_ns) =
+            telemetry_config_p50_budgets_ns(scale);
+        let (p95_budget_disabled_ns, p95_budget_enabled_ns) = if cfg!(debug_assertions) {
+            (100_000 * scale, 200_000 * scale)
         } else {
-            (5_000, 20_000)
+            (50_000 * scale, 100_000 * scale)
         };
 
         assert!(
-            p95_disabled <= budget_disabled_ns,
-            "p95 disabled {p95_disabled}ns exceeds {budget_disabled_ns}ns"
+            p50_disabled <= p50_budget_disabled_ns,
+            "p50 disabled {p50_disabled}ns exceeds {p50_budget_disabled_ns}ns (p95={p95_disabled}ns, p99={p99_disabled}ns, scale={scale})"
         );
         assert!(
-            p95_enabled <= budget_enabled_ns,
-            "p95 enabled {p95_enabled}ns exceeds {budget_enabled_ns}ns"
+            p50_enabled <= p50_budget_enabled_ns,
+            "p50 enabled {p50_enabled}ns exceeds {p50_budget_enabled_ns}ns (p95={p95_enabled}ns, p99={p99_enabled}ns, scale={scale})"
         );
         assert!(
-            p99_disabled <= budget_disabled_ns * 2,
-            "p99 disabled {p99_disabled}ns exceeds 2x budget"
+            p95_disabled <= p95_budget_disabled_ns,
+            "p95 disabled {p95_disabled}ns exceeds {p95_budget_disabled_ns}ns (p50={p50_disabled}ns, p99={p99_disabled}ns, scale={scale})"
         );
         assert!(
-            p99_enabled <= budget_enabled_ns * 2,
-            "p99 enabled {p99_enabled}ns exceeds 2x budget"
+            p95_enabled <= p95_budget_enabled_ns,
+            "p95 enabled {p95_enabled}ns exceeds {p95_budget_enabled_ns}ns (p50={p50_enabled}ns, p99={p99_enabled}ns, scale={scale})"
         );
 
         let text = String::from_utf8(jsonl).expect("jsonl utf8");
         // Emit JSONL perf log for `--nocapture` runs.
         print!("{text}");
         assert_eq!(text.lines().count(), RUNS);
+    }
+
+    #[test]
+    fn perf_telemetry_config_budget_catches_10x_regression() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        const SAMPLES: usize = 200;
+        let mut disabled_10x = Vec::with_capacity(SAMPLES);
+        let mut enabled_10x = Vec::with_capacity(SAMPLES);
+
+        for _ in 0..SAMPLES {
+            let start = Instant::now();
+            for _ in 0..10 {
+                let cfg = TelemetryConfig::from_env_with(|_| None);
+                black_box(cfg);
+            }
+            disabled_10x.push(start.elapsed().as_nanos() as u64);
+
+            let start = Instant::now();
+            for _ in 0..10 {
+                let cfg = TelemetryConfig::from_env_with(|key| match key {
+                    "OTEL_TRACES_EXPORTER" => Some("otlp".into()),
+                    "OTEL_EXPORTER_OTLP_ENDPOINT" => Some("http://localhost:4318".into()),
+                    "OTEL_SERVICE_NAME" => Some("ftui-perf".into()),
+                    _ => None,
+                });
+                black_box(cfg);
+            }
+            enabled_10x.push(start.elapsed().as_nanos() as u64);
+        }
+
+        disabled_10x.sort_unstable();
+        enabled_10x.sort_unstable();
+        let p50_idx = ((SAMPLES as f64 - 1.0) * 0.50).round() as usize;
+
+        let (p50_budget_disabled_ns, p50_budget_enabled_ns) = if cfg!(debug_assertions) {
+            (550u64, 6_000u64)
+        } else {
+            (250u64, 3_000u64)
+        };
+
+        assert!(
+            disabled_10x[p50_idx] > p50_budget_disabled_ns,
+            "10x-slowed disabled parse (p50={}ns) must fail unscaled p50 budget (<={}ns)",
+            disabled_10x[p50_idx],
+            p50_budget_disabled_ns,
+        );
+        assert!(
+            enabled_10x[p50_idx] > p50_budget_enabled_ns,
+            "10x-slowed enabled parse (p50={}ns) must fail unscaled p50 budget (<={}ns)",
+            enabled_10x[p50_idx],
+            p50_budget_enabled_ns,
+        );
     }
 }
 

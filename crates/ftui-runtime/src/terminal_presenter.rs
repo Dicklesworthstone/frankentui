@@ -170,6 +170,10 @@ impl<W: Write + Send> BackendPresenter for TerminalPresenter<W> {
         self.writer.notify_resize(cols, rows);
     }
 
+    fn scroll_region_active(&self) -> bool {
+        self.writer.scroll_region_active()
+    }
+
     fn resize(&mut self, cols: u16, rows: u16) {
         self.writer.set_size(cols, rows);
     }

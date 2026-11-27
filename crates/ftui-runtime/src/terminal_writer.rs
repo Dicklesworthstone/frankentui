@@ -1221,19 +1221,29 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Take a reusable render buffer sized for the current frame.
     ///
-    /// Uses a spare buffer when available to avoid per-frame allocation.
+    /// Uses a spare buffer when available to avoid per-frame allocation, and
+    /// seeds dirty tracking against `prev_buffer` when dimensions match so
+    /// immediate-mode `Model::view()` frames keep sound sparse dirty witnesses
+    /// for certified diff narrowing and skipping (`bd-n1e59`).
     pub fn take_render_buffer(&mut self, width: u16, height: u16) -> Buffer {
-        if let Some(mut buffer) = self.spare_buffer.take()
+        let mut buffer = if let Some(buffer) = self.spare_buffer.take()
             && buffer.width() == width
             && buffer.height() == height
         {
-            buffer.set_dirty_span_config(self.diff_config.dirty_span_config);
-            buffer.reset_for_frame();
-            return buffer;
-        }
-
-        let mut buffer = Buffer::new(width, height);
+            buffer
+        } else {
+            Buffer::new(width, height)
+        };
         buffer.set_dirty_span_config(self.diff_config.dirty_span_config);
+        if let Some(prev) = self
+            .prev_buffer
+            .as_ref()
+            .filter(|prev| prev.width() == width && prev.height() == height)
+        {
+            buffer.reset_for_frame_against(prev);
+        } else {
+            buffer.reset_for_frame();
+        }
         buffer
     }
 
@@ -1431,12 +1441,17 @@ impl<W: Write> TerminalWriter<W> {
     }
 
     /// Whether rows are counted from the terminal's last row (see
-    /// [`Self::move_to_row`]): a bottom-anchored inline UI on the overlay
-    /// strategy. A DECSTBM region keeps absolute rows; cursor-up there is
-    /// bounded by the region's margins.
+    /// [`Self::move_to_row`]): any bottom-anchored inline UI (both overlay and
+    /// DECSTBM scroll-region/hybrid strategies).
+    ///
+    /// For `UiAnchor::Bottom`, DECSTBM spans rows `1..=(term_height - ui_height)`
+    /// (`scroll_top == 1`), so `CUP(9999, col)` followed by `CUU(rows_up)` lands
+    /// on the exact UI or bottom-log row on xterm, tmux, VTE, and VirtualTerminal
+    /// without hitting `scroll_top`, and keeps in-flight frames/logs from
+    /// overwriting shifted log lines when a terminal grows before `SIGWINCH`
+    /// arrives (`bd-d5lro`).
     fn bottom_addressed(&self) -> bool {
-        matches!(self.inline_strategy, InlineStrategy::OverlayRedraw)
-            && matches!(self.ui_anchor, UiAnchor::Bottom)
+        matches!(self.ui_anchor, UiAnchor::Bottom)
             && matches!(
                 self.screen_mode,
                 ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
@@ -2060,8 +2075,11 @@ impl<W: Write> TerminalWriter<W> {
                 if self.diff_config.certified_skips {
                     let certificate =
                         evaluate_render_certificate_for_buffers(Some(prev), buffer, false);
-                    self.diff_scratch
-                        .compute_certified_into(prev, buffer, certificate.to_hint());
+                    self.diff_scratch.compute_certified_with_certificate_into(
+                        prev,
+                        buffer,
+                        &certificate,
+                    );
                     self.last_certificate = Some(certificate);
                 } else {
                     self.diff_scratch.compute_dirty_into(prev, buffer);
@@ -3600,15 +3618,13 @@ impl<W: Write> TerminalWriter<W> {
             // partial write left a completed line on `log_row`; scroll the
             // DECSTBM region up one row before writing at column 1 so that
             // line is never overwritten.
-            write!(self.writer(), "\x1b[{};1H\r\n", log_row)?;
+            self.move_to_row(log_row.saturating_sub(1), 0)?;
+            self.writer().write_all(b"\r\n")?;
             self.decstbm_row_occupied = false;
             self.decstbm_col = 0;
         } else {
-            let col = self
-                .decstbm_col
-                .saturating_add(1)
-                .min(self.term_width.max(1));
-            write!(self.writer(), "\x1b[{};{}H", log_row, col)?;
+            let col = self.decstbm_col.min(self.term_width.saturating_sub(1));
+            self.move_to_row(log_row.saturating_sub(1), col)?;
         }
         Ok(true)
     }
@@ -7332,12 +7348,12 @@ mod tests {
                     let every_line = scroll_region || anchor == UiAnchor::Bottom;
                     assert_eq!(output.contains('\n'), every_line);
                     assert_eq!(output.contains("second"), every_line);
-                    // Region: its bottom margin (row 6). Bottom overlay: the
-                    // stream starts on the first UI row (7 of 8: one row
-                    // above the last, addressed from the bottom). Top: row 8.
+                    // Region: its bottom margin (row 6 = 2 rows above bottom 8).
+                    // Bottom overlay: first UI row (7 of 8 = 1 row above bottom).
+                    // Top: row 8 (absolute).
                     let log_row = match (anchor, scroll_region) {
                         (UiAnchor::Top, _) => "\x1b[8;1H",
-                        (UiAnchor::Bottom, true) => "\x1b[6;1H",
+                        (UiAnchor::Bottom, true) => "\x1b[9999;1H\x1b[2A",
                         (UiAnchor::Bottom, false) => "\x1b[9999;1H\x1b[A",
                     };
                     assert!(output.contains(log_row));
@@ -10150,8 +10166,182 @@ mod tests {
         let bytes = writer.into_inner().unwrap();
         let second_write = String::from_utf8_lossy(&bytes[after_first..]);
         assert!(
-            second_write.contains("\x1b[4;1H\r\n"),
-            "expected DECSTBM scroll before second partial write after exact-width fill, got {second_write:?}"
+            second_write.contains("\x1b[9999;1H\x1b[2A\r\n"),
+            "expected bottom-addressed DECSTBM scroll before second partial write after exact-width fill, got {second_write:?}"
+        );
+    }
+
+    #[test]
+    fn take_render_buffer_live_loop_emits_narrow_and_skip_certificates() {
+        let config = RuntimeDiffConfig {
+            certified_skips: true,
+            bayesian_enabled: true,
+            ..RuntimeDiffConfig::default()
+        };
+        let mut writer = TerminalWriter::with_diff_config(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            full_caps(),
+            config,
+        );
+        writer.set_size(40, 20);
+
+        // Frame 0: initial sparse frame (row 2 only).
+        let mut f0 = writer.take_render_buffer(40, 20);
+        f0.set(4, 2, ftui_render::cell::Cell::from_char('A'));
+        writer.present_ui_owned(f0, None, false).unwrap();
+
+        // Frame 1: sparse update moving content from row 2 to row 6 via the real
+        // `take_render_buffer` lifecycle (`bd-n1e59`). Must narrow to rows [2, 6].
+        let mut f1 = writer.take_render_buffer(40, 20);
+        f1.set(8, 6, ftui_render::cell::Cell::from_char('B'));
+        writer.present_ui_owned(f1, None, false).unwrap();
+        let cert1 = writer
+            .last_render_certificate()
+            .expect("frame 1 certificate");
+        assert_eq!(
+            cert1.level,
+            ftui_render::render_certificate::RenderCertificateLevel::NarrowToDirty
+        );
+        assert!(!cert1.fell_back);
+        assert_eq!(cert1.dirty_rows, vec![2, 6]);
+
+        // Frame 2: blank frame clears row 6 (narrows to [6]).
+        let f2 = writer.take_render_buffer(40, 20);
+        writer.present_ui_owned(f2, None, false).unwrap();
+        let cert2 = writer
+            .last_render_certificate()
+            .expect("frame 2 certificate");
+        assert_eq!(
+            cert2.level,
+            ftui_render::render_certificate::RenderCertificateLevel::NarrowToDirty
+        );
+        assert_eq!(cert2.dirty_rows, vec![6]);
+
+        // Frame 3: consecutive blank frame earns SkipAll (zero dirty rows).
+        let f3 = writer.take_render_buffer(40, 20);
+        writer.present_ui_owned(f3, None, false).unwrap();
+        let cert3 = writer
+            .last_render_certificate()
+            .expect("frame 3 certificate");
+        assert_eq!(
+            cert3.level,
+            ftui_render::render_certificate::RenderCertificateLevel::SkipAll
+        );
+        assert!(!cert3.fell_back);
+    }
+
+    #[test]
+    fn reset_for_frame_against_paired_live_loop_measurement() {
+        use ftui_render::cell::Cell;
+        use ftui_render::diff::BufferDiff;
+        use ftui_render::render_certificate::{
+            RenderCertificateLevel, evaluate_render_certificate_for_buffers,
+        };
+        use std::time::Instant;
+
+        let (w, h) = (120u16, 40u16);
+        let frames = 60usize;
+
+        // Seed identical previous frame (sparse status bar on row 0 + prompt on row 39).
+        let seed_frame = |buf: &mut Buffer, tick: usize| {
+            let ch = char::from(b'a' + (tick % 26) as u8);
+            for x in 0..40 {
+                buf.set(x, 0, Cell::from_char(ch));
+            }
+            buf.set((tick % 40) as u16, h - 1, Cell::from_char('X'));
+        };
+
+        let mut inc_prev = Buffer::new(w, h);
+        let mut inc_curr = Buffer::new(w, h);
+        seed_frame(&mut inc_prev, 0);
+        let mut inc_diff = BufferDiff::with_capacity(256);
+
+        let mut cand_prev = Buffer::new(w, h);
+        let mut cand_curr = Buffer::new(w, h);
+        seed_frame(&mut cand_prev, 0);
+        let mut cand_diff = BufferDiff::with_capacity(256);
+
+        let mut inc_dirty_total = 0usize;
+        let mut cand_dirty_total = 0usize;
+        let mut inc_scanned_total = 0usize;
+        let mut cand_scanned_total = 0usize;
+        let mut inc_ns = 0u128;
+        let mut cand_ns = 0u128;
+
+        for tick in 1..=frames {
+            // Incumbent: Buffer::reset_for_frame (marks 100% of rows dirty) + full diff.
+            let t0 = Instant::now();
+            inc_curr.reset_for_frame();
+            seed_frame(&mut inc_curr, tick);
+            inc_dirty_total += inc_curr.dirty_row_count();
+            let inc_cert =
+                evaluate_render_certificate_for_buffers(Some(&inc_prev), &inc_curr, false);
+            inc_diff.compute_certified_with_certificate_into(&inc_prev, &inc_curr, &inc_cert);
+            inc_scanned_total += inc_diff.last_scanned_cells();
+            inc_ns += t0.elapsed().as_nanos();
+
+            // Candidate: Buffer::reset_for_frame_against + certified narrowed diff.
+            let t1 = Instant::now();
+            cand_curr.reset_for_frame_against(&cand_prev);
+            seed_frame(&mut cand_curr, tick);
+            cand_dirty_total += cand_curr.dirty_row_count();
+            let cand_cert =
+                evaluate_render_certificate_for_buffers(Some(&cand_prev), &cand_curr, false);
+            assert_eq!(cand_cert.level, RenderCertificateLevel::NarrowToDirty);
+            assert!(!cand_cert.fell_back);
+            cand_diff.compute_certified_with_certificate_into(&cand_prev, &cand_curr, &cand_cert);
+            cand_scanned_total += cand_diff.last_scanned_cells();
+            cand_ns += t1.elapsed().as_nanos();
+
+            assert_eq!(
+                inc_diff.changes(),
+                cand_diff.changes(),
+                "candidate certified narrow diff diverged from incumbent full diff on tick {tick}"
+            );
+
+            std::mem::swap(&mut inc_prev, &mut inc_curr);
+            std::mem::swap(&mut cand_prev, &mut cand_curr);
+        }
+
+        assert_eq!(inc_dirty_total, usize::from(h) * frames);
+        assert_eq!(cand_dirty_total, 2 * frames);
+        assert!(
+            cand_scanned_total < inc_scanned_total / 10,
+            "expected >10x cell-scan reduction: cand={cand_scanned_total} vs inc={inc_scanned_total}"
+        );
+        eprintln!(
+            "bd-n1e59 paired 120x40 x{frames}: incumbent dirty_rows={inc_dirty_total} scanned={inc_scanned_total} total_ns={inc_ns} | candidate dirty_rows={cand_dirty_total} scanned={cand_scanned_total} total_ns={cand_ns}"
+        );
+    }
+
+    #[test]
+    fn scroll_region_bottom_addressed_ui_and_log_use_cup_from_bottom() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 3 },
+            UiAnchor::Bottom,
+            scroll_region_caps(),
+        );
+        writer.set_size(40, 10);
+        let mut frame = Buffer::new(40, 3);
+        frame.set(0, 0, ftui_render::cell::Cell::from_char('S'));
+        writer.present_ui_owned(frame, None, false).unwrap();
+        assert!(writer.scroll_region_active());
+
+        let after_present = writer.writer().inner().get_ref().len();
+        writer.write_log("line-1\n").unwrap();
+        let bytes = writer.into_inner().unwrap();
+        let ui_bytes = String::from_utf8_lossy(&bytes[..after_present]);
+        let log_bytes = String::from_utf8_lossy(&bytes[after_present..]);
+        assert!(
+            ui_bytes.contains("\x1b[9999;1H\x1b[2A"),
+            "scroll-region UI must address rows from bottom so pre-SIGWINCH height growth cannot overwrite logs: {ui_bytes:?}"
+        );
+        assert!(
+            log_bytes.contains("\x1b[9999;1H\x1b[3A"),
+            "scroll-region log positioning must address log_row from bottom: {log_bytes:?}"
         );
     }
 

@@ -246,6 +246,12 @@ pub struct Buffer {
     mutation_gen: u64,
     /// Mutation generation recorded at the last `clear_dirty()`, or `None` when full-dirty.
     dirty_baseline_gen: Option<u64>,
+    /// Conservative per-row half-open horizontal bounds `(min_x, max_x)` of cells
+    /// written since the last clear (`(u16::MAX, 0)` means every cell in the row
+    /// is guaranteed to equal `Cell::default()`). Used by
+    /// [`Self::reset_for_frame_against`] to sparse-clear reused buffers and seed
+    /// sound sparse dirty witnesses for immediate-mode frames (`bd-n1e59`).
+    occupied_spans: Vec<(u16, u16)>,
 }
 
 impl std::fmt::Debug for Buffer {
@@ -309,6 +315,7 @@ impl Buffer {
             dirty_all,
             mutation_gen: 0,
             dirty_baseline_gen: None,
+            occupied_spans: vec![(u16::MAX, 0); height as usize],
         }
     }
 
@@ -426,12 +433,22 @@ impl Buffer {
         self.mark_dirty_bits_range(y, 0, self.width);
     }
 
+    /// Record conservative non-default horizontal bounds for a row.
+    #[inline]
+    fn record_occupied_span(&mut self, y: u16, start: u16, end: u16) {
+        if let Some(slot) = self.occupied_spans.get_mut(y as usize) {
+            slot.0 = slot.0.min(start);
+            slot.1 = slot.1.max(end);
+        }
+    }
+
     /// Mark a row as fully dirty (full scan).
     #[inline]
     fn mark_dirty_row_full(&mut self, y: u16) {
         if y >= self.height {
             return;
         }
+        self.record_occupied_span(y, 0, self.width);
         let sample = self
             .cells
             .get(y as usize * self.width as usize)
@@ -454,6 +471,11 @@ impl Buffer {
     /// Mark a span within a row as dirty (half-open).
     #[inline]
     pub(crate) fn mark_dirty_span(&mut self, y: u16, x0: u16, x1: u16) {
+        self.mark_dirty_span_internal(y, x0, x1, true);
+    }
+
+    #[inline]
+    fn mark_dirty_span_internal(&mut self, y: u16, x0: u16, x1: u16, record_occupied: bool) {
         if y >= self.height {
             return;
         }
@@ -469,6 +491,9 @@ impl Buffer {
             return;
         }
 
+        if record_occupied {
+            self.record_occupied_span(y, start, end);
+        }
         let sample = self
             .cells
             .get(y as usize * width as usize + start as usize)
@@ -536,6 +561,7 @@ impl Buffer {
     #[inline]
     pub fn mark_all_dirty(&mut self) {
         self.advance_mutation_gen((u64::from(self.height) << 32) | u64::from(self.width));
+        self.occupied_spans.fill((0, self.width));
         self.dirty_rows.fill(true);
         if self.dirty_span_config.enabled {
             for row in &mut self.dirty_spans {
@@ -1418,14 +1444,12 @@ impl Buffer {
     pub fn clear(&mut self) {
         self.cells.fill(Cell::default());
         self.mark_all_dirty();
+        self.occupied_spans.fill((u16::MAX, 0));
         self.mutation_gen = 0;
     }
 
-    /// Reset per-frame state and clear all cells.
-    ///
-    /// This restores scissor/opacity stacks to their base values to ensure
-    /// each frame starts from a clean rendering state.
-    pub fn reset_for_frame(&mut self) {
+    #[inline]
+    fn reset_frame_stacks(&mut self) {
         self.scissor_stack.truncate(1);
         if let Some(base) = self.scissor_stack.first_mut() {
             *base = Rect::from_size(self.width, self.height);
@@ -1440,8 +1464,80 @@ impl Buffer {
         } else {
             self.opacity_stack.push(1.0);
         }
+    }
 
+    /// Reset per-frame state and clear all cells.
+    ///
+    /// This restores scissor/opacity stacks to their base values to ensure
+    /// each frame starts from a clean rendering state.
+    pub fn reset_for_frame(&mut self) {
+        self.reset_frame_stacks();
         self.clear();
+    }
+
+    /// Reset per-frame state and sparse-clear cells while seeding dirty
+    /// tracking soundly against `prev` (the previously presented frame).
+    ///
+    /// Unlike [`Self::reset_for_frame`], which unconditionally zeroes every
+    /// cell and marks 100% of rows dirty, this method:
+    /// 1. Only clears spans in `self` that were previously written.
+    /// 2. Anchors `dirty_baseline_gen = Some(prev.mutation_gen())` and seeds
+    ///    `dirty_rows` / `dirty_spans` / `dirty_bits` solely for spans where
+    ///    `prev` holds non-default cells.
+    ///
+    /// Rows and columns that are blank in both `prev` and the upcoming frame
+    /// stay cleanly un-dirty, enabling certified narrow/skip diffs in live
+    /// immediate-mode `Program` loops (`bd-n1e59`). Falls back to
+    /// [`Self::reset_for_frame`] if dimensions differ.
+    pub fn reset_for_frame_against(&mut self, prev: &Buffer) {
+        if self.width != prev.width || self.height != prev.height {
+            self.reset_for_frame();
+            return;
+        }
+        self.reset_frame_stacks();
+
+        // 1. Sparse-clear previously written spans in `self`.
+        let stride = self.width as usize;
+        for (y, span) in self.occupied_spans.iter_mut().enumerate() {
+            let (ox0, ox1) = *span;
+            if ox0 < ox1 {
+                let row_start = y * stride;
+                let start = row_start + ox0 as usize;
+                let end = row_start + (ox1 as usize).min(stride);
+                self.cells[start..end].fill(Cell::default());
+                *span = (u16::MAX, 0);
+            }
+        }
+
+        // 2. Reset dirty tracking without zeroing clean rows in dirty_bits.
+        if self.dirty_all {
+            self.dirty_bits.fill(0);
+        } else {
+            for (y, &dirty) in self.dirty_rows.iter().enumerate() {
+                if dirty {
+                    let row_start = y * stride;
+                    self.dirty_bits[row_start..row_start + stride].fill(0);
+                }
+            }
+        }
+        self.dirty_rows.fill(false);
+        for row in &mut self.dirty_spans {
+            row.clear();
+        }
+        self.dirty_span_overflows = 0;
+        self.dirty_cells = 0;
+        self.dirty_all = false;
+        self.mutation_gen = prev.mutation_gen;
+        self.dirty_baseline_gen = Some(prev.mutation_gen);
+
+        // 3. Seed dirty state for every span occupied by `prev` so cells that
+        //    disappear on the upcoming frame are guaranteed to be diffed and
+        //    erased without marking `self` occupied on those rows.
+        for (y, &(px0, px1)) in prev.occupied_spans.iter().enumerate() {
+            if px0 < px1 {
+                self.mark_dirty_span_internal(y as u16, px0, px1, false);
+            }
+        }
     }
 
     /// Clear all cells to the given cell.
@@ -4899,6 +4995,113 @@ mod tests {
             buf_ba.set_raw(0, 1, cell1);
 
             proptest::prop_assert_ne!(buffer_checksum(&buf_ab), buffer_checksum(&buf_ba));
+        }
+    }
+
+    #[test]
+    fn reset_for_frame_against_preserves_sound_sparse_witness_and_matches_full_diff() {
+        use crate::diff::BufferDiff;
+        use crate::render_certificate::{
+            RenderCertificateLevel, evaluate_render_certificate_for_buffers,
+        };
+
+        let mut spare = Buffer::new(40, 20);
+        let mut prev = Buffer::new(40, 20);
+        prev.set(5, 2, Cell::from_char('A'));
+        prev.set(12, 7, Cell::from_char('B'));
+
+        // Frame 1: move content to row 14 only; row 2 and row 7 must be diffed
+        // and erased while rows 0..2, 3..7, 8..14, 15..20 stay clean.
+        spare.set(30, 19, Cell::from_char('Z')); // stale cell from 2 frames ago
+        spare.reset_for_frame_against(&prev);
+        assert_eq!(*spare.get(30, 19).unwrap(), Cell::default());
+        spare.set(20, 14, Cell::from_char('C'));
+
+        assert!(spare.is_dirty_witness_valid_for(&prev));
+        assert_eq!(spare.dirty_row_indices(), vec![2, 7, 14]);
+        let cert = evaluate_render_certificate_for_buffers(Some(&prev), &spare, false);
+        assert_eq!(cert.level, RenderCertificateLevel::NarrowToDirty);
+        assert_eq!(cert.dirty_rows, vec![2, 7, 14]);
+
+        let mut certified = BufferDiff::new();
+        certified.compute_certified_with_certificate_into(&prev, &spare, &cert);
+        let full = BufferDiff::compute(&prev, &spare);
+        assert_eq!(certified.changes(), full.changes());
+        assert_eq!(certified.changes(), &[(5, 2), (12, 7), (20, 14)]);
+
+        // Frame 2: blank frame after blank frame emits SkipAll.
+        let mut blank_a = Buffer::new(40, 20);
+        blank_a.reset_for_frame_against(&spare); // clears row 14 on blank_a's diff
+        let mut blank_b = Buffer::new(40, 20);
+        blank_b.reset_for_frame_against(&blank_a);
+        let skip_cert = evaluate_render_certificate_for_buffers(Some(&blank_a), &blank_b, false);
+        assert_eq!(skip_cert.level, RenderCertificateLevel::SkipAll);
+        assert!(!skip_cert.fell_back);
+        assert_eq!(BufferDiff::compute(&blank_a, &blank_b).len(), 0);
+    }
+
+    #[test]
+    fn reset_for_frame_against_matches_full_diff_across_multi_frame_sequence() {
+        use crate::diff::BufferDiff;
+        use crate::render_certificate::evaluate_render_certificate_for_buffers;
+
+        let mut prev = Buffer::new(32, 16);
+        let mut spare = Buffer::new(32, 16);
+        let mut state: u64 = 0x1234_5678_9abc_def0;
+        let mut next_u64 = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            state
+        };
+
+        for step in 0..40 {
+            let mut cur = spare;
+            cur.reset_for_frame_against(&prev);
+            match step % 5 {
+                0 => {} // blank frame
+                1 => {
+                    // Sparse single-cell writes
+                    let y = (next_u64() % 16) as u16;
+                    let x = (next_u64() % 32) as u16;
+                    cur.set(x, y, Cell::from_char('X'));
+                }
+                2 => {
+                    // Wide characters + partial fill
+                    let y = (next_u64() % 16) as u16;
+                    cur.set(2, y, Cell::from_char('漢'));
+                    cur.fill(Rect::new(6, y, 8, 1), Cell::from_char('#'));
+                }
+                3 => {
+                    // Direct cells_mut conservative path
+                    cur.cells_mut()[0] = Cell::from_char('!');
+                }
+                _ => {
+                    // Multiple rows
+                    for r in 0..3 {
+                        let y = ((next_u64() + r) % 16) as u16;
+                        cur.set((next_u64() % 30) as u16, y, Cell::from_char('M'));
+                    }
+                }
+            }
+
+            let cert = evaluate_render_certificate_for_buffers(Some(&prev), &cur, false);
+            assert!(
+                !cert.fell_back,
+                "step {step} unexpectedly fell back: {:?}",
+                cert.causes
+            );
+            let mut cert_diff = BufferDiff::new();
+            cert_diff.compute_certified_with_certificate_into(&prev, &cur, &cert);
+            let full_diff = BufferDiff::compute(&prev, &cur);
+            assert_eq!(
+                cert_diff.changes(),
+                full_diff.changes(),
+                "step {step}: certified diff diverged from full diff"
+            );
+
+            spare = prev;
+            prev = cur;
         }
     }
 }

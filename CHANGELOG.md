@@ -484,11 +484,16 @@ and survive resizes. This release has breaking API changes, listed under
   build without this release's inline-log fixes fails at a similar or higher
   rate. Under tmux and GNU screen, which use the overlay transport, the same
   stress test lost no lines. It did not reproduce in the release gate, whose
-  run of the same test kept all 10,000 lines. Tracked as `bd-d5lro`.
+  run of the same test kept all 10,000 lines. Tracked as `bd-d5lro` (**resolved
+  post-v0.11.1**: bottom-anchored `ScrollRegion`/`Hybrid` now use bottom-relative
+  CUP addressing and `Program` synchronously reconciles live TTY size before
+  streaming logs or presenting frames while DECSTBM is active; passes 10/10
+  rounds on `tmux 3.6` and 10/10 rounds on `ftui-pty::VirtualTerminal`).
 - **A top-anchored inline UI can lose its top row** when a log line's grapheme
   width is measured differently by the clamp and the terminal (e.g. U+0600 +
   space). The log-write path for this case is unchanged from v0.9.0, so v0.9.0
-  is likely affected too (not verified). Tracked as `bd-ojjqa`.
+  is likely affected too (not verified). Tracked as `bd-ojjqa` (**resolved in
+  v0.11.1**).
 - **A log line written right after a resize can erase reflowed rows.** With
   the overlay transport and a bottom-anchored UI (the default), a log line
   written after a resize and before the next frame is streamed, together with

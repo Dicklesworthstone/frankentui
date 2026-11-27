@@ -177,6 +177,11 @@ pub trait BackendPresenter {
     /// resize coalescing defers the frame redraw.
     fn notify_resize(&mut self, _cols: u16, _rows: u16) {}
 
+    /// Whether an inline DECSTBM scroll region is currently active.
+    fn scroll_region_active(&self) -> bool {
+        false
+    }
+
     /// Resize the presentation surface.
     fn resize(&mut self, _cols: u16, _rows: u16) {}
 
