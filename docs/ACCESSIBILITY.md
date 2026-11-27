@@ -96,9 +96,10 @@ What is **not** done:
   and an explicitly opted-in evidence sink can carry text. Native delivery to
   a screen reader still needs a host bridge. The packaged browser text bridge
   described below uses DOM live regions instead.
-- Tabs content panes and pane workspaces do not automatically gain a semantic
-  container. Generic `Modal<C>`, built-in `Dialog` presets, `Tree`, and
-  `ftui-extras::Form` contribute scoped controls from their render paths.
+- Pane workspaces do not automatically gain a semantic container.
+  Generic `Modal<C>`, built-in `Dialog` presets, `Panel`, `Popover`,
+  `Tabs::render_panel`, `Tree`, and `ftui-extras::Form` contribute scoped
+  controls from their render paths.
 - Focus reconciliation is opt-in per view via `FocusManager::sync_to_frame(frame)`
   or `Frame::set_a11y_focused(id)` (falling back to the first `A11yState::focused`
   node in reading order when not called).
@@ -241,12 +242,27 @@ manual assistive-technology testing and a full semantic control bridge remain.
 | `TextInput` | TextInput | value/placeholder, focus, mask state |
 | `TextArea` | TextInput | full multiline value or placeholder, focus, multiline description |
 | `List` | List + visible ListItem children | block title, filtered count, stateful selection/focus, multi-selection |
-| `VirtualizedList` | List + visible ListItem children | total item count, visible viewport item bounds, stateful selection |
+| `VirtualizedList` | List + visible ListItem children | total item count, custom `accessible_name`, per-item `RenderItem::accessible_label` & selection, visible viewport bounds |
+| `LogViewer` | List + visible ListItem children | line/filter count, per-line text labels, stateful row selection |
+| `JsonView` | List + visible ListItem children | line/folded count, per-line text, foldable `expanded` state, cursor selection |
 | `Table` | Table + visible TableRow children | block title, row/column counts, visible row labels and stateful selection |
-| `Tabs` | Group + visible Tab children | tab titles, per-tab rendered bounds, stateful selected tab |
+| `Tabs` | Group + visible Tab children (+ `render_panel` `TabPanel` scope) | tab titles, per-tab rendered bounds, stateful selected tab, scoped tab-panel container |
 | `ProgressBar` | ProgressBar | ratio, label, value text |
 | `Paragraph` | Label | text content (truncated at 200 chars), block title |
-| `Block` | Group | title text |
+| `Block` | Group | title text (`render_with_children` scoped container) |
+| `Panel` | Group container | title, subtitle, scoped child hierarchy |
+| `Popover` | Dialog container | anchored floating bounds, scoped child hierarchy |
+| `StatusLine` | Toolbar | rendered left/center/right status and key-hint summary |
+| `Badge` | Label | badge label text |
+| `Paginator` | Label | numeric range (`value_min`/`value_max`/`value_now`) and `"Page X of Y"` `value_text` |
+| `Stopwatch` | Label | label, formatted elapsed `value_text`, running `busy` state |
+| `Timer` | Label (polite live on completion) | label, remaining/finished `value_text`, running `busy` state |
+| `Help` | Group + Label children | enabled shortcut descriptions and key hints (`shortcut`) |
+| `ErrorBoundary` | live Group (assertive) | panic widget name and captured error message on fallback |
+| `Sparkline` | Label | sample count, min, max, and latest finite sample summary |
+| `HistoryPanel` | List + ListItem children | panel title, undo/redo counts, and visible undo/redo history items |
+| `DecisionCard` | Group | traffic-light signal, action label, and plain-English explanation |
+| `ReceiptVerifierPanel` | Group | receipt ID, overall PASS/FAIL verdict, layer statuses, and failure class |
 | `Scrollbar` | ScrollBar | orientation (vertical/horizontal), scroll range (`value_min`/`value_max`), position (`value_now`, percentage `value_text`) |
 | `Spinner` | ProgressBar | label, busy state |
 | `Modal<C>` | Dialog container | scoped child semantics, stable hit-ID identity, optional accessible name |
@@ -405,10 +421,13 @@ Most interactive widgets respond to standard terminal key conventions:
    controls with native actions or a synchronized DOM focus model. Real
    screen-reader interoperability testing remains necessary.
 
-3. **Widget coverage and container scoping are incomplete.** Tabs content
-   panes, pane workspaces, and specialized widgets still require auditing.
-   Generic `Modal<C>`, built-in `Dialog`, `Form`, `Tree`, and `TextArea` paths
-   contribute metadata.
+3. **Widget coverage and container scoping are incomplete.** Pane workspaces
+   and specialized visualization widgets still require auditing. Generic
+   `Modal<C>`, built-in `Dialog`, `Panel`, `Popover`, `Tabs::render_panel`,
+   `StatusLine`, `LogViewer`, `JsonView`, `Paginator`, `Badge`, `Stopwatch`,
+   `Timer`, `Help`, `ErrorBoundary`, `Sparkline`, `HistoryPanel`,
+   `DecisionCard`, `ReceiptVerifierPanel`, `Form`, `Tree`, and `TextArea`
+   paths contribute metadata.
 
 4. **Focus feedback is not yet delivered to a native screen reader.**
    Tree focus changes produce bounded announcements in the local callback;

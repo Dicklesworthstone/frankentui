@@ -390,6 +390,42 @@ impl<'a> Tabs<'a> {
         state.active += 1;
         true
     }
+
+    /// Render the content pane for `active_tab` inside an accessibility
+    /// [`A11yRole::TabPanel`](ftui_a11y::node::A11yRole::TabPanel) scope named
+    /// after the active tab.
+    ///
+    /// When accessibility collection is disabled or `panel_area` is clipped out,
+    /// `render_content` still runs directly without allocating accessibility nodes.
+    pub fn render_panel<F>(
+        &self,
+        active_tab: usize,
+        panel_area: Rect,
+        frame: &mut Frame,
+        render_content: F,
+    ) where
+        F: FnOnce(Rect, &mut Frame),
+    {
+        if !panel_area.is_empty() && frame.a11y_enabled() {
+            let bounds = panel_area.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let mut panel = ftui_a11y::node::A11yNodeInfo::new(
+                    ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                        ftui_a11y::node::A11yRole::TabPanel,
+                        panel_area,
+                    ),
+                    ftui_a11y::node::A11yRole::TabPanel,
+                    bounds,
+                );
+                if let Some(tab) = self.tabs.get(active_tab) {
+                    panel = panel.with_name(tab.title());
+                }
+                frame.with_a11y_scope(panel, |frame| render_content(panel_area, frame));
+                return;
+            }
+        }
+        render_content(panel_area, frame);
+    }
 }
 
 impl StatefulWidget for Tabs<'_> {

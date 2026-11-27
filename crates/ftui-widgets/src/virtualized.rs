@@ -1568,6 +1568,37 @@ pub trait RenderItem {
     fn category(&self) -> usize {
         0
     }
+
+    /// Optional human-readable label exposed to the accessibility tree when
+    /// rendered inside a [`VirtualizedList`].
+    ///
+    /// Returns `None` by default, in which case [`VirtualizedList`] falls back
+    /// to `"Item N"`.
+    fn accessible_label(&self) -> Option<String> {
+        None
+    }
+
+    /// Logical item index used to derive a stable accessibility node ID when
+    /// rendered inside a [`VirtualizedList`].
+    ///
+    /// Defaults to `default_idx` (the slice index inside [`VirtualizedList`]).
+    /// Wrapper widgets that pass a viewport-windowed slice (such as
+    /// [`crate::log_viewer::LogViewer`]) can override this to return the
+    /// underlying logical line index so item node IDs remain stable across
+    /// scroll updates.
+    fn accessible_index(&self, default_idx: usize) -> usize {
+        default_idx
+    }
+
+    /// Whether this item should be marked selected in the accessibility tree.
+    ///
+    /// Defaults to `list_selected` (the selection tracked by
+    /// [`VirtualizedListState`]); wrapper widgets that maintain their own
+    /// selection state (such as [`crate::log_viewer::LogViewer`]) can override
+    /// this so screen readers reflect the true selected row.
+    fn is_accessible_selected(&self, list_selected: bool) -> bool {
+        list_selected
+    }
 }
 
 impl<T: RenderItem> Virtualized<T> {
@@ -2170,6 +2201,11 @@ pub struct VirtualizedList<'a, T> {
     height_mode: ListHeightMode,
     /// Optional hit ID for scrollbar interaction.
     hit_id: Option<ftui_render::frame::HitId>,
+    /// Optional accessible name for the list container.
+    accessible_name: Option<&'a str>,
+    /// Optional accessible description override for the list container
+    /// (defaults to `"{total_items} items"`).
+    accessible_description: Option<String>,
 }
 
 impl<'a, T> VirtualizedList<'a, T> {
@@ -2183,7 +2219,24 @@ impl<'a, T> VirtualizedList<'a, T> {
             show_scrollbar: true,
             height_mode: ListHeightMode::Fixed(1),
             hit_id: None,
+            accessible_name: None,
+            accessible_description: None,
         }
+    }
+
+    /// Set the accessible name for the list container (defaults to `"VirtualizedList"`).
+    #[must_use]
+    pub fn accessible_name(mut self, name: &'a str) -> Self {
+        self.accessible_name = Some(name);
+        self
+    }
+
+    /// Override the accessible description for the list container
+    /// (defaults to `"{total_items} items"`).
+    #[must_use]
+    pub fn accessible_description(mut self, desc: impl Into<String>) -> Self {
+        self.accessible_description = Some(desc.into());
+        self
     }
 
     /// Set base style.
@@ -2270,13 +2323,17 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
                         ftui_a11y::node::A11yRole::List,
                         area,
                     );
+                    let desc = self
+                        .accessible_description
+                        .clone()
+                        .unwrap_or_else(|| "0 items".to_string());
                     let root = ftui_a11y::node::A11yNodeInfo::new(
                         root_id,
                         ftui_a11y::node::A11yRole::List,
                         bounds,
                     )
-                    .with_name("VirtualizedList")
-                    .with_description("0 items");
+                    .with_name(self.accessible_name.unwrap_or("VirtualizedList"))
+                    .with_description(desc);
                     frame.push_a11y(root);
                 }
             }
@@ -2357,13 +2414,17 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
                     ftui_a11y::node::A11yRole::List,
                     area,
                 );
+                let desc = self
+                    .accessible_description
+                    .clone()
+                    .unwrap_or_else(|| format!("{total_items} items"));
                 let root = ftui_a11y::node::A11yNodeInfo::new(
                     root_id,
                     ftui_a11y::node::A11yRole::List,
                     bounds,
                 )
-                .with_name("VirtualizedList")
-                .with_description(format!("{total_items} items"));
+                .with_name(self.accessible_name.unwrap_or("VirtualizedList"))
+                .with_description(desc);
                 frame.push_a11y(root);
                 Some(root_id)
             }
@@ -2443,14 +2504,18 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
             if let Some(parent_id) = a11y_list_id {
                 let item_bounds = row_area.intersection(&frame.buffer.current_scissor());
                 if !item_bounds.is_empty() {
+                    let logical_idx = self.items[idx].accessible_index(idx);
+                    let label = self.items[idx]
+                        .accessible_label()
+                        .unwrap_or_else(|| format!("Item {}", logical_idx + 1));
                     let mut item_node = ftui_a11y::node::A11yNodeInfo::new(
-                        parent_id.wrapping_add(1).wrapping_add(idx as u64),
+                        parent_id.wrapping_add(1).wrapping_add(logical_idx as u64),
                         ftui_a11y::node::A11yRole::ListItem,
                         item_bounds,
                     )
-                    .with_name(format!("Item {}", idx + 1))
+                    .with_name(label)
                     .with_parent(parent_id);
-                    item_node.state.selected = is_selected;
+                    item_node.state.selected = self.items[idx].is_accessible_selected(is_selected);
                     frame.push_a11y(item_node);
                 }
             }
@@ -2629,13 +2694,17 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
                     ftui_a11y::node::A11yRole::List,
                     area,
                 );
+                let desc = self
+                    .accessible_description
+                    .clone()
+                    .unwrap_or_else(|| format!("{total_items} items"));
                 let root = ftui_a11y::node::A11yNodeInfo::new(
                     root_id,
                     ftui_a11y::node::A11yRole::List,
                     bounds,
                 )
-                .with_name("VirtualizedList")
-                .with_description(format!("{total_items} items"));
+                .with_name(self.accessible_name.unwrap_or("VirtualizedList"))
+                .with_description(desc);
                 frame.push_a11y(root);
                 Some(root_id)
             }
@@ -2665,14 +2734,18 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
             if let Some(parent_id) = a11y_list_id {
                 let item_bounds = row_area.intersection(&frame.buffer.current_scissor());
                 if !item_bounds.is_empty() {
+                    let logical_idx = self.items[idx].accessible_index(idx);
+                    let label = self.items[idx]
+                        .accessible_label()
+                        .unwrap_or_else(|| format!("Item {}", logical_idx + 1));
                     let mut item_node = ftui_a11y::node::A11yNodeInfo::new(
-                        parent_id.wrapping_add(1).wrapping_add(idx as u64),
+                        parent_id.wrapping_add(1).wrapping_add(logical_idx as u64),
                         ftui_a11y::node::A11yRole::ListItem,
                         item_bounds,
                     )
-                    .with_name(format!("Item {}", idx + 1))
+                    .with_name(label)
                     .with_parent(parent_id);
-                    item_node.state.selected = is_selected;
+                    item_node.state.selected = self.items[idx].is_accessible_selected(is_selected);
                     frame.push_a11y(item_node);
                 }
             }

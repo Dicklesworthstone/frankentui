@@ -27,6 +27,7 @@
 
 use crate::borders::{BorderSet, BorderType};
 use crate::{Widget, apply_style, clear_text_area, draw_text_span};
+use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
@@ -361,6 +362,36 @@ impl Widget for DecisionCard<'_> {
         // Final rows: Full Bayesian details (level >= 3)
         if y + 1 < max_y && self.disclosure.level >= DisclosureLevel::FullBayesian {
             self.render_bayesian(inner_x, y, inner_max_x, frame);
+        }
+
+        if frame.a11y_enabled() {
+            let bounds = frame.buffer.current_scissor().intersection(&area);
+            if !bounds.is_empty() {
+                let mut node = A11yNodeInfo::new(
+                    A11yNodeInfo::stable_id_for(A11yRole::Group, area),
+                    A11yRole::Group,
+                    bounds,
+                )
+                .with_name(format!(
+                    "{}: {}",
+                    self.disclosure.signal.label(),
+                    self.disclosure.action_label
+                ));
+                if let Some(ref explanation) = self.disclosure.explanation {
+                    let trimmed = explanation.trim();
+                    if !trimmed.is_empty() {
+                        let mut chars = trimmed.chars();
+                        let truncated: String = chars.by_ref().take(200).collect();
+                        let desc = if chars.next().is_some() {
+                            format!("{truncated}...")
+                        } else {
+                            truncated
+                        };
+                        node = node.with_description(desc);
+                    }
+                }
+                frame.push_a11y(node);
+            }
         }
     }
 

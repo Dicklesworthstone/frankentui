@@ -322,10 +322,71 @@ impl Widget for StatusLine<'_> {
         if !self.right.is_empty() {
             self.render_items(frame, &self.right, right_x, area.y, area.right(), style);
         }
+
+        if frame.a11y_enabled() {
+            let row = Rect::new(area.x, area.y, area.width, 1);
+            let bounds = row.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let mut nodes = ftui_a11y::Accessible::accessibility_nodes(self, row);
+                for node in &mut nodes {
+                    node.bounds = bounds;
+                }
+                frame.push_a11y_nodes(nodes);
+            }
+        }
     }
 
     fn is_essential(&self) -> bool {
         true // Status line should always render
+    }
+}
+
+impl StatusLine<'_> {
+    fn accessible_summary(&self) -> String {
+        let mut sections = Vec::with_capacity(3);
+        for items in [&self.left, &self.center, &self.right] {
+            let mut parts = Vec::new();
+            for item in items {
+                match item {
+                    StatusItem::Spacer | StatusItem::Spinner(_) => {}
+                    _ => {
+                        let rendered = item.render_to_string();
+                        if !rendered.is_empty() {
+                            parts.push(rendered);
+                        }
+                    }
+                }
+            }
+            if !parts.is_empty() {
+                sections.push(parts.join(self.separator));
+            }
+        }
+        let joined = sections.join(" | ");
+        let mut chars = joined.chars();
+        let truncated: String = chars.by_ref().take(300).collect();
+        if chars.next().is_some() {
+            format!("{truncated}...")
+        } else {
+            truncated
+        }
+    }
+}
+
+impl ftui_a11y::Accessible for StatusLine<'_> {
+    fn accessibility_nodes(&self, area: Rect) -> Vec<ftui_a11y::node::A11yNodeInfo> {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+
+        let mut node = A11yNodeInfo::new(
+            A11yNodeInfo::stable_id_for(A11yRole::Toolbar, area),
+            A11yRole::Toolbar,
+            area,
+        )
+        .with_name("Status line");
+        let summary = self.accessible_summary();
+        if !summary.is_empty() {
+            node = node.with_description(summary);
+        }
+        vec![node]
     }
 }
 

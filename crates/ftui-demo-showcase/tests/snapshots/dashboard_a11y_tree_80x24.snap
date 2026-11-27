@@ -48,6 +48,7 @@ Label "1 · None · S1" [] @1,16 18x1
 Label "2 · FadeIn · S2" [] @1,18 18x1
 Group "Activity" [] @20,14 32x9
 Label "SEV TIME  COMP  MESSAGE" [] @21,15 30x1
+Label "INFO" [] @21,16 6x1
 Label "00:02" [] @28,16 6x1
 Group "Markdown · Streaming… 0%" [] @52,14 27x9
 Label "▌" [] @53,15 25x7

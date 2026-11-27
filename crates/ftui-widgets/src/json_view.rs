@@ -849,10 +849,87 @@ impl Widget for JsonView {
                 }
             }
         }
+
+        if frame.a11y_enabled() {
+            let scissor = frame.buffer.current_scissor();
+            let bounds = area.intersection(&scissor);
+            if !bounds.is_empty() {
+                let base_id = ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                    ftui_a11y::node::A11yRole::List,
+                    area,
+                );
+                let root = ftui_a11y::node::A11yNodeInfo::new(
+                    base_id,
+                    ftui_a11y::node::A11yRole::List,
+                    bounds,
+                )
+                .with_name("JSON view")
+                .with_description(format!("{} lines", lines.len()));
+                frame.with_a11y_scope(root, |frame| {
+                    for (row_idx, tokens) in lines.iter().take(area.height as usize).enumerate() {
+                        let y = area.y.saturating_add(row_idx as u16);
+                        let row_bounds = Rect::new(area.x, y, area.width, 1).intersection(&scissor);
+                        if row_bounds.is_empty() {
+                            continue;
+                        }
+                        let text = json_tokens_plain_text(tokens);
+                        let item = ftui_a11y::node::A11yNodeInfo::new(
+                            base_id.wrapping_add(1).wrapping_add(row_idx as u64),
+                            ftui_a11y::node::A11yRole::ListItem,
+                            row_bounds,
+                        )
+                        .with_name(text);
+                        frame.push_a11y(item);
+                    }
+                });
+            }
+        }
     }
 
     fn is_essential(&self) -> bool {
         false
+    }
+}
+
+fn json_tokens_plain_text(tokens: &[JsonToken]) -> String {
+    let mut out = String::new();
+    for token in tokens {
+        let s = match token {
+            JsonToken::Key(s)
+            | JsonToken::StringVal(s)
+            | JsonToken::Number(s)
+            | JsonToken::Literal(s)
+            | JsonToken::Punctuation(s)
+            | JsonToken::Whitespace(s)
+            | JsonToken::Error(s) => s.as_str(),
+            JsonToken::Newline => continue,
+        };
+        out.push_str(s);
+    }
+    let trimmed = out.trim();
+    let mut chars = trimmed.chars();
+    let truncated: String = chars.by_ref().take(200).collect();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
+}
+
+impl ftui_a11y::Accessible for JsonView {
+    fn accessibility_nodes(&self, area: Rect) -> Vec<ftui_a11y::node::A11yNodeInfo> {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+
+        let lines = self.formatted_lines();
+        vec![
+            A11yNodeInfo::new(
+                A11yNodeInfo::stable_id_for(A11yRole::List, area),
+                A11yRole::List,
+                area,
+            )
+            .with_name("JSON view")
+            .with_description(format!("{} lines", lines.len())),
+        ]
     }
 }
 
@@ -888,6 +965,22 @@ impl StatefulWidget for JsonView {
         if visible == 0 {
             state.cursor_line = 0;
             state.scroll = 0;
+            if frame.a11y_enabled() {
+                let bounds = area.intersection(&frame.buffer.current_scissor());
+                if !bounds.is_empty() {
+                    let root = ftui_a11y::node::A11yNodeInfo::new(
+                        ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                            ftui_a11y::node::A11yRole::List,
+                            area,
+                        ),
+                        ftui_a11y::node::A11yRole::List,
+                        bounds,
+                    )
+                    .with_name("JSON view")
+                    .with_description("0 lines");
+                    frame.push_a11y(root);
+                }
+            }
             return;
         }
         if state.cursor_line >= visible {
@@ -909,7 +1002,7 @@ impl StatefulWidget for JsonView {
             if idx >= visible {
                 break;
             }
-            let y = area.y + row as u16;
+            let y = area.y.saturating_add(row as u16);
             self.draw_line(
                 frame,
                 area,
@@ -918,6 +1011,54 @@ impl StatefulWidget for JsonView {
                 idx == state.cursor_line,
                 deg.apply_styling(),
             );
+        }
+
+        if frame.a11y_enabled() {
+            let scissor = frame.buffer.current_scissor();
+            let bounds = area.intersection(&scissor);
+            if !bounds.is_empty() {
+                let base_id = ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                    ftui_a11y::node::A11yRole::List,
+                    area,
+                );
+                let desc = if state.folded_count() > 0 {
+                    format!("{visible} visible lines, {} folded", state.folded_count())
+                } else {
+                    format!("{visible} lines")
+                };
+                let root = ftui_a11y::node::A11yNodeInfo::new(
+                    base_id,
+                    ftui_a11y::node::A11yRole::List,
+                    bounds,
+                )
+                .with_name("JSON view")
+                .with_description(desc);
+                frame.with_a11y_scope(root, |frame| {
+                    for row in 0..height {
+                        let idx = state.scroll + row;
+                        if idx >= visible {
+                            break;
+                        }
+                        let y = area.y.saturating_add(row as u16);
+                        let row_bounds = Rect::new(area.x, y, area.width, 1).intersection(&scissor);
+                        if row_bounds.is_empty() {
+                            continue;
+                        }
+                        let line = &lines[idx];
+                        let mut item = ftui_a11y::node::A11yNodeInfo::new(
+                            base_id.wrapping_add(1).wrapping_add(idx as u64),
+                            ftui_a11y::node::A11yRole::ListItem,
+                            row_bounds,
+                        )
+                        .with_name(json_tokens_plain_text(&line.tokens));
+                        item.state.selected = idx == state.cursor_line;
+                        if line.foldable {
+                            item.state.expanded = Some(!line.folded);
+                        }
+                        frame.push_a11y(item);
+                    }
+                });
+            }
         }
     }
 }

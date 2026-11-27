@@ -18,6 +18,7 @@
 //! ```
 
 use crate::{Widget, clear_text_area, draw_text_span};
+use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
@@ -302,13 +303,26 @@ impl HistoryPanel {
         }
 
         // Undo items (oldest first, so they appear top-to-bottom chronologically)
-        for desc in undo_to_show {
+        for (idx, desc) in undo_to_show.iter().enumerate() {
             if row >= area.height {
                 break;
             }
             let y = area.y.saturating_add(row);
             let icon_end = draw_text_span(frame, area.x, y, &self.undo_icon, undo_style, max_x);
             draw_text_span(frame, icon_end, y, desc, undo_style, max_x);
+            if frame.a11y_enabled() {
+                let item_row = Rect::new(area.x, y, area.width, 1);
+                let item_bounds = frame.buffer.current_scissor().intersection(&item_row);
+                if !item_bounds.is_empty() {
+                    let id = A11yNodeInfo::stable_id_for(A11yRole::ListItem, item_row)
+                        .wrapping_add(idx as u64);
+                    frame.push_a11y(
+                        A11yNodeInfo::new(id, A11yRole::ListItem, item_bounds)
+                            .with_name(desc.as_str())
+                            .with_description("Undo"),
+                    );
+                }
+            }
             row += 1;
         }
 
@@ -325,13 +339,26 @@ impl HistoryPanel {
         }
 
         // Redo items (these are "future" commands that can be redone)
-        for desc in redo_to_show {
+        for (idx, desc) in redo_to_show.iter().enumerate() {
             if row >= area.height {
                 break;
             }
             let y = area.y.saturating_add(row);
             let icon_end = draw_text_span(frame, area.x, y, &self.redo_icon, redo_style, max_x);
             draw_text_span(frame, icon_end, y, desc, redo_style, max_x);
+            if frame.a11y_enabled() {
+                let item_row = Rect::new(area.x, y, area.width, 1);
+                let item_bounds = frame.buffer.current_scissor().intersection(&item_row);
+                if !item_bounds.is_empty() {
+                    let id = A11yNodeInfo::stable_id_for(A11yRole::ListItem, item_row)
+                        .wrapping_add((undo_to_show.len() + idx) as u64);
+                    frame.push_a11y(
+                        A11yNodeInfo::new(id, A11yRole::ListItem, item_bounds)
+                            .with_name(desc.as_str())
+                            .with_description("Redo"),
+                    );
+                }
+            }
             row += 1;
         }
 
@@ -350,6 +377,9 @@ impl HistoryPanel {
 
 impl Widget for HistoryPanel {
     fn render(&self, area: Rect, frame: &mut Frame) {
+        if area.is_empty() {
+            return;
+        }
         let deg = frame.buffer.degradation;
         if !deg.render_content() {
             clear_text_area(frame, area, Style::default());
@@ -368,7 +398,30 @@ impl Widget for HistoryPanel {
         );
         frame.buffer.fill(area, bg_cell);
 
-        self.render_content(area, frame);
+        let a11y_bounds = frame.buffer.current_scissor().intersection(&area);
+        if frame.a11y_enabled() && !a11y_bounds.is_empty() {
+            let name = if self.title.is_empty() {
+                "History"
+            } else {
+                self.title.as_str()
+            };
+            let container = A11yNodeInfo::new(
+                A11yNodeInfo::stable_id_for(A11yRole::List, area),
+                A11yRole::List,
+                a11y_bounds,
+            )
+            .with_name(name)
+            .with_description(format!(
+                "{} undo, {} redo",
+                self.undo_items.len(),
+                self.redo_items.len()
+            ));
+            frame.with_a11y_scope(container, |frame| {
+                self.render_content(area, frame);
+            });
+        } else {
+            self.render_content(area, frame);
+        }
     }
 
     fn is_essential(&self) -> bool {

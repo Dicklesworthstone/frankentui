@@ -181,7 +181,7 @@ impl Popover {
             return;
         };
 
-        if self.bordered {
+        let content_area = if self.bordered {
             // Draw a simple box border
             let buf = &mut frame.buffer;
             draw_border(buf, area);
@@ -195,10 +195,29 @@ impl Popover {
             if !inner.is_empty() {
                 buf.fill(inner, ftui_render::cell::Cell::from_char(' '));
             }
-            render_content(inner, frame);
+            inner
         } else {
-            render_content(area, frame);
+            area
+        };
+
+        if frame.a11y_enabled() {
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let container = ftui_a11y::node::A11yNodeInfo::new(
+                    ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                        ftui_a11y::node::A11yRole::Dialog,
+                        area,
+                    ),
+                    ftui_a11y::node::A11yRole::Dialog,
+                    bounds,
+                )
+                .with_name("Popover");
+                frame.with_a11y_scope(container, |frame| render_content(content_area, frame));
+                return;
+            }
         }
+
+        render_content(content_area, frame);
     }
 
     /// Resolve placement with flip logic.

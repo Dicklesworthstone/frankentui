@@ -431,6 +431,36 @@ impl<W: Widget> Widget for Panel<'_, W> {
         };
         let mut content_area = content_bounds;
         content_area = content_area.inner(self.padding);
+
+        if frame.a11y_enabled() {
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let mut container = ftui_a11y::node::A11yNodeInfo::new(
+                    ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                        ftui_a11y::node::A11yRole::Group,
+                        area,
+                    ),
+                    ftui_a11y::node::A11yRole::Group,
+                    bounds,
+                );
+                if let Some(title) = self.title {
+                    container = container.with_name(title);
+                }
+                if let Some(subtitle) = self.subtitle {
+                    container = container.with_description(subtitle);
+                }
+                if content_area.is_empty() {
+                    frame.push_a11y(container);
+                } else {
+                    frame.with_a11y_scope(container, |frame| {
+                        let guard = ScissorGuard::new(frame, content_area);
+                        self.child.render(content_area, guard.frame);
+                    });
+                }
+                return;
+            }
+        }
+
         if content_area.is_empty() {
             return;
         }
@@ -441,6 +471,25 @@ impl<W: Widget> Widget for Panel<'_, W> {
 
     fn is_essential(&self) -> bool {
         self.child.is_essential()
+    }
+}
+
+impl<W> ftui_a11y::Accessible for Panel<'_, W> {
+    fn accessibility_nodes(&self, area: Rect) -> Vec<ftui_a11y::node::A11yNodeInfo> {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+
+        let mut node = A11yNodeInfo::new(
+            A11yNodeInfo::stable_id_for(A11yRole::Group, area),
+            A11yRole::Group,
+            area,
+        );
+        if let Some(title) = self.title {
+            node = node.with_name(title);
+        }
+        if let Some(subtitle) = self.subtitle {
+            node = node.with_description(subtitle);
+        }
+        vec![node]
     }
 }
 

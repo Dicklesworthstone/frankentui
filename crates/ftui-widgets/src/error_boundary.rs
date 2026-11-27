@@ -265,6 +265,33 @@ fn clear_area(frame: &mut Frame, area: Rect) {
 
 /// Render a fallback error indicator in the given area.
 fn render_error_fallback(frame: &mut Frame, area: Rect, error: &CapturedError) {
+    if frame.a11y_enabled() {
+        let bounds = area.intersection(&frame.buffer.current_scissor());
+        if !bounds.is_empty() {
+            let mut chars = error.message.trim().chars();
+            let truncated: String = chars.by_ref().take(200).collect();
+            let summary = if chars.next().is_some() {
+                format!("{truncated}...")
+            } else {
+                truncated
+            };
+            let mut node = ftui_a11y::node::A11yNodeInfo::new(
+                ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                    ftui_a11y::node::A11yRole::Group,
+                    area,
+                ),
+                ftui_a11y::node::A11yRole::Group,
+                bounds,
+            )
+            .with_name(format!("Widget error: {}", error.widget_name))
+            .with_live_region(ftui_a11y::node::LiveRegion::Assertive);
+            if !summary.is_empty() {
+                node = node.with_description(summary);
+            }
+            frame.push_a11y(node);
+        }
+    }
+
     let error_fg = PackedRgba::rgb(255, 60, 60);
     let error_bg = PackedRgba::rgb(40, 0, 0);
     let error_style = Style::new().fg(error_fg).bg(error_bg);

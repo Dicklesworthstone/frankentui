@@ -17,6 +17,7 @@
 //! ```
 
 use crate::{MeasurableWidget, SizeConstraints, Widget, clear_text_row};
+use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 use ftui_core::geometry::{Rect, Size};
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
@@ -438,6 +439,45 @@ impl Widget for Sparkline<'_> {
             }
 
             frame.buffer.set_fast(x, y, cell);
+        }
+
+        if frame.a11y_enabled() {
+            let row = Rect::new(area.x, area.y, area.width, 1);
+            let row_bounds = frame.buffer.current_scissor().intersection(&row);
+            if !row_bounds.is_empty() {
+                let mut finite_count = 0usize;
+                let mut data_min = f64::INFINITY;
+                let mut data_max = f64::NEG_INFINITY;
+                let mut latest = None;
+                for &v in self.data {
+                    if v.is_finite() {
+                        finite_count += 1;
+                        if v < data_min {
+                            data_min = v;
+                        }
+                        if v > data_max {
+                            data_max = v;
+                        }
+                        latest = Some(v);
+                    }
+                }
+                let desc = if let Some(last) = latest {
+                    format!(
+                        "{finite_count} samples, min {data_min:.2}, max {data_max:.2}, latest {last:.2}"
+                    )
+                } else {
+                    format!("{} samples", self.data.len())
+                };
+                frame.push_a11y(
+                    A11yNodeInfo::new(
+                        A11yNodeInfo::stable_id_for(A11yRole::Label, row),
+                        A11yRole::Label,
+                        row_bounds,
+                    )
+                    .with_name("Sparkline")
+                    .with_description(desc),
+                );
+            }
         }
     }
 }

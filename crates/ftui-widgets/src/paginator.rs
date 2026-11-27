@@ -199,10 +199,45 @@ impl Widget for Paginator<'_> {
         }
 
         draw_text_span(frame, area.x, area.y, &text, style, area.right());
+
+        if frame.a11y_enabled() {
+            let row = Rect::new(area.x, area.y, area.width, 1);
+            let bounds = row.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let mut nodes = ftui_a11y::Accessible::accessibility_nodes(self, row);
+                for node in &mut nodes {
+                    node.bounds = bounds;
+                }
+                frame.push_a11y_nodes(nodes);
+            }
+        }
     }
 
     fn is_essential(&self) -> bool {
         true
+    }
+}
+
+impl ftui_a11y::Accessible for Paginator<'_> {
+    fn accessibility_nodes(&self, area: Rect) -> Vec<ftui_a11y::node::A11yNodeInfo> {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+
+        let (current, total) = self.normalized_pages();
+        let state = A11yState {
+            value_now: Some(current as f64),
+            value_min: Some(if total > 0 { 1.0 } else { 0.0 }),
+            value_max: Some(total as f64),
+            value_text: Some(format!("Page {current} of {total}")),
+            ..A11yState::default()
+        };
+        let node = A11yNodeInfo::new(
+            A11yNodeInfo::stable_id_for(A11yRole::Label, area),
+            A11yRole::Label,
+            area,
+        )
+        .with_name("Paginator")
+        .with_state(state);
+        vec![node]
     }
 }
 

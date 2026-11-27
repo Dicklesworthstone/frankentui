@@ -198,6 +198,38 @@ impl StatefulWidget for Timer<'_> {
         }
 
         draw_text_span(frame, x, area.y, &formatted, style, area.right());
+
+        if frame.a11y_enabled() {
+            let row = Rect::new(area.x, area.y, area.width, 1);
+            let bounds = row.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let value_text = if state.finished() {
+                    format!("{formatted} (finished)")
+                } else {
+                    formatted
+                };
+                let a11y_state = ftui_a11y::node::A11yState {
+                    busy: state.running(),
+                    value_text: Some(value_text),
+                    ..ftui_a11y::node::A11yState::default()
+                };
+                let name = self.label.filter(|s| !s.is_empty()).unwrap_or("Timer");
+                let mut node = ftui_a11y::node::A11yNodeInfo::new(
+                    ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                        ftui_a11y::node::A11yRole::Label,
+                        row,
+                    ),
+                    ftui_a11y::node::A11yRole::Label,
+                    bounds,
+                )
+                .with_name(name)
+                .with_state(a11y_state);
+                if state.finished() {
+                    node = node.with_live_region(ftui_a11y::node::LiveRegion::Polite);
+                }
+                frame.push_a11y(node);
+            }
+        }
     }
 }
 

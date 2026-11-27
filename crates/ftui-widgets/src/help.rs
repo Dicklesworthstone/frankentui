@@ -950,6 +950,82 @@ impl Help {
     }
 }
 
+impl Help {
+    fn push_a11y_nodes(&self, area: Rect, frame: &mut Frame) {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+
+        if !frame.a11y_enabled() {
+            return;
+        }
+        let bounds = area.intersection(&frame.buffer.current_scissor());
+        if bounds.is_empty() {
+            return;
+        }
+        let enabled: Vec<&HelpEntry> = self.entries.iter().filter(|e| e.enabled).collect();
+        if enabled.is_empty() {
+            return;
+        }
+
+        let base_id = A11yNodeInfo::stable_id_for(A11yRole::Group, area);
+        let group = A11yNodeInfo::new(base_id, A11yRole::Group, bounds)
+            .with_name("Keyboard shortcuts")
+            .with_description(format!("{} shortcuts", enabled.len()));
+
+        frame.with_a11y_scope(group, |frame| {
+            for (idx, entry) in enabled.into_iter().enumerate() {
+                frame.push_a11y(
+                    A11yNodeInfo::new(
+                        base_id.wrapping_add(1).wrapping_add(idx as u64),
+                        A11yRole::Label,
+                        bounds,
+                    )
+                    .with_name(&entry.desc)
+                    .with_shortcut(&entry.key),
+                );
+            }
+        });
+    }
+}
+
+impl ftui_a11y::Accessible for Help {
+    fn accessibility_nodes(&self, area: Rect) -> Vec<ftui_a11y::node::A11yNodeInfo> {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+
+        if area.is_empty() {
+            return Vec::new();
+        }
+        let enabled: Vec<&HelpEntry> = self.entries.iter().filter(|e| e.enabled).collect();
+        if enabled.is_empty() {
+            return Vec::new();
+        }
+        let base_id = A11yNodeInfo::stable_id_for(A11yRole::Group, area);
+        let child_ids: Vec<u64> = (0..enabled.len())
+            .map(|idx| base_id.wrapping_add(1).wrapping_add(idx as u64))
+            .collect();
+
+        let group = A11yNodeInfo::new(base_id, A11yRole::Group, area)
+            .with_name("Keyboard shortcuts")
+            .with_description(format!("{} shortcuts", enabled.len()))
+            .with_children(child_ids);
+
+        let mut nodes = Vec::with_capacity(1 + enabled.len());
+        nodes.push(group);
+        for (idx, entry) in enabled.into_iter().enumerate() {
+            nodes.push(
+                A11yNodeInfo::new(
+                    base_id.wrapping_add(1).wrapping_add(idx as u64),
+                    A11yRole::Label,
+                    area,
+                )
+                .with_name(&entry.desc)
+                .with_shortcut(&entry.key)
+                .with_parent(base_id),
+            );
+        }
+        nodes
+    }
+}
+
 impl Widget for Help {
     fn render(&self, area: Rect, frame: &mut Frame) {
         if area.is_empty() || area.width == 0 || area.height == 0 {
@@ -962,6 +1038,8 @@ impl Widget for Help {
             HelpMode::Short => self.render_short(area, frame),
             HelpMode::Full => self.render_full(area, frame),
         }
+
+        self.push_a11y_nodes(area, frame);
     }
 
     fn is_essential(&self) -> bool {
@@ -995,6 +1073,7 @@ impl StatefulWidget for Help {
         if cache_miss {
             rebuild_cache(self, area, frame, state, layout_key, enabled_count);
             blit_cache(state.cache.as_ref(), area, frame);
+            self.push_a11y_nodes(area, frame);
             return;
         }
 
@@ -1005,6 +1084,7 @@ impl StatefulWidget for Help {
         if enabled_count != cache.enabled_count {
             rebuild_cache(self, area, frame, state, layout_key, enabled_count);
             blit_cache(state.cache.as_ref(), area, frame);
+            self.push_a11y_nodes(area, frame);
             return;
         }
 
@@ -1033,12 +1113,14 @@ impl StatefulWidget for Help {
         if layout_changed {
             rebuild_cache(self, area, frame, state, layout_key, enabled_count);
             blit_cache(state.cache.as_ref(), area, frame);
+            self.push_a11y_nodes(area, frame);
             return;
         }
 
         if state.dirty_indices.is_empty() {
             state.stats.hits += 1;
             blit_cache(state.cache.as_ref(), area, frame);
+            self.push_a11y_nodes(area, frame);
             return;
         }
 
@@ -1078,6 +1160,7 @@ impl StatefulWidget for Help {
         cache.buffer = cache_buffer;
 
         blit_cache(state.cache.as_ref(), area, frame);
+        self.push_a11y_nodes(area, frame);
     }
 }
 

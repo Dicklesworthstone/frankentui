@@ -1195,6 +1195,29 @@ impl RenderItem for LogLineRenderItem<'_> {
     fn height(&self) -> u16 {
         self.height.max(1)
     }
+
+    fn accessible_label(&self) -> Option<String> {
+        let plain = self.text.to_plain_text();
+        let trimmed = plain.trim();
+        if trimmed.is_empty() {
+            return Some(format!("Line {} (empty)", self.line_idx + 1));
+        }
+        let mut chars = trimmed.chars();
+        let truncated: String = chars.by_ref().take(200).collect();
+        if chars.next().is_some() {
+            Some(format!("{truncated}..."))
+        } else {
+            Some(truncated)
+        }
+    }
+
+    fn accessible_index(&self, _default_idx: usize) -> usize {
+        self.line_idx
+    }
+
+    fn is_accessible_selected(&self, _list_selected: bool) -> bool {
+        self.is_selected
+    }
 }
 
 impl StatefulWidget for LogViewer {
@@ -1216,6 +1239,22 @@ impl StatefulWidget for LogViewer {
 
         let total_lines = self.virt.len();
         if total_lines == 0 {
+            if frame.a11y_enabled() {
+                let bounds = area.intersection(&frame.buffer.current_scissor());
+                if !bounds.is_empty() {
+                    let node = ftui_a11y::node::A11yNodeInfo::new(
+                        ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                            ftui_a11y::node::A11yRole::List,
+                            area,
+                        ),
+                        ftui_a11y::node::A11yRole::List,
+                        bounds,
+                    )
+                    .with_name("LogViewer")
+                    .with_description("0 lines");
+                    frame.push_a11y(node);
+                }
+            }
             state.last_visible_lines = 0;
             state.list_state.resize_heights(0);
             return;
@@ -1235,6 +1274,22 @@ impl StatefulWidget for LogViewer {
             // Filtered mode: show lines matching the filter
             let filtered_total = indices.len();
             if filtered_total == 0 {
+                if frame.a11y_enabled() {
+                    let bounds = area.intersection(&frame.buffer.current_scissor());
+                    if !bounds.is_empty() {
+                        let node = ftui_a11y::node::A11yNodeInfo::new(
+                            ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                                ftui_a11y::node::A11yRole::List,
+                                area,
+                            ),
+                            ftui_a11y::node::A11yRole::List,
+                            bounds,
+                        )
+                        .with_name("LogViewer")
+                        .with_description(format!("0 of {total_lines} lines (filtered)"));
+                        frame.push_a11y(node);
+                    }
+                }
                 state.last_visible_lines = 0;
                 return;
             }
@@ -1325,13 +1380,36 @@ impl StatefulWidget for LogViewer {
             last_rendered_index = Some(display_idx);
         }
 
+        let a11y_desc = if let Some(indices) = render_indices {
+            format!("{} of {total_lines} lines (filtered)", indices.len())
+        } else {
+            format!("{total_lines} lines")
+        };
+
         if !window_items.is_empty() {
             let mut window_state = VirtualizedListState::variable(1);
             VirtualizedList::new(&window_items)
                 .variable_heights()
                 .style(self.style)
                 .show_scrollbar(false)
+                .accessible_name("LogViewer")
+                .accessible_description(a11y_desc)
                 .render(area, frame, &mut window_state);
+        } else if frame.a11y_enabled() {
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let node = ftui_a11y::node::A11yNodeInfo::new(
+                    ftui_a11y::node::A11yNodeInfo::stable_id_for(
+                        ftui_a11y::node::A11yRole::List,
+                        area,
+                    ),
+                    ftui_a11y::node::A11yRole::List,
+                    bounds,
+                )
+                .with_name("LogViewer")
+                .with_description(a11y_desc);
+                frame.push_a11y(node);
+            }
         }
 
         state.last_visible_lines = lines_rendered;

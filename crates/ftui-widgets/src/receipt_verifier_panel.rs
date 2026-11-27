@@ -23,6 +23,7 @@
 
 use crate::borders::{BorderSet, BorderType};
 use crate::{Widget, apply_style, clear_text_area, draw_text_span};
+use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
@@ -635,6 +636,38 @@ impl Widget for ReceiptVerifierPanel<'_> {
 
         if y >= max_y || inner_x >= inner_max_x {
             return;
+        }
+
+        if frame.a11y_enabled() {
+            let bounds = frame.buffer.current_scissor().intersection(&area);
+            if !bounds.is_empty() {
+                let verdict_str = if self.verdict.passed { "PASS" } else { "FAIL" };
+                let layer_tag = |ok: bool| if ok { "PASS" } else { "FAIL" };
+                let mut desc = format!(
+                    "signature={}, transparency={}, attestation={}",
+                    layer_tag(self.verdict.signature.passed),
+                    layer_tag(self.verdict.transparency.passed),
+                    layer_tag(self.verdict.attestation.passed),
+                );
+                if !self.verdict.passed
+                    && let Some(fc) = self.verdict.failure_class
+                {
+                    desc.push_str(", failure_class=");
+                    desc.push_str(fc.label());
+                }
+                frame.push_a11y(
+                    A11yNodeInfo::new(
+                        A11yNodeInfo::stable_id_for(A11yRole::Group, area),
+                        A11yRole::Group,
+                        bounds,
+                    )
+                    .with_name(format!(
+                        "Receipt {}: {verdict_str}",
+                        display_or_dash(&self.verdict.receipt_id)
+                    ))
+                    .with_description(desc),
+                );
+            }
         }
 
         // 1. Verdict row.

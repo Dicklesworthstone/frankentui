@@ -111,10 +111,40 @@ impl Widget for Badge<'_> {
         x = Self::render_spaces(frame, x, y, self.pad_left, style, max_x);
         x = draw_text_span(frame, x, y, self.label, style, max_x);
         let _ = Self::render_spaces(frame, x, y, self.pad_right, style, max_x);
+
+        if frame.a11y_enabled() && !self.label.is_empty() {
+            let row = Rect::new(area.x, area.y, area.width, 1);
+            let bounds = row.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let mut nodes = ftui_a11y::Accessible::accessibility_nodes(self, row);
+                for node in &mut nodes {
+                    node.bounds = bounds;
+                }
+                frame.push_a11y_nodes(nodes);
+            }
+        }
     }
 
     fn is_essential(&self) -> bool {
         false
+    }
+}
+
+impl ftui_a11y::Accessible for Badge<'_> {
+    fn accessibility_nodes(&self, area: Rect) -> Vec<ftui_a11y::node::A11yNodeInfo> {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+
+        if self.label.is_empty() {
+            return Vec::new();
+        }
+        vec![
+            A11yNodeInfo::new(
+                A11yNodeInfo::stable_id_for(A11yRole::Label, area),
+                A11yRole::Label,
+                area,
+            )
+            .with_name(self.label),
+        ]
     }
 }
 

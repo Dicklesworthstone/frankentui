@@ -1000,3 +1000,449 @@ fn focus_change_count_increments() {
         "Tab should increment focus change count"
     );
 }
+
+// ============================================================================
+// 13. Rendered Widget Accessibility Coverage
+// ============================================================================
+
+fn build_a11y_tree(
+    width: u16,
+    height: u16,
+    render: impl FnOnce(&mut ftui_render::frame::Frame),
+) -> ftui_a11y::tree::A11yTree {
+    let mut builder = ftui_a11y::tree::A11yTreeBuilder::new();
+    let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+    let mut frame = ftui_render::frame::Frame::new(width, height, &mut pool);
+    frame.set_a11y(&mut builder);
+    render(&mut frame);
+    frame.finish_a11y();
+    builder.build()
+}
+
+#[test]
+fn error_boundary_emits_assertive_live_region_on_panic() {
+    use ftui_a11y::node::{A11yRole, LiveRegion};
+    use ftui_widgets::error_boundary::{ErrorBoundary, ErrorBoundaryState};
+    use ftui_widgets::{StatefulWidget, Widget};
+
+    struct Boom;
+    impl Widget for Boom {
+        fn render(&self, _area: Rect, _frame: &mut ftui_render::frame::Frame) {
+            panic!("simulated widget boom");
+        }
+    }
+
+    let boundary = ErrorBoundary::new(Boom, "TelemetryPanel");
+    let mut state = ErrorBoundaryState::default();
+    let tree = build_a11y_tree(60, 10, |frame| {
+        boundary.render(Rect::new(0, 0, 60, 10), frame, &mut state);
+    });
+
+    let alert = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Group && n.live_region == Some(LiveRegion::Assertive))
+        .expect("ErrorBoundary fallback should emit an assertive live Group");
+    assert_eq!(alert.name.as_deref(), Some("Widget error: TelemetryPanel"));
+    assert_eq!(alert.description.as_deref(), Some("simulated widget boom"));
+}
+
+#[test]
+fn status_line_badge_paginator_stopwatch_and_timer_emit_a11y_nodes() {
+    use ftui_a11y::node::{A11yRole, LiveRegion};
+    use ftui_widgets::badge::Badge;
+    use ftui_widgets::paginator::{Paginator, PaginatorMode};
+    use ftui_widgets::status_line::{StatusItem, StatusLine};
+    use ftui_widgets::stopwatch::{Stopwatch, StopwatchState};
+    use ftui_widgets::timer::{Timer, TimerState};
+    use ftui_widgets::{StatefulWidget, Widget};
+    use std::time::Duration;
+
+    let status = StatusLine::new()
+        .left(StatusItem::text("[NORMAL]"))
+        .center(StatusItem::text("main.rs"))
+        .right(StatusItem::key_hint("^Q", "Quit"));
+    let badge = Badge::new("LIVE");
+    let paginator = Paginator::with_pages(2, 5).mode(PaginatorMode::Page);
+    let mut sw_state = StopwatchState::new();
+    sw_state.start();
+    sw_state.tick(Duration::from_secs(42));
+    let mut timer_state = TimerState::new(Duration::from_secs(5));
+    timer_state.start();
+    timer_state.tick(Duration::from_secs(5));
+
+    let tree = build_a11y_tree(80, 12, |frame| {
+        status.render(Rect::new(0, 0, 80, 1), frame);
+        badge.render(Rect::new(0, 1, 10, 1), frame);
+        paginator.render(Rect::new(0, 2, 20, 1), frame);
+        StatefulWidget::render(
+            &Stopwatch::new().label("Elapsed"),
+            Rect::new(0, 3, 24, 1),
+            frame,
+            &mut sw_state,
+        );
+        StatefulWidget::render(
+            &Timer::new().label("Build"),
+            Rect::new(0, 4, 24, 1),
+            frame,
+            &mut timer_state,
+        );
+    });
+
+    let toolbar = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Toolbar)
+        .expect("StatusLine should emit Toolbar node");
+    assert_eq!(toolbar.name.as_deref(), Some("Status line"));
+    let desc = toolbar.description.as_deref().unwrap_or("");
+    assert!(desc.contains("[NORMAL]") && desc.contains("main.rs") && desc.contains("^Q Quit"));
+
+    assert!(
+        tree.nodes()
+            .any(|n| n.role == A11yRole::Label && n.name.as_deref() == Some("LIVE")),
+        "Badge should emit Label node"
+    );
+
+    let pager_node = tree
+        .nodes()
+        .find(|n| n.name.as_deref() == Some("Paginator"))
+        .expect("Paginator should emit Label node");
+    assert_eq!(pager_node.state.value_now, Some(2.0));
+    assert_eq!(pager_node.state.value_min, Some(1.0));
+    assert_eq!(pager_node.state.value_max, Some(5.0));
+    assert_eq!(pager_node.state.value_text.as_deref(), Some("Page 2 of 5"));
+
+    let sw_node = tree
+        .nodes()
+        .find(|n| n.name.as_deref() == Some("Elapsed"))
+        .expect("Stopwatch should emit Label node");
+    assert!(sw_node.state.busy);
+    assert_eq!(sw_node.state.value_text.as_deref(), Some("42s"));
+
+    let timer_node = tree
+        .nodes()
+        .find(|n| n.name.as_deref() == Some("Build"))
+        .expect("Timer should emit Label node");
+    assert!(!timer_node.state.busy);
+    assert_eq!(timer_node.live_region, Some(LiveRegion::Polite));
+    assert_eq!(
+        timer_node.state.value_text.as_deref(),
+        Some("0s (finished)")
+    );
+}
+
+#[test]
+fn panel_popover_and_tabs_render_panel_scope_children() {
+    use ftui_a11y::node::A11yRole;
+    use ftui_widgets::Widget;
+    use ftui_widgets::badge::Badge;
+    use ftui_widgets::panel::Panel;
+    use ftui_widgets::popover::{Placement, Popover};
+    use ftui_widgets::tabs::{Tab, Tabs};
+
+    let panel = Panel::new(Badge::new("Inside Panel"))
+        .title("Settings")
+        .subtitle("General");
+    let popover = Popover::new(Rect::new(2, 6, 10, 1), Placement::Below)
+        .width(20)
+        .max_height(4)
+        .with_border(true);
+    let tabs = Tabs::new(vec![Tab::new("Overview"), Tab::new("Metrics")]);
+
+    let tree = build_a11y_tree(80, 24, |frame| {
+        panel.render(Rect::new(0, 0, 30, 5), frame);
+        popover.render_with(Rect::new(0, 6, 40, 8), frame, |inner, frame| {
+            Badge::new("Inside Popover").render(Rect::new(inner.x, inner.y, inner.width, 1), frame);
+        });
+        tabs.render_panel(1, Rect::new(0, 15, 40, 5), frame, |panel_area, frame| {
+            Badge::new("Inside TabPanel")
+                .render(Rect::new(panel_area.x, panel_area.y, 20, 1), frame);
+        });
+    });
+
+    let panel_node = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Group && n.name.as_deref() == Some("Settings"))
+        .expect("Panel should emit named Group container");
+    assert_eq!(panel_node.description.as_deref(), Some("General"));
+    let panel_child = tree
+        .nodes()
+        .find(|n| n.name.as_deref() == Some("Inside Panel"))
+        .expect("Panel child should be present");
+    assert_eq!(panel_child.parent, Some(panel_node.id));
+
+    let popover_node = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Dialog && n.name.as_deref() == Some("Popover"))
+        .expect("Popover should emit Dialog container");
+    let popover_child = tree
+        .nodes()
+        .find(|n| n.name.as_deref() == Some("Inside Popover"))
+        .expect("Popover child should be present");
+    assert_eq!(popover_child.parent, Some(popover_node.id));
+
+    let tab_panel_node = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::TabPanel && n.name.as_deref() == Some("Metrics"))
+        .expect("Tabs::render_panel should emit named TabPanel container");
+    let tab_panel_child = tree
+        .nodes()
+        .find(|n| n.name.as_deref() == Some("Inside TabPanel"))
+        .expect("TabPanel child should be present");
+    assert_eq!(tab_panel_child.parent, Some(tab_panel_node.id));
+}
+
+#[test]
+fn log_viewer_json_view_and_help_emit_rich_item_accessibility() {
+    use ftui_a11y::node::A11yRole;
+    use ftui_widgets::StatefulWidget;
+    use ftui_widgets::help::{Help, HelpMode, HelpRenderState};
+    use ftui_widgets::json_view::{JsonPathSegment, JsonView, JsonViewState};
+    use ftui_widgets::log_viewer::{LogViewer, LogViewerState};
+
+    let mut viewer = LogViewer::new(100);
+    viewer.push("boot: kernel ready");
+    viewer.push("warn: high latency");
+    let mut lv_state = LogViewerState {
+        selected_line: Some(1),
+        ..Default::default()
+    };
+
+    let json = JsonView::new(r#"{"service": {"port": 8080}, "ok": true}"#);
+    let mut jv_state = JsonViewState::new();
+    jv_state.fold(&vec![JsonPathSegment::Key("service".to_string())]);
+    jv_state.cursor_line = 1;
+
+    let help = Help::new()
+        .with_mode(HelpMode::Full)
+        .entry("?", "Toggle help")
+        .entry("q", "Quit");
+    let mut help_state = HelpRenderState::default();
+
+    let tree = build_a11y_tree(80, 24, |frame| {
+        viewer.render(Rect::new(0, 0, 40, 4), frame, &mut lv_state);
+        json.render(Rect::new(0, 5, 40, 6), frame, &mut jv_state);
+        help.render(Rect::new(0, 12, 40, 4), frame, &mut help_state);
+    });
+
+    let lv_root = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::List && n.name.as_deref() == Some("LogViewer"))
+        .expect("LogViewer should emit List container");
+    assert_eq!(
+        lv_root.description.as_deref(),
+        Some("2 lines"),
+        "LogViewer should report true total line count"
+    );
+    let warn_item = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::ListItem && n.name.as_deref() == Some("warn: high latency"))
+        .expect("LogViewer should expose actual log line text");
+    assert_eq!(warn_item.parent, Some(lv_root.id));
+    assert!(
+        warn_item.state.selected,
+        "selected log line must set state.selected"
+    );
+
+    let jv_root = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::List && n.name.as_deref() == Some("JSON view"))
+        .expect("JsonView should emit List container");
+    assert!(
+        jv_root
+            .description
+            .as_deref()
+            .unwrap_or("")
+            .contains("1 folded")
+    );
+    let folded_row = tree
+        .nodes()
+        .find(|n| n.parent == Some(jv_root.id) && n.state.expanded == Some(false))
+        .expect("Folded JSON row should expose state.expanded = Some(false)");
+    assert!(
+        folded_row.state.selected,
+        "cursor_line row should be selected"
+    );
+
+    let help_root = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Group && n.name.as_deref() == Some("Keyboard shortcuts"))
+        .expect("Help should emit Keyboard shortcuts Group");
+    let quit_hint = tree
+        .nodes()
+        .find(|n| n.parent == Some(help_root.id) && n.name.as_deref() == Some("Quit"))
+        .expect("Help should expose enabled shortcut entries");
+    assert_eq!(quit_hint.shortcut.as_deref(), Some("q"));
+    assert!(
+        help_root.children.contains(&quit_hint.id),
+        "Help group children list should contain assigned child IDs"
+    );
+}
+
+#[test]
+fn a11y_edge_cases_stable_log_ids_truncation_and_empty_suppression() {
+    use ftui_a11y::node::{A11yRole, LiveRegion};
+    use ftui_widgets::badge::Badge;
+    use ftui_widgets::error_boundary::{ErrorBoundary, ErrorBoundaryState};
+    use ftui_widgets::help::Help;
+    use ftui_widgets::log_viewer::{LogViewer, LogViewerState};
+    use ftui_widgets::{StatefulWidget, Widget};
+
+    // 1. LogViewer with more lines than viewport reports true count, names empty
+    //    lines by real line number, and preserves stable node IDs across scroll.
+    let mut viewer = LogViewer::new(100);
+    for idx in 0..8 {
+        if idx == 2 {
+            viewer.push("   ");
+        } else {
+            viewer.push(format!("event-{idx}"));
+        }
+    }
+    viewer.scroll_to_top();
+    let mut lv_state = LogViewerState::default();
+    let tree_top = build_a11y_tree(60, 4, |frame| {
+        viewer.render(Rect::new(0, 0, 60, 4), frame, &mut lv_state);
+    });
+    let lv_root = tree_top
+        .nodes()
+        .find(|n| n.role == A11yRole::List && n.name.as_deref() == Some("LogViewer"))
+        .expect("LogViewer root");
+    assert_eq!(lv_root.description.as_deref(), Some("8 lines"));
+    let empty_line = tree_top
+        .nodes()
+        .find(|n| n.role == A11yRole::ListItem && n.name.as_deref() == Some("Line 3 (empty)"))
+        .expect("blank log line should expose 1-based line number");
+    let event3_before = tree_top
+        .nodes()
+        .find(|n| n.role == A11yRole::ListItem && n.name.as_deref() == Some("event-3"))
+        .expect("event-3 visible before scroll")
+        .id;
+
+    viewer.scroll_down(1);
+    let tree_scrolled = build_a11y_tree(60, 4, |frame| {
+        viewer.render(Rect::new(0, 0, 60, 4), frame, &mut lv_state);
+    });
+    let event3_after = tree_scrolled
+        .nodes()
+        .find(|n| n.role == A11yRole::ListItem && n.name.as_deref() == Some("event-3"))
+        .expect("event-3 still visible after scrolling 1 line")
+        .id;
+    assert_eq!(
+        event3_before, event3_after,
+        "LogViewer item node IDs should remain stable across scrolling"
+    );
+    assert_eq!(empty_line.parent, Some(lv_root.id));
+
+    // 2. Empty Badge and empty Help emit no ghost nodes; long panic message truncates.
+    struct BigBoom;
+    impl Widget for BigBoom {
+        fn render(&self, _area: Rect, _frame: &mut ftui_render::frame::Frame) {
+            panic!("{}", "x".repeat(350));
+        }
+    }
+    let boundary = ErrorBoundary::new(BigBoom, "HugePanic");
+    let mut eb_state = ErrorBoundaryState::default();
+    let tree = build_a11y_tree(60, 6, |frame| {
+        Badge::new("").render(Rect::new(0, 0, 10, 1), frame);
+        Widget::render(&Help::new(), Rect::new(0, 1, 30, 1), frame);
+        boundary.render(Rect::new(0, 2, 60, 4), frame, &mut eb_state);
+    });
+    assert_eq!(
+        tree.node_count(),
+        1,
+        "empty Badge and empty Help must not emit ghost nodes"
+    );
+    let alert = tree
+        .nodes()
+        .find(|n| n.live_region == Some(LiveRegion::Assertive))
+        .expect("ErrorBoundary alert");
+    let desc = alert.description.as_deref().unwrap_or("");
+    assert!(desc.ends_with("...") && desc.chars().count() == 203);
+}
+
+#[test]
+fn sparkline_history_decision_and_receipt_emit_accessibility() {
+    use ftui_a11y::node::A11yRole;
+    use ftui_runtime::transparency::{Disclosure, DisclosureLevel, TrafficLight};
+    use ftui_runtime::unified_evidence::DecisionDomain;
+    use ftui_widgets::Widget;
+    use ftui_widgets::decision_card::DecisionCard;
+    use ftui_widgets::history_panel::HistoryPanel;
+    use ftui_widgets::receipt_verifier_panel::{
+        FailureClass, ReceiptVerdict, ReceiptVerifierPanel,
+    };
+    use ftui_widgets::sparkline::Sparkline;
+
+    let samples = [1.0, 4.0, 2.5, 8.0, 5.0];
+    let spark = Sparkline::new(&samples);
+    let history = HistoryPanel::new()
+        .with_title("Edit History")
+        .with_undo_items(&["Insert title", "Format block"])
+        .with_redo_items(&["Delete footer"]);
+    let disclosure = Disclosure {
+        domain: DecisionDomain::DiffStrategy,
+        level: DisclosureLevel::PlainEnglish,
+        signal: TrafficLight::Green,
+        action_label: "dirty_rows".to_string(),
+        explanation: Some("Low change rate favors dirty-row diff.".to_string()),
+        evidence_terms: None,
+        bayesian_details: None,
+    };
+    let card = DecisionCard::new(&disclosure);
+    let mut verdict = ReceiptVerdict::skeleton("rcpt-42", false);
+    verdict.signature.passed = true;
+    verdict.transparency.passed = true;
+    verdict.attestation.passed = false;
+    verdict.failure_class = Some(FailureClass::Attestation);
+    let receipt_panel = ReceiptVerifierPanel::new(&verdict);
+
+    let tree = build_a11y_tree(80, 24, |frame| {
+        spark.render(Rect::new(0, 0, 20, 1), frame);
+        history.render(Rect::new(0, 2, 30, 8), frame);
+        card.render(Rect::new(32, 0, 44, 5), frame);
+        receipt_panel.render(Rect::new(32, 6, 44, 8), frame);
+    });
+
+    let spark_node = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Label && n.name.as_deref() == Some("Sparkline"))
+        .expect("Sparkline should emit Label node");
+    let spark_desc = spark_node.description.as_deref().unwrap_or("");
+    assert!(spark_desc.contains("5 samples"));
+    assert!(spark_desc.contains("min 1.00"));
+    assert!(spark_desc.contains("max 8.00"));
+    assert!(spark_desc.contains("latest 5.00"));
+
+    let hist_root = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::List && n.name.as_deref() == Some("Edit History"))
+        .expect("HistoryPanel should emit List container");
+    assert_eq!(hist_root.description.as_deref(), Some("2 undo, 1 redo"));
+    let undo_item = tree
+        .nodes()
+        .find(|n| n.parent == Some(hist_root.id) && n.name.as_deref() == Some("Format block"))
+        .expect("HistoryPanel should expose undo entry");
+    assert_eq!(undo_item.description.as_deref(), Some("Undo"));
+    let redo_item = tree
+        .nodes()
+        .find(|n| n.parent == Some(hist_root.id) && n.name.as_deref() == Some("Delete footer"))
+        .expect("HistoryPanel should expose redo entry");
+    assert_eq!(redo_item.description.as_deref(), Some("Redo"));
+
+    let decision_node = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Group && n.name.as_deref() == Some("OK: dirty_rows"))
+        .expect("DecisionCard should emit Group node");
+    assert_eq!(
+        decision_node.description.as_deref(),
+        Some("Low change rate favors dirty-row diff.")
+    );
+
+    let receipt_node = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Group && n.name.as_deref() == Some("Receipt rcpt-42: FAIL"))
+        .expect("ReceiptVerifierPanel should emit Group node");
+    let receipt_desc = receipt_node.description.as_deref().unwrap_or("");
+    assert!(receipt_desc.contains("signature=PASS"));
+    assert!(receipt_desc.contains("attestation=FAIL"));
+    assert!(receipt_desc.contains("failure_class=Attestation"));
+}
