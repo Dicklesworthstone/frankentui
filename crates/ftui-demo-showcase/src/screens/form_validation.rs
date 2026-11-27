@@ -16,6 +16,10 @@ use ftui_core::event::{
 };
 use ftui_core::geometry::Rect;
 use ftui_extras::forms::{Form, FormField, FormState, ValidationError};
+use ftui_extras::validation::{
+    Email as EmailValidator, Range as RangeValidator, Required as RequiredValidator,
+    Url as UrlValidator, Validator,
+};
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
@@ -116,13 +120,13 @@ impl FormValidationDemo {
             // Terms checkbox (must be checked)
             FormField::checkbox("Accept Terms", false),
         ])
-        // Attach validators to each field
+        // Attach validators to each field (backed by ftui-extras::validation).
         .validate(
             0,
             Box::new(|field| {
                 // Required: username must not be empty
                 if let FormField::Text { value, .. } = field {
-                    if value.trim().is_empty() {
+                    if RequiredValidator::new().validate(value).is_invalid() {
                         return Some("Username is required".into());
                     }
                     // Characters, not UTF-8 bytes: "éé" is two.
@@ -138,10 +142,10 @@ impl FormValidationDemo {
             Box::new(|field| {
                 // Email validation
                 if let FormField::Text { value, .. } = field {
-                    if value.trim().is_empty() {
+                    if RequiredValidator::new().validate(value).is_invalid() {
                         return Some("Email is required".into());
                     }
-                    if !value.contains('@') || !value.contains('.') {
+                    if EmailValidator::new().validate(value).is_invalid() {
                         return Some("Please enter a valid email address".into());
                     }
                 }
@@ -153,7 +157,11 @@ impl FormValidationDemo {
             Box::new(|field| {
                 // Password min length
                 if let FormField::Text { value, .. } = field {
-                    if value.is_empty() {
+                    if RequiredValidator::new()
+                        .allow_whitespace()
+                        .validate(value)
+                        .is_invalid()
+                    {
                         return Some("Password is required".into());
                     }
                     if grapheme_count(value) < 8 {
@@ -169,7 +177,10 @@ impl FormValidationDemo {
             3,
             Box::new(|field| {
                 if let FormField::Text { value, .. } = field
-                    && value.is_empty()
+                    && RequiredValidator::new()
+                        .allow_whitespace()
+                        .validate(value)
+                        .is_invalid()
                 {
                     return Some("Please confirm your password".into());
                 }
@@ -180,13 +191,13 @@ impl FormValidationDemo {
             4,
             Box::new(|field| {
                 // Age range validation (additional check beyond bounds)
-                if let FormField::Number { value, .. } = field {
+                if let FormField::Number { value, .. } = field
+                    && RangeValidator::new(13, 120).validate(value).is_invalid()
+                {
                     if *value < 13 {
                         return Some("Must be at least 13 years old".into());
                     }
-                    if *value > 120 {
-                        return Some("Please enter a valid age".into());
-                    }
+                    return Some("Please enter a valid age".into());
                 }
                 None
             }),
@@ -211,9 +222,7 @@ impl FormValidationDemo {
             Box::new(|field| {
                 // Website URL pattern (optional but must be valid if provided)
                 if let FormField::Text { value, .. } = field
-                    && !value.is_empty()
-                    && !value.starts_with("http://")
-                    && !value.starts_with("https://")
+                    && UrlValidator::new().validate(value).is_invalid()
                 {
                     return Some("Website must start with http:// or https://".into());
                 }

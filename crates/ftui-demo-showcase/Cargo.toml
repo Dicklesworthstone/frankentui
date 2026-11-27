@@ -29,6 +29,7 @@ ftui-runtime = { path = "../ftui-runtime", version = "0.11.1", features = ["trac
 ftui-widgets = { path = "../ftui-widgets", version = "0.11.1", features = [
   "tracing",
   "bidi",
+  "debug-overlay",
 ] }
 ftui-harness = { path = "../ftui-harness", version = "0.11.1", default-features = false }
 tracing = "0.1.41"
@@ -50,6 +51,7 @@ ftui-extras = { path = "../ftui-extras", version = "0.11.1", features = [
     "timer",
     "traceback",
     "theme",
+    "validation",
     "visual-fx",
 ] }
 serde_json = "1.0.151"

@@ -71,6 +71,7 @@ use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::command_palette::{CommandPalette, PaletteAction};
+use ftui_widgets::debug_overlay::{DebugOverlay, DebugOverlayState, WidgetDebugInfo};
 use ftui_widgets::error_boundary::FallbackWidget;
 use ftui_widgets::paragraph::Paragraph;
 
@@ -2946,6 +2947,8 @@ pub struct AppModel {
     pub help_visible: bool,
     /// Whether the debug overlay is visible.
     pub debug_visible: bool,
+    /// Widget boundary & hit-area debug overlay state (honors `FTUI_DEBUG_OVERLAY`).
+    pub widget_debug: Arc<DebugOverlayState>,
     /// Whether the performance HUD overlay is visible.
     pub perf_hud_visible: bool,
     /// Whether the explainability cockpit overlay is visible.
@@ -3060,6 +3063,7 @@ impl AppModel {
             screens: ScreenStates::default(),
             help_visible: false,
             debug_visible: false,
+            widget_debug: DebugOverlayState::new(),
             perf_hud_visible: false,
             evidence_ledger_visible: false,
             inline_mode: false,
@@ -3798,6 +3802,14 @@ impl AppModel {
                 .with_category("View"),
         );
         actions.push(
+            ActionItem::new("cmd:toggle_widget_bounds", "Toggle Widget Bounds Overlay")
+                .with_description(
+                    "Show or hide widget bounding boxes and hit areas (FTUI_DEBUG_OVERLAY)",
+                )
+                .with_tags(&["debug", "bounds", "widgets", "hit", "overlay"])
+                .with_category("View"),
+        );
+        actions.push(
             ActionItem::new("cmd:toggle_perf_hud", "Toggle Performance HUD")
                 .with_description("Show or hide the performance metrics overlay")
                 .with_tags(&["performance", "hud", "fps", "metrics", "budget"])
@@ -4372,6 +4384,10 @@ impl AppModel {
                     }
                 }
 
+                if self.widget_debug.enabled() && matches!(event, Event::Mouse(_)) {
+                    let _ = self.widget_debug.update_hover_from_event(&event);
+                }
+
                 if let Event::Mouse(mouse) = &event
                     && self.handle_mouse_tab_click(mouse)
                 {
@@ -4936,6 +4952,17 @@ impl Model for AppModel {
             undo_description,
         };
         crate::chrome::render_status_bar(&status_state, frame, chunks[2]);
+
+        if self.widget_debug.enabled() {
+            self.widget_debug
+                .record(WidgetDebugInfo::new("TabBar", chunks[0]));
+            let mut content_info = WidgetDebugInfo::new(self.display_screen().title(), inner);
+            content_info.hit_areas.push(inner);
+            self.widget_debug.record(content_info);
+            self.widget_debug
+                .record(WidgetDebugInfo::new("StatusBar", chunks[2]));
+            DebugOverlay::new(Arc::clone(&self.widget_debug)).render(area, frame);
+        }
 
         if tour_logger().is_some() {
             let pool = &*frame.pool;
@@ -5843,6 +5870,15 @@ impl AppModel {
                         self.screens.action_timeline.record_command_event(
                             self.tick_count,
                             "Toggle debug overlay (palette)",
+                            vec![("state".to_string(), state.to_string())],
+                        );
+                    }
+                    "cmd:toggle_widget_bounds" => {
+                        let enabled = self.widget_debug.toggle();
+                        let state = if enabled { "on" } else { "off" };
+                        self.screens.action_timeline.record_command_event(
+                            self.tick_count,
+                            "Toggle widget bounds overlay (palette)",
                             vec![("state".to_string(), state.to_string())],
                         );
                     }
@@ -10944,6 +10980,33 @@ mod tests {
         assert!(
             rendered.contains("Custom macro diagnostic"),
             "Help overlay should render custom binding from keymap:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn widget_debug_overlay_renders_bounds_when_enabled() {
+        let mut app = AppModel::new();
+        app.widget_debug.set_enabled(false);
+        let mut pool = GraphemePool::new();
+        let mut off_frame = Frame::new(100, 30, &mut pool);
+        app.view(&mut off_frame);
+        let off_text = frame_text(&off_frame);
+        assert!(
+            !off_text.contains("TabBar"),
+            "widget debug labels must stay hidden when disabled"
+        );
+
+        app.widget_debug.set_enabled(true);
+        let hover = Event::Mouse(MouseEvent::new(MouseEventKind::Moved, 12, 6));
+        let _ = app.update(AppMsg::from(hover));
+        assert_eq!(app.widget_debug.hover_position(), Some((12, 6)));
+
+        let mut on_frame = Frame::new(100, 30, &mut pool);
+        app.view(&mut on_frame);
+        let on_text = frame_text(&on_frame);
+        assert!(
+            on_text.contains("TabBar") && on_text.contains("StatusBar"),
+            "widget debug overlay should render recorded chrome bounds:\n{on_text}"
         );
     }
 }

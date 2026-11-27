@@ -51,7 +51,6 @@ ftui-web::release_readiness  # bd-g00-root-epic-ewths.29.9
 # ftui-widgets. Wiring it into a widget gallery would be the wrong fix; it
 # needs the delete-or-wire decision with the rest of the orphan set.
 ftui-widgets::choreography  # bd-gqit2
-ftui-widgets::debug_overlay  # bd-gqit2
 # (ftui-widgets::fenwick sat here until the TEST_ONLY verdict landed and its
 # proptest counted as a consumer. It is still a duplicate of virtualized.rs's
 # own VariableHeightsFenwick (:741); that observation moved to bd-gqit2 rather
@@ -73,7 +72,6 @@ ftui-core::key_sequence  # bd-gqit2
 ftui-extras::help  # bd-gqit2
 ftui-extras::pty_capture  # bd-gqit2
 ftui-extras::sinkhorn_morph  # bd-gqit2
-ftui-extras::validation  # bd-gqit2
 ftui-layout::debug  # bd-gqit2
 # Unreachable by decision, not neglect: benchmarked 2026-09-18 at 4-19x slower
 # than Flex::split on the same constraints, so wiring it in would cost every
