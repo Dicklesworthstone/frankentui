@@ -100,21 +100,22 @@ def render_readme_block(
         if a["scene"] == "unicode_dashboard_80x24" and not a["arena"]
     )
 
+    total_rows = len(rows)
     lines = [
         "```bash",
-        "# Run the full 27-threshold SLO + Criterion + byte-budget + allocation gate",
+        f"# Run the full {total_rows}-threshold SLO + Criterion + byte-budget + allocation gate",
         "./scripts/perf_regression_gate.sh --quick --json",
         "python3 -B scripts/render_perf_readme.py --check",
         "",
-        "# Paired certified vs dirty vs full-scan diff benchmarks (120×40, opt-level=\"z\"):",
+        "# Paired certified vs dirty vs full-scan diff benchmarks (120×40, opt-level = 3):",
         "cargo bench -p ftui-render --bench diff_bench",
         "cargo bench -p ftui-render --bench diff_paths_paired",
-        "# diff_paths_paired (certified, spinner_tick 120x40)      p50: [90.7 ns]   throughput: [52.9 Gcells/s]",
-        "# diff_paths_paired (certified, overmarked_chrome 120x40) p50: [251.4 ns]  throughput: [19.1 Gcells/s]",
-        "# diff_paths_paired (certified, scattered_5pct 120x40)    p50: [1.98 µs]   throughput: [2.43 Gcells/s]",
-        "# diff/sparse_5pct/compute/120x40  (full scan)            p50: [7.51 µs]   throughput: [639 Mcells/s]",
-        "# diff/heavy_50pct/compute/120x40  (full scan)            p50: [8.22 µs]   throughput: [584 Mcells/s]",
-        "# diff/full_100pct/compute/120x40  (full scan)            p50: [12.1 µs]   throughput: [396 Mcells/s]",
+        "# diff_paths_paired (certified, spinner_tick 120x40)      p50: [69.4 ns]   throughput: [69.2 Gcells/s]",
+        "# diff_paths_paired (certified, overmarked_chrome 120x40) p50: [201.7 ns]  throughput: [23.8 Gcells/s]",
+        "# diff_paths_paired (certified, scattered_5pct 120x40)    p50: [950.8 ns]  throughput: [5.05 Gcells/s]",
+        "# diff/sparse_5pct/compute/120x40  (full scan)            p50: [2.24 µs]   throughput: [2.14 Gcells/s]",
+        "# diff/heavy_50pct/compute/120x40  (full scan)            p50: [3.32 µs]   throughput: [1.45 Gcells/s]",
+        "# diff/full_100pct/compute/120x40  (full scan)            p50: [5.29 µs]   throughput: [907 Mcells/s]",
         "```",
         "",
         "| Operation / Metric | Criterion / Scene ID | Observed (Mean, 95% CI) | Enforced Budget |",
@@ -131,13 +132,14 @@ def render_readme_block(
         f"| Grapheme width lookup (S3-FIFO cached) | `{by_cat['text_width_non_ascii']['criterion_name']}` | {obs_cell('text_width_non_ascii')} | {budget_cell('text_width_non_ascii')} |",
         f"| Flex layout solver (10 constraints) | `{by_cat['layout_computation']['criterion_name']}` | {obs_cell('layout_computation')} | {budget_cell('layout_computation')} |",
         f"| Virtualized Fenwick scroll (100k items) | `{by_cat['virtualized_scroll_to_100k']['criterion_name']}` | {obs_cell('virtualized_scroll_to_100k')} | {budget_cell('virtualized_scroll_to_100k')} |",
+        f"| Command palette scan (1,000 items) | `{by_cat['palette_corpus_1000_scan']['criterion_name']}` | {obs_cell('palette_corpus_1000_scan')} | {budget_cell('palette_corpus_1000_scan')} |",
         f"| Runtime first frame (`80×24` headless) | `{by_cat['runtime_first_frame']['criterion_name']}` | {obs_cell('runtime_first_frame')} | {budget_cell('runtime_first_frame')} |",
         f"| Runtime `Cmd::msg` roundtrip | `{by_cat['runtime_command_roundtrip']['criterion_name']}` | {obs_cell('runtime_command_roundtrip')} | {budget_cell('runtime_command_roundtrip')} |",
         f"| Runtime shutdown latency | `{by_cat['runtime_shutdown_latency']['criterion_name']}` | {obs_cell('runtime_shutdown_latency')} | {budget_cell('runtime_shutdown_latency')} |",
         f"| Steady-state heap allocs (ASCII 80×24) | `{by_cat['frame_allocations_ascii_scene']['criterion_name']}` | `{ascii_arena['allocs_per_frame']} allocs` (`0 B`, down from `{ascii_heap['allocs_per_frame']}` / `{ascii_heap['bytes_per_frame']:,} B`) | {budget_cell('frame_allocations_ascii_scene')} |",
         f"| Steady-state heap allocs (Unicode 80×24) | `{by_cat['frame_allocations_unicode_scene']['criterion_name']}` | `{uni_arena['allocs_per_frame']} allocs` (`{uni_arena['bytes_per_frame']} B`, down from `{uni_heap['allocs_per_frame']}` / `{uni_heap['bytes_per_frame']:,} B`) | {budget_cell('frame_allocations_unicode_scene')} |",
         "",
-        "Full 27-metric table, confidence intervals, byte-efficiency breakdown, and `FrameArena` allocation report: [`docs/perf/baseline_2026-10-19.md`](docs/perf/baseline_2026-10-19.md) (generated from [`docs/perf/regression_report_2026-10-19.jsonl`](docs/perf/regression_report_2026-10-19.jsonl)).",
+        f"Full {total_rows}-metric table, confidence intervals, byte-efficiency breakdown, and `FrameArena` allocation report: [`docs/perf/baseline_2026-10-19.md`](docs/perf/baseline_2026-10-19.md) (generated from [`docs/perf/regression_report_2026-10-19.jsonl`](docs/perf/regression_report_2026-10-19.jsonl)).",
     ]
     return "\n".join(lines)
 
@@ -149,8 +151,10 @@ def render_baseline_md(
     bytes_rows: list[dict],
     alloc_rows: list[dict],
 ) -> str:
+    total_rows = summary_ev.get("total", len(rows))
+    passed_rows = summary_ev.get("passed", len(rows))
     lines = [
-        "# FrankenTUI Performance Baseline & SLO Gate Report (2026-10-19)",
+        "# FrankenTUI Performance Baseline & SLO Gate Report (Refreshed 2026-11-27, opt-level = 3)",
         "",
         "> Generated deterministically by `python3 -B scripts/render_perf_readme.py` from",
         "> [`docs/perf/regression_report_2026-10-19.jsonl`](regression_report_2026-10-19.jsonl),",
@@ -161,12 +165,12 @@ def render_baseline_md(
         "",
         f"- **Run ID:** `{start_ev.get('run_id', 'unknown')}`",
         f"- **Timestamp:** `{start_ev.get('ts', 'unknown')}`",
-        "- **Platform:** Linux `x86_64`",
-        "- **Toolchain:** `rustc 1.95.0-nightly (7f99507f5 2026-02-19)` (`rust-toolchain.toml`)",
-        "- **Profile:** Workspace `release` (`opt-level = \"z\"`, `lto = true`, `codegen-units = 1`, `panic = \"abort\"`)",
-        f"- **Summary:** `total={summary_ev.get('total', len(rows))} passed={summary_ev.get('passed', len(rows))} failed={summary_ev.get('failed', 0)} skipped={summary_ev.get('skipped', 0)} incomplete={summary_ev.get('incomplete', 0)}`",
+        "- **Platform:** Linux `x86_64` (AMD EPYC-Genoa)",
+        "- **Toolchain:** `rustc 1.100.0-nightly (908501772 2026-08-30)` (`rust-toolchain.toml`: `nightly-2026-08-31`)",
+        "- **Profile:** Workspace `release` (`opt-level = 3`, `lto = true`, `codegen-units = 1`, `panic = \"abort\"`)",
+        f"- **Summary:** `total={total_rows} passed={passed_rows} failed={summary_ev.get('failed', 0)} skipped={summary_ev.get('skipped', 0)} incomplete={summary_ev.get('incomplete', 0)}`",
         "",
-        "## Enforced Baseline Thresholds (27 / 27 Passing)",
+        f"## Enforced Baseline Thresholds ({passed_rows} / {total_rows} Passing)",
         "",
         "| Category | Criterion / Scene ID | SLO Metric | Observed | 95% CI | Budget / Ceiling | Delta % | Status |",
         "|---|---|---|---|---|---|---|---|",
@@ -255,7 +259,7 @@ def render_baseline_md(
             "## Reproduction Commands",
             "",
             "```bash",
-            "# Run all 27 baseline checks and emit target/regression-gate/regression_report.jsonl",
+            f"# Run all {total_rows} baseline checks and emit target/regression-gate/regression_report.jsonl",
             "./scripts/perf_regression_gate.sh --quick --json",
             "",
             "# Validate JSONL schema",

@@ -1621,7 +1621,7 @@ BLESS=1 cargo test -p ftui-demo-showcase
 
 ### What's the performance like?
 
-The 16‑byte cell design puts 4 cells per cache line. On an 80×24 grid at 5% change (`opt-level = "z"`), the full diff + present pipeline runs in `17.74 µs` (emitting `169 B` of ANSI against an `832 B` budget), certified diff takes `90.7 ns` on a spinner tick at 120×40 (`52.9 Gcells/s`), `InputParser::parse` takes `152 ns/event`, S3-FIFO cached grapheme width lookup takes `25.6 ns`, and `FrameArena` reduces steady-state heap allocations to `0 allocs/frame` on an 80×24 ASCII dashboard (`3 allocs/frame` / `42 B` on Unicode, down 99.5% from `661 allocs`). All 27 SLO thresholds in [`tests/baseline.json`](tests/baseline.json) are enforced by `./scripts/perf_regression_gate.sh`; see [`docs/perf/baseline_2026-10-19.md`](docs/perf/baseline_2026-10-19.md).
+The 16‑byte cell design puts 4 cells per cache line. On an 80×24 grid at 5% change (`opt-level = 3`), the full diff + present pipeline runs in `7.99 µs` (emitting `169 B` of ANSI against an `832 B` budget), certified diff takes `69.4 ns` on a spinner tick at 120×40 (`69.2 Gcells/s`), `InputParser::parse` takes `108.7 ns/event`, S3-FIFO cached grapheme width lookup takes `16.0 ns`, and `FrameArena` reduces steady-state heap allocations to `0 allocs/frame` on an 80×24 ASCII dashboard (`3 allocs/frame` / `42 B` on Unicode, down 99.5% from `661 allocs`). All 28 SLO thresholds in [`tests/baseline.json`](tests/baseline.json) are enforced by `./scripts/perf_regression_gate.sh`; see [`docs/perf/baseline_2026-10-19.md`](docs/perf/baseline_2026-10-19.md).
 
 ### How does the rollout system work?
 
@@ -2656,42 +2656,43 @@ Note it clears the initial dirty state first: a fresh `Buffer` starts with every
 
 <!-- perf:begin -->
 ```bash
-# Run the full 27-threshold SLO + Criterion + byte-budget + allocation gate
+# Run the full 28-threshold SLO + Criterion + byte-budget + allocation gate
 ./scripts/perf_regression_gate.sh --quick --json
 python3 -B scripts/render_perf_readme.py --check
 
-# Paired certified vs dirty vs full-scan diff benchmarks (120×40, opt-level="z"):
+# Paired certified vs dirty vs full-scan diff benchmarks (120×40, opt-level = 3):
 cargo bench -p ftui-render --bench diff_bench
 cargo bench -p ftui-render --bench diff_paths_paired
-# diff_paths_paired (certified, spinner_tick 120x40)      p50: [90.7 ns]   throughput: [52.9 Gcells/s]
-# diff_paths_paired (certified, overmarked_chrome 120x40) p50: [251.4 ns]  throughput: [19.1 Gcells/s]
-# diff_paths_paired (certified, scattered_5pct 120x40)    p50: [1.98 µs]   throughput: [2.43 Gcells/s]
-# diff/sparse_5pct/compute/120x40  (full scan)            p50: [7.51 µs]   throughput: [639 Mcells/s]
-# diff/heavy_50pct/compute/120x40  (full scan)            p50: [8.22 µs]   throughput: [584 Mcells/s]
-# diff/full_100pct/compute/120x40  (full scan)            p50: [12.1 µs]   throughput: [396 Mcells/s]
+# diff_paths_paired (certified, spinner_tick 120x40)      p50: [69.4 ns]   throughput: [69.2 Gcells/s]
+# diff_paths_paired (certified, overmarked_chrome 120x40) p50: [201.7 ns]  throughput: [23.8 Gcells/s]
+# diff_paths_paired (certified, scattered_5pct 120x40)    p50: [950.8 ns]  throughput: [5.05 Gcells/s]
+# diff/sparse_5pct/compute/120x40  (full scan)            p50: [2.24 µs]   throughput: [2.14 Gcells/s]
+# diff/heavy_50pct/compute/120x40  (full scan)            p50: [3.32 µs]   throughput: [1.45 Gcells/s]
+# diff/full_100pct/compute/120x40  (full scan)            p50: [5.29 µs]   throughput: [907 Mcells/s]
 ```
 
 | Operation / Metric | Criterion / Scene ID | Observed (Mean, 95% CI) | Enforced Budget |
 |---|---|---|---|
-| Full frame pipeline (80×24 @ 5%) | `pipeline/truecolor/diff_and_present/full/80x24@5%` | `17.74 µs` (`[16.63 µs, 19.69 µs]`) | `2.00 ms` (+10%) |
-| Diff compute (80×24 @ 5% full scan) | `diff/sparse_5pct/compute/80x24` | `3.01 µs` (`[2.56 µs, 3.59 µs]`) | `200.00 µs` (+10%) |
-| Diff compute (200×60 @ 5% dirty rows) | `diff/sparse_5pct_rows/compute_dirty/200x60` | `12.12 µs` (`[11.69 µs, 12.95 µs]`) | `84.00 µs` (+10%) |
-| Presenter ANSI emit (80×24 @ 5%) | `present/truecolor/sparse_5pct/present/80x24` | `19.45 µs` (`[16.47 µs, 23.39 µs]`) | `3.00 ms` (+10%) |
-| Presenter ANSI emit (120×40 @ 5%) | `present/truecolor/sparse_5pct/present/120x40` | `39.86 µs` (`[37.29 µs, 43.55 µs]`) | `6.00 ms` (+10%) |
-| Presenter ANSI emit (200×60 @ 5%) | `present/truecolor/sparse_5pct/present/200x60` | `94.43 µs` (`[91.14 µs, 100.67 µs]`) | `18.00 ms` (+10%) |
+| Full frame pipeline (80×24 @ 5%) | `pipeline/truecolor/diff_and_present/full/80x24@5%` | `7.99 µs` (`[7.88 µs, 8.10 µs]`) | `2.00 ms` (+10%) |
+| Diff compute (80×24 @ 5% full scan) | `diff/sparse_5pct/compute/80x24` | `967.8 ns` (`[939.5 ns, 995.5 ns]`) | `200.00 µs` (+10%) |
+| Diff compute (200×60 @ 5% dirty rows) | `diff/sparse_5pct_rows/compute_dirty/200x60` | `6.57 µs` (`[6.36 µs, 6.84 µs]`) | `84.00 µs` (+10%) |
+| Presenter ANSI emit (80×24 @ 5%) | `present/truecolor/sparse_5pct/present/80x24` | `6.59 µs` (`[6.51 µs, 6.66 µs]`) | `3.00 ms` (+10%) |
+| Presenter ANSI emit (120×40 @ 5%) | `present/truecolor/sparse_5pct/present/120x40` | `16.62 µs` (`[15.31 µs, 17.79 µs]`) | `6.00 ms` (+10%) |
+| Presenter ANSI emit (200×60 @ 5%) | `present/truecolor/sparse_5pct/present/200x60` | `41.81 µs` (`[39.52 µs, 44.47 µs]`) | `18.00 ms` (+10%) |
 | ANSI bytes emitted (80×24 @ 5%, 96 cells) | `bytes:present/bytes/sparse_5pct/80x24` | `169 B` (<= `832 B`) | `832 B` (`8*cells+64`) |
-| Input parse + dispatch (per event) | `input/parse_dispatch/mixed_event_stream/per_event` | `152.0 ns` (`[129.4 ns, 188.3 ns]`) | `100.00 µs` (+10%) |
-| Word wrap (200 lines @ 80 cols) | `wrap/word/200_lines_80_cols` | `829.34 µs` (`[789.81 µs, 880.56 µs]`) | `2.00 ms` (+10%) |
-| Grapheme width lookup (S3-FIFO cached) | `text_width/non_ascii_corpus/cached` | `25.6 ns` (`[21.7 ns, 29.5 ns]`) | `30.0 ns` (+10%) |
-| Flex layout solver (10 constraints) | `layout/flex_split/horizontal/10` | `131.7 ns` (`[118.8 ns, 150.0 ns]`) | `20.00 µs` (+10%) |
-| Virtualized Fenwick scroll (100k items) | `virtualized/scroll_to/variable_fenwick/100000` | `16.1 ns` (`[14.6 ns, 18.2 ns]`) | `1.00 µs` (+10%) |
-| Runtime first frame (`80×24` headless) | `runtime/first_frame/headless_80x24` | `94.71 µs` (`[77.36 µs, 111.22 µs]`) | `10.00 ms` (+10%) |
-| Runtime `Cmd::msg` roundtrip | `runtime/command_roundtrip/cmd_msg` | `92.1 ns` (`[83.1 ns, 105.7 ns]`) | `500.00 µs` (+10%) |
-| Runtime shutdown latency | `runtime/shutdown_latency/headless` | `1.64 µs` (`[1.41 µs, 1.90 µs]`) | `5.00 ms` (+10%) |
+| Input parse + dispatch (per event) | `input/parse_dispatch/mixed_event_stream/per_event` | `108.7 ns` (`[102.2 ns, 114.2 ns]`) | `100.00 µs` (+10%) |
+| Word wrap (200 lines @ 80 cols) | `wrap/word/200_lines_80_cols` | `516.70 µs` (`[491.23 µs, 542.70 µs]`) | `2.00 ms` (+10%) |
+| Grapheme width lookup (S3-FIFO cached) | `text_width/non_ascii_corpus/cached` | `16.0 ns` (`[15.1 ns, 17.2 ns]`) | `30.0 ns` (+10%) |
+| Flex layout solver (10 constraints) | `layout/flex_split/horizontal/10` | `95.1 ns` (`[91.2 ns, 99.0 ns]`) | `20.00 µs` (+10%) |
+| Virtualized Fenwick scroll (100k items) | `virtualized/scroll_to/variable_fenwick/100000` | `6.947 ns` (`[6.752 ns, 7.206 ns]`) | `1.00 µs` (+10%) |
+| Command palette scan (1,000 items) | `command_palette/score_corpus/palette_corpus_1000_scan` | `105.67 µs` (`[97.82 µs, 118.77 µs]`) | `7.50 ms` (+10%) |
+| Runtime first frame (`80×24` headless) | `runtime/first_frame/headless_80x24` | `23.63 µs` (`[22.92 µs, 24.40 µs]`) | `10.00 ms` (+10%) |
+| Runtime `Cmd::msg` roundtrip | `runtime/command_roundtrip/cmd_msg` | `64.0 ns` (`[63.5 ns, 64.4 ns]`) | `500.00 µs` (+10%) |
+| Runtime shutdown latency | `runtime/shutdown_latency/headless` | `785.5 ns` (`[774.1 ns, 798.0 ns]`) | `5.00 ms` (+10%) |
 | Steady-state heap allocs (ASCII 80×24) | `allocs:ascii_dashboard_80x24` | `0 allocs` (`0 B`, down from `1397` / `142,688 B`) | `0 allocs/frame` |
 | Steady-state heap allocs (Unicode 80×24) | `allocs:unicode_dashboard_80x24` | `3 allocs` (`42 B`, down from `661` / `79,962 B`) | `4 allocs/frame` |
 
-Full 27-metric table, confidence intervals, byte-efficiency breakdown, and `FrameArena` allocation report: [`docs/perf/baseline_2026-10-19.md`](docs/perf/baseline_2026-10-19.md) (generated from [`docs/perf/regression_report_2026-10-19.jsonl`](docs/perf/regression_report_2026-10-19.jsonl)).
+Full 28-metric table, confidence intervals, byte-efficiency breakdown, and `FrameArena` allocation report: [`docs/perf/baseline_2026-10-19.md`](docs/perf/baseline_2026-10-19.md) (generated from [`docs/perf/regression_report_2026-10-19.jsonl`](docs/perf/regression_report_2026-10-19.jsonl)).
 <!-- perf:end -->
 
 ---
