@@ -76,15 +76,16 @@ tools:
       - python3 -B scripts/repo_facts.py --check
       # Vision scorecard synthetic self-test (bd-g00-root-epic-ewths.42.6).
       - python3 -B scripts/vision_scorecard.py --self-test
-  # The AGENTS.md "Landing the Plane" gate set on the native host, without RCH
-  # (forbidden until bd-g00-root-epic-ewths.6.24): `cargo` on this host's PATH
-  # is an RCH shim, so every cargo line carries RCH_CARGO_WRAPPER_BYPASS=1, the
-  # pinned toolchain and content fingerprints. The 2026-10-02 v0.9.0 wave ran
-  # these checks through `rch exec` from an ad hoc config and failed 4 of 5 on
-  # RCH itself (bd-g00-root-epic-ewths.6.37). Set CARGO_TARGET_DIR to a target
-  # directory this run owns; shared ones get poisoned by concurrent builds.
-  # Explicit debug=0 and incremental=0 (.6.23 item 4) keep workspace test
-  # binaries under ~3.8 GiB instead of ~30 GiB with full DWARF + incremental.
+  # The AGENTS.md "Landing the Plane" gate set. On native/pre-v9 DSR hosts where
+  # `RCH_CARGO_WRAPPER_BYPASS=1 cargo -V` succeeds, each check keeps local bypass
+  # (zero RCH, preserving bd-g00-root-epic-ewths.6.24/.6.37). On RCH shim v9 hosts
+  # (`RCH_REQUIRE_REMOTE`), where bypass is refused with exit 1, the self-probe
+  # unsets `RCH_CARGO_WRAPPER_BYPASS` and exports `RCH_QUEUE_WHEN_BUSY=1` so
+  # `dsr quality` offloads cleanly instead of failing immediately (bd-o56er).
+  # Set CARGO_TARGET_DIR to a target directory this run owns; shared ones get
+  # poisoned by concurrent builds. Explicit debug=0 and incremental=0 (.6.23
+  # item 4) keep workspace test binaries under ~3.8 GiB instead of ~30 GiB with
+  # full DWARF + incremental.
   #   DSR_REPOS_FILE="$PWD/.config/dsr-quality.yaml" dsr quality \
   #     --tool frankentui-full-gates -w "$PWD"
   frankentui-full-gates:
@@ -93,11 +94,11 @@ tools:
     required_checks:
       - make gates
       - bash scripts/ci/toolchain_pin_contract.sh --check-git-lockfile
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') cargo fmt --all --check
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --locked
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness clippy --workspace --all-targets --locked -- -D warnings
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTDOCFLAGS="-D warnings" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness doc --workspace --no-deps --locked
-      - RCH_CARGO_WRAPPER_BYPASS=1 FTUI_TEST_TIME_SCALE="${FTUI_TEST_TIME_SCALE:-4}" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --workspace --no-fail-fast --locked
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') cargo fmt --all --check
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --locked
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness clippy --workspace --all-targets --locked -- -D warnings
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTDOCFLAGS="-D warnings" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness doc --workspace --no-deps --locked
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && FTUI_TEST_TIME_SCALE="${FTUI_TEST_TIME_SCALE:-4}" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --workspace --no-fail-fast --locked
   # The baseline cache's provenance, atomicity and comparison logic
   # (bd-g00-root-epic-ewths.9.2 item 5). 24 tests, ~3 s, no timing assertions:
   # what is gated here is the *logic* that decides whether two baselines are
@@ -114,7 +115,7 @@ tools:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness test --locked -p ftui-demo-showcase --test baseline_capture
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness test --locked -p ftui-demo-showcase --test baseline_capture
   frankentui-examples:
     repo: Dicklesworthstone/frankentui
     language: rust
@@ -129,40 +130,40 @@ tools:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') E2E_JSONL_VALIDATE=1 E2E_JSONL_VALIDATE_MODE=strict bash scripts/e2e_test.sh --quick
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') E2E_JSONL_VALIDATE=1 E2E_JSONL_VALIDATE_MODE=strict bash scripts/pane_e2e.sh --mode smoke
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') E2E_JSONL_VALIDATE=1 E2E_JSONL_VALIDATE_MODE=strict bash scripts/e2e_test.sh --quick
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') E2E_JSONL_VALIDATE=1 E2E_JSONL_VALIDATE_MODE=strict bash scripts/pane_e2e.sh --mode smoke
   # G48 (bd-g00-root-epic-ewths.47.4): every inline log line reaches real
   # multiplexer history. Needs tmux, GNU screen and zellij on the host; a
   # missing one FAILS its cases unless named in FTUI_E2E_MUX_OUT_OF_SCOPE
   # (logged). Sessions are private; captures are retained under
   # DSR_INLINE_SCROLLBACK_OUTPUT, a new absolute directory outside the checkout.
   # It also runs agent_shell --pty (G26, .32.5): an isatty-gated child per
-  # multiplexer, and under tmux the process-group cleanup on quit. cargo is an
-  # RCH shim on this host, hence RCH_CARGO_WRAPPER_BYPASS=1 (see full-gates).
+  # multiplexer, and under tmux the process-group cleanup on quit. Self-probes
+  # RCH bypass so native/pre-v9 hosts run locally and shim v9 offloads cleanly.
   frankentui-inline-scrollback:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness build --locked -p ftui --example agent_shell -p ftui-demo-showcase --bin ftui-demo-showcase
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness build --locked -p ftui --example agent_shell -p ftui-demo-showcase --bin ftui-demo-showcase
       - python3 -B tests/e2e/scripts/test_inline_scrollback_mux.py --agent-shell "${CARGO_TARGET_DIR:-target}/debug/examples/agent_shell" --showcase "${CARGO_TARGET_DIR:-target}/debug/ftui-demo-showcase" --lines 10000 --out "${DSR_INLINE_SCROLLBACK_OUTPUT:?Set DSR_INLINE_SCROLLBACK_OUTPUT to a new absolute directory outside the checkout}"
       # The same agent shell in a plain PTY (no multiplexer), with and without
       # CPR replies, against ftui-pty's terminal model (.47.4 item 2).
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --locked -p ftui --test agent_shell_plain_pty --no-fail-fast
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --locked -p ftui --test agent_shell_plain_pty --no-fail-fast
   frankentui-browser:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
       - bash build-wasm.sh --check-features
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-web -p ftui-showcase-wasm
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-web -p ftui-showcase-wasm
       - bash build-wasm.sh "${DSR_BROWSER_OUTPUT:?Set DSR_BROWSER_OUTPUT to a new absolute directory outside the checkout}"
   frankentui-wasm-matrix:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
       - bash build-wasm.sh --check-features
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-core -p ftui-render -p ftui-style -p ftui-text -p ftui-layout -p ftui-runtime -p ftui-web
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-web --features input-parser,tracing
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-showcase-wasm
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-core -p ftui-render -p ftui-style -p ftui-text -p ftui-layout -p ftui-runtime -p ftui-web
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-web --features input-parser,tracing
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-showcase-wasm
   # Feature-gated modules (bd-g00-root-epic-ewths.6.38): ~2,160+ tests across
   # experimental runtime modules, ftui-extras features, normalization, and
   # telemetry that default `--workspace` never compiles.
@@ -170,9 +171,9 @@ tools:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --all-features --locked
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTDOCFLAGS="-D warnings" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness doc --workspace --all-features --no-deps --locked
-      - RCH_CARGO_WRAPPER_BYPASS=1 FTUI_TEST_TIME_SCALE="${FTUI_TEST_TIME_SCALE:-4}" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --workspace --all-features --no-fail-fast --locked
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --workspace --all-targets --all-features --locked
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTDOCFLAGS="-D warnings" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness doc --workspace --all-features --no-deps --locked
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && FTUI_TEST_TIME_SCALE="${FTUI_TEST_TIME_SCALE:-4}" RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --workspace --all-features --no-fail-fast --locked
   # Release-profile performance budget suites (bd-g00-root-epic-ewths.6.38):
   # perf_hud_regression, mermaid_perf_budget, and visual_effects_pty skip their
   # release-only frame budget assertions when debug_assertions are enabled.
@@ -180,7 +181,7 @@ tools:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --cargo-profile release --locked -p ftui-demo-showcase --test perf_hud_regression --test mermaid_perf_budget --test visual_effects_pty --no-fail-fast
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness nextest run --cargo-profile release --locked -p ftui-demo-showcase --test perf_hud_regression --test mermaid_perf_budget --test visual_effects_pty --no-fail-fast
   # Scheduled and on-demand DSR fuzz campaign (bd-g00-root-epic-ewths.6.10,
   # bd-g00-root-epic-ewths.8.1): builds all 12 declared cargo-fuzz targets with
   # the pinned nightly toolchain and content fingerprints, runs the retained
@@ -191,7 +192,7 @@ tools:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
-      - RCH_CARGO_WRAPPER_BYPASS=1 FUZZ_DURATION_SECS="${FUZZ_DURATION_SECS:-60}" bash scripts/fuzz_campaign_e2e.sh
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && FUZZ_DURATION_SECS="${FUZZ_DURATION_SECS:-60}" bash scripts/fuzz_campaign_e2e.sh
   # Pre-release preflight verification gate (bd-g00-root-epic-ewths.10.1):
   # runs the synthetic fixture tests plus strict 14-check preflight against the
   # workspace version (or DSR_RELEASE_TAG).
@@ -210,14 +211,14 @@ tools:
     required_checks:
       - bash scripts/cross_platform_e2e.sh --windows-smoke
   # Full G25 performance regression gate E2E (bd-g00-root-epic-ewths.31.6):
-  # runs the 27-threshold Criterion + byte-budget + FrameArena allocation gate,
+  # runs the 28-threshold Criterion + byte-budget + FrameArena allocation gate,
   # validates the JSONL report schema, verifies injected regression detection,
   # and checks README/baseline markdown provenance.
   frankentui-perf-gate:
     repo: Dicklesworthstone/frankentui
     language: rust
     required_checks:
-      - RCH_CARGO_WRAPPER_BYPASS=1 bash scripts/perf_gate_e2e.sh --full
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && bash scripts/perf_gate_e2e.sh --full
   # Canonical doctor_frankentui verification stack (bd-g00-root-epic-ewths.28.2,
   # bd-g00-root-epic-ewths.28.4, bd-g00-root-epic-ewths.28.6): runs core unit +
   # integration tests, core test-time budget check, happy/failure/determinism/
@@ -228,7 +229,7 @@ tools:
     language: rust
     required_checks:
       - bash scripts/ci/capture_tools_test.sh
-      - RCH_CARGO_WRAPPER_BYPASS=1 RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness test --locked -p doctor_frankentui --all-targets -- --nocapture
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness test --locked -p doctor_frankentui --all-targets -- --nocapture
       - bash scripts/doctor_frankentui_core_time_budget.sh
       - bash scripts/doctor_frankentui_happy_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}/happy"
       - bash scripts/doctor_frankentui_failure_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT:-/tmp/doctor_frankentui_ci}/failure"
@@ -245,5 +246,5 @@ tools:
     language: rust
     required_checks:
       - python3 -B scripts/vision_scorecard.py --self-test
-      - RCH_CARGO_WRAPPER_BYPASS=1 python3 -B scripts/vision_scorecard.py --skip-cargo-sweeps --out "${DSR_VISION_SCORECARD_OUT:-${TMPDIR:-/tmp}/ftui_vision_scorecard/dsr}"
+      - if [ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then export RCH_CARGO_WRAPPER_BYPASS=1; else unset RCH_CARGO_WRAPPER_BYPASS; export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"; fi && python3 -B scripts/vision_scorecard.py --skip-cargo-sweeps --out "${DSR_VISION_SCORECARD_OUT:-${TMPDIR:-/tmp}/ftui_vision_scorecard/dsr}"
 

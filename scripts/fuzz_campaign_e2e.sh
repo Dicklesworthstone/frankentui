@@ -256,6 +256,15 @@ PY
     incomplete_campaign invalid_rustc_host_report
 fi
 
+# Respect RCH shim v9 (which refuses RCH_CARGO_WRAPPER_BYPASS=1 when
+# RCH_REQUIRE_REMOTE is enabled) while keeping local bypass on hosts that permit it.
+if [[ "${RCH_CARGO_WRAPPER_BYPASS:-}" == "1" ]] && ! cargo -V >/dev/null 2>&1; then
+    if env -u RCH_CARGO_WRAPPER_BYPASS cargo -V >/dev/null 2>&1; then
+        unset RCH_CARGO_WRAPPER_BYPASS
+        export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"
+    fi
+fi
+
 # Probe only: installation requires a separate owner-coordinated action.
 if ! cargo +"$NIGHTLY_TOOLCHAIN" fuzz --version > "$LOG_DIR/cargo-fuzz-version.log" 2>&1; then
     cat "$LOG_DIR/cargo-fuzz-version.log" >&2

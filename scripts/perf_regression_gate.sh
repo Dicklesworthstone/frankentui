@@ -32,7 +32,14 @@ RESULTS_DIR="${PERF_GATE_RESULTS_DIR:-${PROJECT_ROOT}/target/regression-gate}"
 REPORT_FILE="${RESULTS_DIR}/regression_report.jsonl"
 RUN_ID="$(date +%Y%m%dT%H%M%S)-$$"
 
-# The caller owns the pinned native DSR execution lane.
+# The caller owns the pinned native DSR execution lane; if RCH shim v9 refuses
+# RCH_CARGO_WRAPPER_BYPASS=1, unset bypass so Cargo offloads cleanly.
+if [[ "${RCH_CARGO_WRAPPER_BYPASS:-}" == "1" ]] && ! cargo -V >/dev/null 2>&1; then
+    if env -u RCH_CARGO_WRAPPER_BYPASS cargo -V >/dev/null 2>&1; then
+        unset RCH_CARGO_WRAPPER_BYPASS
+        export RCH_QUEUE_WHEN_BUSY="${RCH_QUEUE_WHEN_BUSY:-1}"
+    fi
+fi
 CARGO=(cargo)
 
 # Colors
