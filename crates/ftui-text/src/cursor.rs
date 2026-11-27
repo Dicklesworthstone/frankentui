@@ -707,8 +707,14 @@ impl<'a> VisualLineLayout<'a> {
     /// direction and resolved levels while applying rules L1/L2 to the slice.
     #[must_use]
     pub fn for_wrapped_slice(full_line: &'a str, slice_byte_range: std::ops::Range<usize>) -> Self {
-        let start = slice_byte_range.start.min(full_line.len());
-        let end = slice_byte_range.end.clamp(start, full_line.len());
+        let mut start = slice_byte_range.start.min(full_line.len());
+        while start > 0 && !full_line.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut end = slice_byte_range.end.clamp(start, full_line.len());
+        while end < full_line.len() && !full_line.is_char_boundary(end) {
+            end += 1;
+        }
         let slice = &full_line[start..end];
 
         if slice.is_empty() {
@@ -2188,5 +2194,15 @@ mod tests {
                 sep as u32
             );
         }
+    }
+
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn visual_line_layout_for_wrapped_slice_clamps_non_char_boundaries_without_panic() {
+        let line = "a\u{05D0}\u{05D1}b";
+        // Byte 2 falls mid-codepoint inside U+05D0 (bytes 1..3), byte 4 inside U+05D1 (3..5).
+        let layout = VisualLineLayout::for_wrapped_slice(line, 2..4);
+        assert_eq!(layout.grapheme_count(), 2);
+        assert_eq!(layout.total_width(), 2);
     }
 }

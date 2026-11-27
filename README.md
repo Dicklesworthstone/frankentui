@@ -401,6 +401,7 @@ See `docs/telemetry.md` for integration patterns and trace‑parent attachment.
 | Crate | Feature | What It Enables |
 |------|---------|------------------|
 | `ftui` | `bidi` | Bidirectional text reordering via `unicode-bidi` (default) |
+| `ftui` | `normalization` | Unicode NFC/NFD/NFKC/NFKD normalization and case-folded/policy-aware search via `unicode-normalization` |
 | `ftui-core` | `tracing` | Structured spans for terminal lifecycle |
 | `ftui-core` | `tracing-json` | JSON output via tracing-subscriber |
 | `ftui-render` | `tracing` | Performance spans for diff/presenter |

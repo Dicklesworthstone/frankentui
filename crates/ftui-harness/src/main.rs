@@ -2320,10 +2320,12 @@ fn record_asciicast_from_reader<R: Read, W: Write>(
     let mut recorder = AsciicastRecorder::new(writer, config)?;
     let mut buf = vec![0u8; chunk_bytes.max(1)];
     loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
         recorder.record_output(&buf[..n])?;
     }
     let events = recorder.event_count();
@@ -2332,6 +2334,10 @@ fn record_asciicast_from_reader<R: Read, W: Write>(
 }
 
 fn try_run_record_cast_cli(args: &[String]) -> Option<io::Result<()>> {
+    if !args.iter().skip(1).any(|arg| arg == "--record-cast") {
+        return None;
+    }
+
     let mut out_path: Option<PathBuf> = None;
     let mut input_path: Option<PathBuf> = None;
     let mut width: u16 = 80;
@@ -2405,7 +2411,12 @@ fn try_run_record_cast_cli(args: &[String]) -> Option<io::Result<()>> {
                 };
                 chunk_bytes = sz;
             }
-            _ => {}
+            other => {
+                return Some(Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown --record-cast argument: {other}"),
+                )));
+            }
         }
         i += 1;
     }
@@ -2813,6 +2824,31 @@ mod tests {
         assert!(lines[0].contains("\"title\":\"Harness Capture\""));
         assert!(lines[1].contains("\"o\""));
         assert!(lines[2].contains("line two"));
+    }
+
+    #[test]
+    fn record_cast_cli_ignores_unrelated_invocations_and_rejects_unknown_flags() {
+        let unrelated = vec![
+            "ftui-harness".to_string(),
+            "--width".to_string(),
+            "not-a-number".to_string(),
+        ];
+        assert!(
+            try_run_record_cast_cli(&unrelated).is_none(),
+            "CLI invocations without --record-cast must pass through untouched"
+        );
+
+        let typo = vec![
+            "ftui-harness".to_string(),
+            "--record-cast".to_string(),
+            "out.cast".to_string(),
+            "--wdiht".to_string(),
+            "80".to_string(),
+        ];
+        let err = try_run_record_cast_cli(&typo)
+            .expect("--record-cast mode must handle argv")
+            .expect_err("unknown flag in --record-cast mode must return InvalidInput");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]

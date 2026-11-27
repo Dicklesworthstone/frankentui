@@ -6551,6 +6551,7 @@ impl AppModel {
     /// Apply opt-in Sinkhorn optimal-transport character morphing across screen switches.
     fn apply_sinkhorn_morph(&self, frame: &mut Frame, inner: Rect) {
         if self.a11y.reduced_motion || inner.is_empty() {
+            *self.sinkhorn_transition.borrow_mut() = None;
             return;
         }
         let mut cur_buf = RenderBuffer::new(inner.width, inner.height);
@@ -6564,30 +6565,55 @@ impl AppModel {
 
         let current = self.display_screen();
         let prev_screen = self.sinkhorn_last_screen.get();
-        if prev_screen.is_some_and(|prev| prev != current)
-            && let Some(prev_buf) = self.sinkhorn_last_buf.borrow().as_ref()
-            && prev_buf.width() == cur_buf.width()
-            && prev_buf.height() == cur_buf.height()
-        {
-            let tagger = |x: u16, y: u16, _cell: &RenderCell| {
-                MorphTag(u32::from(y / 8) * 16 + u32::from(x / 16))
+        if prev_screen.is_some_and(|prev| prev != current) {
+            let started = if let Some(prev_buf) = self.sinkhorn_last_buf.borrow().as_ref()
+                && prev_buf.width() == cur_buf.width()
+                && prev_buf.height() == cur_buf.height()
+            {
+                let tagger = |x: u16, y: u16, _cell: &RenderCell| {
+                    MorphTag(u32::from(y / 8) * 16 + u32::from(x / 16))
+                };
+                let mut source =
+                    Self::downsample_distribution(extract_distribution(prev_buf, &tagger), 48);
+                let mut target =
+                    Self::downsample_distribution(extract_distribution(&cur_buf, &tagger), 48);
+                equalize_mass(&mut source, &mut target);
+                if source.mass > 0 {
+                    let plan = solve_transport(&source, &target, &MorphConfig::default());
+                    Some(SinkhornTransitionState {
+                        source,
+                        target,
+                        plan,
+                        step: 1,
+                        total_steps: 6,
+                        width: inner.width,
+                        height: inner.height,
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
             };
-            let mut source =
-                Self::downsample_distribution(extract_distribution(prev_buf, &tagger), 48);
-            let mut target =
-                Self::downsample_distribution(extract_distribution(&cur_buf, &tagger), 48);
-            equalize_mass(&mut source, &mut target);
-            if source.mass > 0 {
-                let plan = solve_transport(&source, &target, &MorphConfig::default());
-                *self.sinkhorn_transition.borrow_mut() = Some(SinkhornTransitionState {
-                    source,
-                    target,
-                    plan,
-                    step: 1,
-                    total_steps: 6,
-                    width: inner.width,
-                    height: inner.height,
+            *self.sinkhorn_transition.borrow_mut() = started;
+            self.sinkhorn_last_screen.set(Some(current));
+            *self.sinkhorn_last_buf.borrow_mut() = Some(cur_buf);
+        } else {
+            let stale = self
+                .sinkhorn_transition
+                .borrow()
+                .as_ref()
+                .is_some_and(|tr| {
+                    tr.width != inner.width
+                        || tr.height != inner.height
+                        || tr.step >= tr.total_steps
                 });
+            if stale {
+                *self.sinkhorn_transition.borrow_mut() = None;
+            }
+            if self.sinkhorn_transition.borrow().is_none() {
+                self.sinkhorn_last_screen.set(Some(current));
+                *self.sinkhorn_last_buf.borrow_mut() = Some(cur_buf);
             }
         }
 
@@ -6604,13 +6630,10 @@ impl AppModel {
                     if let Some(cell) = morphed.get(dx, dy)
                         && !cell.content.is_empty()
                     {
-                        frame.buffer.set_raw(inner.x + dx, inner.y + dy, *cell);
+                        frame.buffer.set(inner.x + dx, inner.y + dy, *cell);
                     }
                 }
             }
-        } else {
-            self.sinkhorn_last_screen.set(Some(current));
-            *self.sinkhorn_last_buf.borrow_mut() = Some(cur_buf);
         }
     }
 
@@ -11306,10 +11329,22 @@ mod tests {
             assert_eq!(state.step, 1);
         }
 
-        // Advancing ticks completes the transition cleanly.
-        for _ in 0..6 {
+        // Advancing ticks interleaved with rendering must progress step 1 -> 2 -> ... -> None
+        // (regression guard: view() must not re-trigger transport on the same screen).
+        for expected_step in 2u8..6 {
             let _ = app.update(AppMsg::Tick);
+            let mut step_frame = Frame::new(100, 30, &mut pool);
+            app.view(&mut step_frame);
+            let tr = app.sinkhorn_transition.borrow();
+            let state = tr
+                .as_ref()
+                .expect("transition should remain active before final tick");
+            assert_eq!(state.step, expected_step);
         }
+        let _ = app.update(AppMsg::Tick);
+        assert!(app.sinkhorn_transition.borrow().is_none());
+        let mut settled_frame = Frame::new(100, 30, &mut pool);
+        app.view(&mut settled_frame);
         assert!(app.sinkhorn_transition.borrow().is_none());
     }
 }

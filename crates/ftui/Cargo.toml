@@ -34,6 +34,8 @@ backend = ["native-backend", "crossterm"]
 native-backend = ["runtime", "ftui-runtime/native-backend"]
 crossterm = ["runtime", "ftui-core/crossterm", "ftui-runtime/crossterm-compat"]
 bidi = ["ftui-widgets/bidi"]
+# Unicode normalization (NFC/NFD/NFKC/NFKD) and case-folded/policy-aware search.
+normalization = ["ftui-text/normalization"]
 # Load/save keymaps (`ftui::prelude::KeyMap`) as TOML/JSON files.
 serde = ["ftui-core/serde"]
 # Portable-SIMD kernels for the printable-ASCII width fast path. Not default:

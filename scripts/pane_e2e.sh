@@ -165,7 +165,7 @@ jsonl_assert "artifact_pane_e2e_results_dir" "pass" "path=$E2E_RESULTS_DIR"
 jsonl_assert "artifact_pane_e2e_artifact_root" "pass" "path=$PANE_ARTIFACT_ROOT"
 jsonl_assert "artifact_pane_traceability_matrix" "pass" "path=$PANE_TRACEABILITY_MATRIX"
 
-if [[ "${RCH_CARGO_WRAPPER_BYPASS:-}" != "0" ]] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then
+if [[ "${RCH_CARGO_WRAPPER_BYPASS:-0}" == "1" ]] && RCH_CARGO_WRAPPER_BYPASS=1 cargo -V >/dev/null 2>&1; then
     CARGO_RUNNER=(env RCH_CARGO_WRAPPER_BYPASS=1 cargo)
     CARGO_RUNNER_NAME="cargo"
 elif command -v rch >/dev/null 2>&1; then

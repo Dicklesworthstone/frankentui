@@ -1228,6 +1228,7 @@ impl TextInput {
         }
 
         self.cursor = pos;
+        self.normalize_caret_affinity();
     }
 
     fn move_cursor_word_right(&mut self, select: bool) {
@@ -1268,6 +1269,7 @@ impl TextInput {
         }
 
         self.cursor = pos;
+        self.normalize_caret_affinity();
     }
 
     // --- Internal helpers ---

@@ -336,11 +336,13 @@ impl TextArea {
                 };
                 #[cfg(feature = "bidi")]
                 if self.editor.visual_bidi() && ftui_text::bidi::has_rtl(line_text) {
-                    let layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+                    let is_last = index + 1 >= slices.len();
+                    let (local_g, affinity) = Self::hit_test_wrapped_bidi_slice(
                         line_text,
-                        slice.start_byte..slice.start_byte + slice.text.len(),
+                        slice,
+                        is_last,
+                        col.min(slice.width),
                     );
-                    let (local_g, _, affinity) = layout.hit_test(col.min(max));
                     return nav.from_line_grapheme_with_affinity(
                         line_idx,
                         slice.start_grapheme + local_g,
@@ -986,6 +988,35 @@ impl TextArea {
         self.ensure_cursor_visible();
     }
 
+    /// Hit-test a column on a wrapped bidi slice while keeping non-last slices
+    /// from landing on `slice.grapheme_len` (which belongs to the next wrapped row).
+    #[cfg(feature = "bidi")]
+    fn hit_test_wrapped_bidi_slice(
+        line_text: &str,
+        slice: &WrappedSlice<'_>,
+        is_last_slice: bool,
+        target_col: usize,
+    ) -> (usize, ftui_text::cursor::CaretAffinity) {
+        let layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
+            line_text,
+            slice.start_byte..slice.start_byte + slice.text.len(),
+        );
+        let (mut local_g, _, mut aff) = layout.hit_test(target_col.min(slice.width));
+        if !is_last_slice && local_g == slice.grapheme_len && slice.grapheme_len > 0 {
+            let slot = layout.slot_for(local_g, aff);
+            let inward = if slot > 0 {
+                layout.step_left(local_g, aff)
+            } else {
+                layout.step_right(local_g, aff)
+            };
+            if let Some((ig, _, iaff)) = inward {
+                local_g = ig;
+                aff = iaff;
+            }
+        }
+        (local_g, aff)
+    }
+
     #[cfg(feature = "bidi")]
     fn move_wrapped_bidi_horizontal(&mut self, dir: isize, extend_selection: bool) -> bool {
         let width = self.last_viewport_width.get();
@@ -1216,11 +1247,9 @@ impl TextArea {
             let nav = self.navigator();
             #[cfg(feature = "bidi")]
             let mapped = if visual_bidi && ftui_text::bidi::has_rtl(line_text) {
-                let layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
-                    line_text,
-                    slice.start_byte..slice.start_byte + slice.text.len(),
-                );
-                let (local_g, _, aff) = layout.hit_test(target_in_slice);
+                let is_last = current_v_row + 1 >= slices.len();
+                let (local_g, aff) =
+                    Self::hit_test_wrapped_bidi_slice(line_text, slice, is_last, target_in_slice);
                 Some(nav.from_line_grapheme_with_affinity(
                     cursor.line,
                     slice.start_grapheme + local_g,
@@ -1322,11 +1351,9 @@ impl TextArea {
             let nav = self.navigator();
             #[cfg(feature = "bidi")]
             let mapped = if visual_bidi && ftui_text::bidi::has_rtl(line_text) {
-                let layout = ftui_text::cursor::VisualLineLayout::for_wrapped_slice(
-                    line_text,
-                    slice.start_byte..slice.start_byte + slice.text.len(),
-                );
-                let (local_g, _, aff) = layout.hit_test(target_in_slice);
+                let is_last = current_v_row + 1 >= slices.len();
+                let (local_g, aff) =
+                    Self::hit_test_wrapped_bidi_slice(line_text, slice, is_last, target_in_slice);
                 Some(nav.from_line_grapheme_with_affinity(
                     cursor.line,
                     slice.start_grapheme + local_g,
@@ -2819,6 +2846,43 @@ mod tests {
                 visited.push(ta_zw.cursor());
             }
             assert_eq!(visited.len(), 5);
+        }
+
+        /// Fresh-eyes regression: clicking col 0 or moving vertically onto a
+        /// non-last wrapped pure-RTL row must stay on that wrapped row instead
+        /// of jumping to the next wrapped row via `local_g == slice.grapheme_len`.
+        #[cfg(feature = "bidi")]
+        #[test]
+        fn visual_bidi_wrapped_rtl_click_and_vertical_stay_on_row() {
+            // 10 Hebrew letters wrapped at width 5 -> 2 rows of 5 graphemes each.
+            let rtl =
+                "\u{05D0}\u{05D1}\u{05D2}\u{05D3}\u{05D4}\u{05D5}\u{05D6}\u{05D7}\u{05D8}\u{05D9}";
+            let mut ta = TextArea::new()
+                .with_text(rtl)
+                .with_soft_wrap(true)
+                .with_visual_bidi(true)
+                .with_focus(true);
+            let wrap_area = Rect::new(0, 0, 5, 4);
+            rendered(&ta, wrap_area);
+
+            // Click col 0 on row 0 (non-last pure-RTL slice): must stay on row 0.
+            let clicked = ta.position_in_area(wrap_area, 0, 0);
+            assert!(
+                clicked.grapheme < 5,
+                "clicking col 0 of non-last RTL row must stay on row 0, got grapheme {}",
+                clicked.grapheme
+            );
+
+            // Place cursor on row 1 at col 0, move Up: must land on row 0 (< 5).
+            ta.editor
+                .set_cursor(ta.navigator().from_line_grapheme(0, 10));
+            rendered(&ta, wrap_area);
+            key(&mut ta, KeyCode::Up, Modifiers::NONE);
+            assert!(
+                ta.cursor().grapheme < 5,
+                "Up from col 0 of row 1 into non-last RTL row 0 must land on row 0, got grapheme {}",
+                ta.cursor().grapheme
+            );
         }
     }
 
