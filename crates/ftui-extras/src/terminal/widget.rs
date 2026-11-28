@@ -18,6 +18,7 @@
 //! | PTY error | Child process died | Renders last state |
 //! | Color mismatch | Unsupported color format | Falls back to default |
 
+use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell as BufferCell, CellAttrs as BufferCellAttrs, PackedRgba, StyleFlags};
 use ftui_render::frame::Frame;
@@ -285,6 +286,38 @@ impl StatefulWidget for TerminalEmulator {
             let cursor_y = area.y + cursor.y;
             if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
                 self.apply_cursor(cursor, cursor_x, cursor_y, frame);
+            }
+        }
+
+        if frame.a11y_enabled() {
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let title = terminal.title().trim();
+                let name = if title.is_empty() { "Terminal" } else { title };
+                let desc = if state.scroll_offset > 0 {
+                    let unit = if state.scroll_offset == 1 {
+                        "line"
+                    } else {
+                        "lines"
+                    };
+                    format!(
+                        "{}x{}, scrolled up {} {unit}",
+                        terminal.width(),
+                        terminal.height(),
+                        state.scroll_offset
+                    )
+                } else {
+                    format!("{}x{}", terminal.width(), terminal.height())
+                };
+                frame.push_a11y(
+                    A11yNodeInfo::new(
+                        A11yNodeInfo::stable_id_for(A11yRole::Group, area),
+                        A11yRole::Group,
+                        bounds,
+                    )
+                    .with_name(name)
+                    .with_description(desc),
+                );
             }
         }
     }
@@ -1118,5 +1151,33 @@ mod tests {
 
         state.scroll_down(10); // Should clamp at 0
         assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn terminal_emulator_emits_a11y_group() {
+        use ftui_a11y::tree::A11yTreeBuilder;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut state = TerminalEmulatorState::with_scrollback(40, 10, 50);
+        state.terminal.scroll_up(2);
+        state.scroll_up(2);
+        let widget = TerminalEmulator::new();
+
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(40, 10, &mut pool);
+        frame.set_a11y(&mut builder);
+        StatefulWidget::render(&widget, Rect::new(0, 0, 40, 10), &mut frame, &mut state);
+        frame.finish_a11y();
+        let tree = builder.build();
+
+        let node = tree
+            .nodes()
+            .find(|n| n.role == A11yRole::Group && n.name.as_deref() == Some("Terminal"))
+            .expect("TerminalEmulator should emit Group node");
+        assert_eq!(
+            node.description.as_deref(),
+            Some("40x10, scrolled up 2 lines")
+        );
     }
 }

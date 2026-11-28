@@ -1446,3 +1446,102 @@ fn sparkline_history_decision_and_receipt_emit_accessibility() {
     assert!(receipt_desc.contains("attestation=FAIL"));
     assert!(receipt_desc.contains("failure_class=Attestation"));
 }
+
+#[test]
+fn pretty_drift_and_empty_string_a11y_guards() {
+    use ftui_a11y::node::{A11yRole, LiveRegion};
+    use ftui_runtime::transparency::TrafficLight;
+    use ftui_runtime::unified_evidence::DecisionDomain;
+    use ftui_widgets::Widget;
+    use ftui_widgets::badge::Badge;
+    use ftui_widgets::drift_visualization::{
+        DomainSnapshot, DriftSnapshot, DriftTimeline, DriftVisualization,
+    };
+    use ftui_widgets::help::Help;
+    use ftui_widgets::panel::Panel;
+    use ftui_widgets::pretty::Pretty;
+
+    let value = vec![10, 20, 30];
+    let pretty = Pretty::new(&value);
+
+    let mut timeline = DriftTimeline::new(16);
+    timeline.push(DriftSnapshot {
+        frame_id: 1,
+        domains: vec![DomainSnapshot {
+            domain: DecisionDomain::DiffStrategy,
+            confidence: 0.25,
+            signal: TrafficLight::Red,
+            in_fallback: true,
+            regime_label: "deterministic",
+        }],
+    });
+    let drift = DriftVisualization::new(&timeline);
+
+    // Help with an empty entry ("", "") plus a key-only entry ("Esc", "").
+    let help = Help::new().entry("", "").entry("Esc", "");
+    // Panel with empty title/subtitle must not emit empty-string name/description.
+    let panel = Panel::new(Badge::new("OK")).title("").subtitle("");
+
+    let tree = build_a11y_tree(80, 24, |frame| {
+        pretty.render(Rect::new(0, 0, 30, 4), frame);
+        drift.render(Rect::new(0, 5, 44, 8), frame);
+        Widget::render(&help, Rect::new(0, 14, 30, 1), frame);
+        panel.render(Rect::new(46, 0, 20, 4), frame);
+    });
+
+    let pretty_node = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Label && n.name.as_deref() == Some("Pretty"))
+        .expect("Pretty should emit Label node");
+    assert!(
+        pretty_node
+            .description
+            .as_deref()
+            .unwrap_or("")
+            .contains("10")
+    );
+
+    let drift_node = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Group && n.name.as_deref() == Some("Drift Monitor"))
+        .expect("DriftVisualization should emit Drift Monitor Group");
+    assert_eq!(drift_node.live_region, Some(LiveRegion::Polite));
+    assert!(
+        drift_node
+            .description
+            .as_deref()
+            .unwrap_or("")
+            .contains("fallback active")
+    );
+    assert!(
+        tree.nodes()
+            .any(|n| n.parent == Some(drift_node.id) && n.name.as_deref() == Some("Sparkline")),
+        "Domain confidence sparkline should be scoped under Drift Monitor"
+    );
+
+    let help_root = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Group && n.name.as_deref() == Some("Keyboard shortcuts"))
+        .expect("Help with one non-empty entry should emit Group");
+    assert_eq!(
+        help_root.children.len(),
+        1,
+        "Empty (\"\", \"\") Help entry must not emit a ghost child"
+    );
+    let esc_node = tree.node(help_root.children[0]).expect("Esc hint node");
+    assert_eq!(esc_node.name.as_deref(), Some("Esc"));
+    assert_eq!(esc_node.shortcut.as_deref(), Some("Esc"));
+
+    let ok_badge = tree
+        .nodes()
+        .find(|n| n.role == A11yRole::Label && n.name.as_deref() == Some("OK"))
+        .expect("Panel child badge");
+    let panel_node = tree
+        .node(ok_badge.parent.expect("Panel parent"))
+        .expect("Panel container node");
+    assert_eq!(panel_node.name, None, "Empty Panel title must map to None");
+    assert_eq!(
+        panel_node.description, None,
+        "Empty Panel subtitle must map to None"
+    );
+}

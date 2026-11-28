@@ -55,7 +55,7 @@ rand = { version = "0.10.4", optional = true }
 
 [features]
 canvas = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style", "dep:ftui-widgets"]
-charts = ["canvas", "dep:unicode-segmentation"]
+charts = ["canvas", "dep:ftui-a11y", "dep:unicode-segmentation"]
 clipboard = ["dep:base64", "dep:ftui-core"]
 console = [
   "dep:ftui-render",
@@ -113,8 +113,9 @@ visual-fx-plasma = ["visual-fx"]
 # GPU acceleration is strictly opt-in. No GPU deps are pulled unless this feature is enabled.
 fx-gpu = ["visual-fx-metaballs", "dep:bytemuck", "dep:pollster", "dep:wgpu"]
 terminal = ["dep:vte", "dep:ftui-core", "dep:ftui-style"]
-terminal-widget = ["terminal", "dep:ftui-render", "dep:ftui-widgets", "dep:ftui-pty"]
+terminal-widget = ["terminal", "dep:ftui-a11y", "dep:ftui-render", "dep:ftui-widgets", "dep:ftui-pty"]
 help = [
+  "dep:ftui-a11y",
   "dep:ftui-core",
   "dep:ftui-render",
   "dep:ftui-style",

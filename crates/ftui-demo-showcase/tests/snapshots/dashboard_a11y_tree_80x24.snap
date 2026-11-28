@@ -1,6 +1,10 @@
 Group "Plasma" [] @0,1 20x13
 Group "Charts · Pulse" [] @20,1 32x13
 Label "g:cycle · sparklines + mini bars · CPU  46% · MEM  41% · EPS 1150" [] @21,2 30x1
+Label "Sparkline" [] @25,3 22x1
+Label "Sparkline" [] @25,4 22x1
+Label "Sparkline" [] @25,5 23x1
+Label "Sparkline" [] @25,6 23x1
 Group "Code · Rust (1/28)" [] @52,1 28x8
 Label "// runtime.rs" [] @53,2 13x1
 Label "use" [] @53,3 3x1

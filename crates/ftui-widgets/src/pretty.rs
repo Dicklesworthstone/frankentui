@@ -14,6 +14,7 @@
 //! ```
 
 use crate::{Widget, draw_text_span};
+use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 use ftui_core::geometry::Rect;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
@@ -94,6 +95,30 @@ impl<T: Debug + ?Sized> Widget for Pretty<'_, T> {
             }
             let y = area.y.saturating_add(row_idx as u16);
             draw_text_span(frame, area.x, y, line, style, max_x);
+        }
+
+        if frame.a11y_enabled() {
+            let bounds = frame.buffer.current_scissor().intersection(&area);
+            if !bounds.is_empty() {
+                let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                let mut chars = collapsed.chars();
+                let truncated: String = chars.by_ref().take(200).collect();
+                let desc = if chars.next().is_some() {
+                    format!("{truncated}...")
+                } else {
+                    truncated
+                };
+                let mut node = A11yNodeInfo::new(
+                    A11yNodeInfo::stable_id_for(A11yRole::Label, area),
+                    A11yRole::Label,
+                    bounds,
+                )
+                .with_name("Pretty");
+                if !desc.is_empty() {
+                    node = node.with_description(desc);
+                }
+                frame.push_a11y(node);
+            }
         }
     }
 

@@ -317,9 +317,12 @@ impl Spotlight {
     /// Calculate panel position.
     fn panel_position(&self, screen: Rect) -> (u16, u16, PanelPosition) {
         let (width, height) = self.panel_size(screen);
-        let target =
-            self.padded_target()
-                .unwrap_or(Rect::new(screen.width / 2, screen.height / 2, 0, 0));
+        let target = self.padded_target().unwrap_or(Rect::new(
+            screen.x.saturating_add(screen.width / 2),
+            screen.y.saturating_add(screen.height / 2),
+            0,
+            0,
+        ));
 
         let gap = 1u16;
 
@@ -361,13 +364,13 @@ impl Spotlight {
             }
         };
 
-        // Clamp to screen bounds
+        // Clamp to screen bounds (upper bound first so narrow/short screens stay >= screen.x/y).
         let clamped_x = x
-            .max(screen.x as i32)
-            .min((screen.right() as i32).saturating_sub(width as i32));
+            .min((screen.right() as i32).saturating_sub(width as i32))
+            .max(screen.x as i32);
         let clamped_y = y
-            .max(screen.y as i32)
-            .min((screen.bottom() as i32).saturating_sub(height as i32));
+            .min((screen.bottom() as i32).saturating_sub(height as i32))
+            .max(screen.y as i32);
 
         (clamped_x.max(0) as u16, clamped_y.max(0) as u16, pos)
     }
@@ -491,6 +494,50 @@ impl Spotlight {
                 &self.config.hint_style,
                 inner_width,
             );
+        }
+
+        if frame.a11y_enabled() {
+            let clipped = panel_rect.intersection(&frame.buffer.current_scissor());
+            if !clipped.is_empty() {
+                use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+                let name = if self.title.trim().is_empty() {
+                    "Spotlight"
+                } else {
+                    self.title.trim()
+                };
+                let mut desc_parts = Vec::new();
+                let body: String = self
+                    .content
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !body.is_empty() {
+                    desc_parts.push(body);
+                }
+                if let Some(ref progress) = self.progress
+                    && !progress.trim().is_empty()
+                {
+                    desc_parts.push(progress.trim().to_string());
+                }
+                let joined = desc_parts.join(" — ");
+                let mut chars = joined.chars();
+                let truncated: String = chars.by_ref().take(200).collect();
+                let desc = if chars.next().is_some() {
+                    format!("{truncated}...")
+                } else {
+                    truncated
+                };
+                let mut node = A11yNodeInfo::new(
+                    A11yNodeInfo::stable_id_for(A11yRole::Dialog, panel_rect),
+                    A11yRole::Dialog,
+                    clipped,
+                )
+                .with_name(name);
+                if !desc.is_empty() {
+                    node = node.with_description(desc);
+                }
+                frame.push_a11y(node);
+            }
         }
     }
 
@@ -1066,5 +1113,43 @@ mod tests {
             py + h <= screen.bottom(),
             "panel should not exceed screen bottom"
         );
+    }
+
+    #[test]
+    fn spotlight_narrow_offset_clamp_and_dialog_a11y() {
+        use ftui_a11y::node::A11yRole;
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let spotlight = Spotlight::new()
+            .target(Rect::new(12, 6, 4, 1))
+            .title("Command Palette")
+            .content("Press Ctrl+P to search actions.")
+            .progress("Step 1 of 3");
+
+        let offset_screen = Rect::new(10, 5, 16, 4);
+        let (px, py, _) = spotlight.panel_position(offset_screen);
+        assert!(px >= offset_screen.x);
+        assert!(py >= offset_screen.y);
+
+        // Target-less spotlight on an offset screen should also center relative to screen.x/y.
+        let centered = Spotlight::new().title("Welcome").content("Hello");
+        let (cx, cy, _) = centered.panel_position(Rect::new(20, 10, 40, 12));
+        assert!((20..60).contains(&cx));
+        assert!((10..22).contains(&cy));
+
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        frame.set_a11y(&mut builder);
+        spotlight.render(Rect::new(0, 0, 80, 24), &mut frame);
+        frame.finish_a11y();
+        let tree = builder.build();
+
+        let dialog = tree
+            .nodes()
+            .find(|n| n.role == A11yRole::Dialog && n.name.as_deref() == Some("Command Palette"))
+            .expect("Spotlight should emit Dialog node");
+        let desc = dialog.description.as_deref().unwrap_or("");
+        assert!(desc.contains("Press Ctrl+P") && desc.contains("Step 1 of 3"));
     }
 }

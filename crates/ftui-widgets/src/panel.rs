@@ -443,10 +443,10 @@ impl<W: Widget> Widget for Panel<'_, W> {
                     ftui_a11y::node::A11yRole::Group,
                     bounds,
                 );
-                if let Some(title) = self.title {
+                if let Some(title) = self.title.filter(|s| !s.is_empty()) {
                     container = container.with_name(title);
                 }
-                if let Some(subtitle) = self.subtitle {
+                if let Some(subtitle) = self.subtitle.filter(|s| !s.is_empty()) {
                     container = container.with_description(subtitle);
                 }
                 if content_area.is_empty() {
@@ -478,15 +478,18 @@ impl<W> ftui_a11y::Accessible for Panel<'_, W> {
     fn accessibility_nodes(&self, area: Rect) -> Vec<ftui_a11y::node::A11yNodeInfo> {
         use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 
+        if area.is_empty() {
+            return Vec::new();
+        }
         let mut node = A11yNodeInfo::new(
             A11yNodeInfo::stable_id_for(A11yRole::Group, area),
             A11yRole::Group,
             area,
         );
-        if let Some(title) = self.title {
+        if let Some(title) = self.title.filter(|s| !s.is_empty()) {
             node = node.with_name(title);
         }
-        if let Some(subtitle) = self.subtitle {
+        if let Some(subtitle) = self.subtitle.filter(|s| !s.is_empty()) {
             node = node.with_description(subtitle);
         }
         vec![node]

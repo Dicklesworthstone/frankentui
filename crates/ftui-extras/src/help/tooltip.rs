@@ -275,13 +275,13 @@ impl Tooltip {
             TooltipPosition::Left => left,
         };
 
-        // Clamp to screen bounds
+        // Clamp to screen bounds (upper bound first so narrow screens stay >= screen.x/y).
         let clamped_x = x
-            .max(screen.x as i32)
-            .min((screen.right() as i32).saturating_sub(size.width as i32));
+            .min((screen.right() as i32).saturating_sub(size.width as i32))
+            .max(screen.x as i32);
         let clamped_y = y
-            .max(screen.y as i32)
-            .min((screen.bottom() as i32).saturating_sub(size.height as i32));
+            .min((screen.bottom() as i32).saturating_sub(size.height as i32))
+            .max(screen.y as i32);
 
         (clamped_x.max(0) as u16, clamped_y.max(0) as u16)
     }
@@ -345,6 +345,36 @@ impl Widget for Tooltip {
                     }
                 }
                 x += w as u16;
+            }
+        }
+
+        if frame.a11y_enabled() {
+            let clipped = bounds.intersection(&frame.buffer.current_scissor());
+            if !clipped.is_empty() {
+                let collapsed: String = self
+                    .content
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let mut chars = collapsed.chars();
+                let truncated: String = chars.by_ref().take(200).collect();
+                let label = if chars.next().is_some() {
+                    format!("{truncated}...")
+                } else {
+                    truncated
+                };
+                if !label.is_empty() {
+                    use ftui_a11y::node::{A11yNodeInfo, A11yRole, LiveRegion};
+                    frame.push_a11y(
+                        A11yNodeInfo::new(
+                            A11yNodeInfo::stable_id_for(A11yRole::Label, bounds),
+                            A11yRole::Label,
+                            clipped,
+                        )
+                        .with_name(label)
+                        .with_live_region(LiveRegion::Polite),
+                    );
+                }
             }
         }
     }
@@ -1315,5 +1345,47 @@ mod tests {
         assert!(!cloned.is_visible());
         assert!(cloned.target().is_none());
         let _ = format!("{state:?}");
+    }
+
+    #[test]
+    fn narrow_offset_screen_clamps_to_screen_origin() {
+        let tooltip = Tooltip::new("Longer tooltip message")
+            .for_widget(Rect::new(12, 6, 4, 1))
+            .config(TooltipConfig::default().max_width(30));
+        // Screen narrower than tooltip width with non-zero origin (10, 5).
+        let screen = Rect::new(10, 5, 12, 3);
+        let (x, y) = tooltip.calculate_position(screen);
+        assert!(
+            x >= screen.x,
+            "narrow screen clamp must not push x ({x}) left of screen.x ({})",
+            screen.x
+        );
+        assert!(
+            y >= screen.y,
+            "short screen clamp must not push y ({y}) above screen.y ({})",
+            screen.y
+        );
+    }
+
+    #[test]
+    fn tooltip_emits_polite_live_a11y_label() {
+        use ftui_a11y::node::{A11yRole, LiveRegion};
+        use ftui_a11y::tree::A11yTreeBuilder;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let tooltip = Tooltip::new("Toggle help overlay (?)").for_widget(Rect::new(2, 0, 6, 1));
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(60, 12, &mut pool);
+        frame.set_a11y(&mut builder);
+        tooltip.render(Rect::new(0, 0, 60, 12), &mut frame);
+        frame.finish_a11y();
+        let tree = builder.build();
+
+        let node = tree
+            .nodes()
+            .find(|n| n.role == A11yRole::Label && n.live_region == Some(LiveRegion::Polite))
+            .expect("Tooltip should emit polite live Label");
+        assert_eq!(node.name.as_deref(), Some("Toggle help overlay (?)"));
     }
 }

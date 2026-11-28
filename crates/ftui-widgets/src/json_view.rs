@@ -873,12 +873,17 @@ impl Widget for JsonView {
                             continue;
                         }
                         let text = json_tokens_plain_text(tokens);
+                        let label = if text.is_empty() {
+                            format!("Line {}", row_idx + 1)
+                        } else {
+                            text
+                        };
                         let item = ftui_a11y::node::A11yNodeInfo::new(
                             base_id.wrapping_add(1).wrapping_add(row_idx as u64),
                             ftui_a11y::node::A11yRole::ListItem,
                             row_bounds,
                         )
-                        .with_name(text);
+                        .with_name(label);
                         frame.push_a11y(item);
                     }
                 });
@@ -1045,12 +1050,18 @@ impl StatefulWidget for JsonView {
                             continue;
                         }
                         let line = &lines[idx];
+                        let text = json_tokens_plain_text(&line.tokens);
+                        let label = if text.is_empty() {
+                            format!("Line {}", idx + 1)
+                        } else {
+                            text
+                        };
                         let mut item = ftui_a11y::node::A11yNodeInfo::new(
                             base_id.wrapping_add(1).wrapping_add(idx as u64),
                             ftui_a11y::node::A11yRole::ListItem,
                             row_bounds,
                         )
-                        .with_name(json_tokens_plain_text(&line.tokens));
+                        .with_name(label);
                         item.state.selected = idx == state.cursor_line;
                         if line.foldable {
                             item.state.expanded = Some(!line.folded);

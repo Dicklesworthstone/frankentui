@@ -263,6 +263,12 @@ manual assistive-technology testing and a full semantic control bridge remain.
 | `HistoryPanel` | List + ListItem children | panel title, undo/redo counts, and visible undo/redo history items |
 | `DecisionCard` | Group | traffic-light signal, action label, and plain-English explanation |
 | `ReceiptVerifierPanel` | Group | receipt ID, overall PASS/FAIL verdict, layer statuses, and failure class |
+| `Pretty` | Label | bounded single-line summary of formatted `Debug` output |
+| `DriftVisualization` | Group (+ polite live on fallback) | active domain count, regime/fallback summary, scoped per-domain `Sparkline` children |
+| `ftui-extras::Tooltip` | polite live Label | bounded tooltip text on rendered floating bounds |
+| `ftui-extras::Spotlight` | Dialog | onboarding coach-mark title, content, and progress description |
+| `ftui-extras::charts::{Sparkline, BarChart, LineChart}` | Label / Group | chart sample/group/series counts, labels, and bounds summary |
+| `ftui-extras::TerminalEmulator` | Group | terminal title, grid dimensions, and scrollback offset |
 | `Scrollbar` | ScrollBar | orientation (vertical/horizontal), scroll range (`value_min`/`value_max`), position (`value_now`, percentage `value_text`) |
 | `Spinner` | ProgressBar | label, busy state |
 | `Modal<C>` | Dialog container | scoped child semantics, stable hit-ID identity, optional accessible name |
@@ -422,12 +428,13 @@ Most interactive widgets respond to standard terminal key conventions:
    screen-reader interoperability testing remains necessary.
 
 3. **Widget coverage and container scoping are incomplete.** Pane workspaces
-   and specialized visualization widgets still require auditing. Generic
-   `Modal<C>`, built-in `Dialog`, `Panel`, `Popover`, `Tabs::render_panel`,
-   `StatusLine`, `LogViewer`, `JsonView`, `Paginator`, `Badge`, `Stopwatch`,
-   `Timer`, `Help`, `ErrorBoundary`, `Sparkline`, `HistoryPanel`,
-   `DecisionCard`, `ReceiptVerifierPanel`, `Form`, `Tree`, and `TextArea`
-   paths contribute metadata.
+   and custom pixel/VFX canvases (`Canvas`, `VisualFx`) still require
+   auditing. Generic `Modal<C>`, built-in `Dialog`, `Panel`, `Popover`,
+   `Tabs::render_panel`, `StatusLine`, `LogViewer`, `JsonView`, `Paginator`,
+   `Badge`, `Stopwatch`, `Timer`, `Help`, `ErrorBoundary`, `Sparkline`,
+   `HistoryPanel`, `DecisionCard`, `ReceiptVerifierPanel`, `Pretty`,
+   `DriftVisualization`, `ftui-extras::{Tooltip, Spotlight, charts, TerminalEmulator, Form, ConfirmDialog, FilePicker}`,
+   `Tree`, and `TextArea` paths contribute metadata.
 
 4. **Focus feedback is not yet delivered to a native screen reader.**
    Tree focus changes produce bounded announcements in the local callback;

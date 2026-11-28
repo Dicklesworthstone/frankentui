@@ -961,7 +961,11 @@ impl Help {
         if bounds.is_empty() {
             return;
         }
-        let enabled: Vec<&HelpEntry> = self.entries.iter().filter(|e| e.enabled).collect();
+        let enabled: Vec<&HelpEntry> = self
+            .entries
+            .iter()
+            .filter(|e| e.enabled && (!e.key.is_empty() || !e.desc.is_empty()))
+            .collect();
         if enabled.is_empty() {
             return;
         }
@@ -973,15 +977,21 @@ impl Help {
 
         frame.with_a11y_scope(group, |frame| {
             for (idx, entry) in enabled.into_iter().enumerate() {
-                frame.push_a11y(
-                    A11yNodeInfo::new(
-                        base_id.wrapping_add(1).wrapping_add(idx as u64),
-                        A11yRole::Label,
-                        bounds,
-                    )
-                    .with_name(&entry.desc)
-                    .with_shortcut(&entry.key),
-                );
+                let label = if entry.desc.is_empty() {
+                    entry.key.as_str()
+                } else {
+                    entry.desc.as_str()
+                };
+                let mut node = A11yNodeInfo::new(
+                    base_id.wrapping_add(1).wrapping_add(idx as u64),
+                    A11yRole::Label,
+                    bounds,
+                )
+                .with_name(label);
+                if !entry.key.is_empty() {
+                    node = node.with_shortcut(&entry.key);
+                }
+                frame.push_a11y(node);
             }
         });
     }
@@ -994,7 +1004,11 @@ impl ftui_a11y::Accessible for Help {
         if area.is_empty() {
             return Vec::new();
         }
-        let enabled: Vec<&HelpEntry> = self.entries.iter().filter(|e| e.enabled).collect();
+        let enabled: Vec<&HelpEntry> = self
+            .entries
+            .iter()
+            .filter(|e| e.enabled && (!e.key.is_empty() || !e.desc.is_empty()))
+            .collect();
         if enabled.is_empty() {
             return Vec::new();
         }
@@ -1011,16 +1025,22 @@ impl ftui_a11y::Accessible for Help {
         let mut nodes = Vec::with_capacity(1 + enabled.len());
         nodes.push(group);
         for (idx, entry) in enabled.into_iter().enumerate() {
-            nodes.push(
-                A11yNodeInfo::new(
-                    base_id.wrapping_add(1).wrapping_add(idx as u64),
-                    A11yRole::Label,
-                    area,
-                )
-                .with_name(&entry.desc)
-                .with_shortcut(&entry.key)
-                .with_parent(base_id),
-            );
+            let label = if entry.desc.is_empty() {
+                entry.key.as_str()
+            } else {
+                entry.desc.as_str()
+            };
+            let mut node = A11yNodeInfo::new(
+                base_id.wrapping_add(1).wrapping_add(idx as u64),
+                A11yRole::Label,
+                area,
+            )
+            .with_name(label)
+            .with_parent(base_id);
+            if !entry.key.is_empty() {
+                node = node.with_shortcut(&entry.key);
+            }
+            nodes.push(node);
         }
         nodes
     }

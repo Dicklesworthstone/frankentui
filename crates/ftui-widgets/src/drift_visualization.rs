@@ -16,6 +16,7 @@
 use crate::borders::{BorderSet, BorderType};
 use crate::sparkline::Sparkline;
 use crate::{Widget, apply_style, clear_text_area, draw_text_span};
+use ftui_a11y::node::{A11yNodeInfo, A11yRole, LiveRegion};
 use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
@@ -493,8 +494,53 @@ impl Widget for DriftVisualization<'_> {
         draw_text_span(frame, inner_x, y, "Drift Monitor", title_style, inner_max_x);
         y += 1;
 
-        // Domain rows
+        // Domain rows (scoped under a Drift Monitor accessibility Group when enabled)
         let domains = self.active_domains();
+        let a11y_bounds = frame.buffer.current_scissor().intersection(&area);
+        if frame.a11y_enabled() && !a11y_bounds.is_empty() {
+            let latest = self.timeline.latest();
+            let fallback = latest.and_then(|snap| snap.domains.iter().find(|d| d.in_fallback));
+            let domain_word = if domains.len() == 1 {
+                "domain"
+            } else {
+                "domains"
+            };
+            let desc = if let Some(ds) = fallback {
+                format!(
+                    "{} {domain_word}; fallback active on {} ({})",
+                    domains.len(),
+                    ds.domain.as_str(),
+                    ds.regime_label
+                )
+            } else if latest.is_none() {
+                format!("{} {domain_word}; no snapshots", domains.len())
+            } else {
+                format!("{} {domain_word}; all Bayesian (normal)", domains.len())
+            };
+            let mut container = A11yNodeInfo::new(
+                A11yNodeInfo::stable_id_for(A11yRole::Group, area),
+                A11yRole::Group,
+                a11y_bounds,
+            )
+            .with_name("Drift Monitor")
+            .with_description(desc);
+            if fallback.is_some() {
+                container = container.with_live_region(LiveRegion::Polite);
+            }
+            frame.with_a11y_scope(container, |frame| {
+                for domain in &domains {
+                    if y + 1 >= max_y {
+                        break;
+                    }
+                    y = self.render_domain_row(*domain, inner_x, y, inner_width, frame);
+                }
+                if self.show_regime_banner && y < max_y {
+                    self.render_regime_banner(inner_x, y, inner_max_x, frame);
+                }
+            });
+            return;
+        }
+
         for domain in &domains {
             if y + 1 >= max_y {
                 break;

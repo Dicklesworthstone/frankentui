@@ -15,6 +15,7 @@
 //! sparkline.render(area, &mut buf);
 //! ```
 
+use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 use ftui_core::geometry::Rect;
 // Measure as the buffer draws. A private copy of these, made before VS16 and
 // CJK ambiguous-width handling reached ftui-core, sized a VS16 emoji 2 cells
@@ -193,6 +194,45 @@ impl Widget for Sparkline<'_> {
 
             frame.buffer.set_fast(x, y, cell);
         }
+
+        if frame.a11y_enabled() {
+            let row = Rect::new(area.x, y, area.width, 1);
+            let bounds = row.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let mut finite_count = 0usize;
+                let mut data_min = f64::INFINITY;
+                let mut data_max = f64::NEG_INFINITY;
+                let mut latest = None;
+                for &v in self.data {
+                    if v.is_finite() {
+                        finite_count += 1;
+                        if v < data_min {
+                            data_min = v;
+                        }
+                        if v > data_max {
+                            data_max = v;
+                        }
+                        latest = Some(v);
+                    }
+                }
+                let desc = if let Some(last) = latest {
+                    format!(
+                        "{finite_count} samples, min {data_min:.2}, max {data_max:.2}, latest {last:.2}"
+                    )
+                } else {
+                    format!("{} samples", self.data.len())
+                };
+                frame.push_a11y(
+                    A11yNodeInfo::new(
+                        A11yNodeInfo::stable_id_for(A11yRole::Label, row),
+                        A11yRole::Label,
+                        bounds,
+                    )
+                    .with_name("Sparkline")
+                    .with_description(desc),
+                );
+            }
+        }
     }
 }
 
@@ -348,19 +388,51 @@ impl Widget for BarChart<'_> {
             return;
         }
 
-        match self.direction {
+        let rendered = match self.direction {
             BarDirection::Vertical => self.render_vertical(area, frame, max_val),
             BarDirection::Horizontal => self.render_horizontal(area, frame, max_val),
+        };
+
+        if rendered && frame.a11y_enabled() {
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let labels: Vec<&str> = self
+                    .groups
+                    .iter()
+                    .map(|g| g.label)
+                    .filter(|l| !l.is_empty())
+                    .take(6)
+                    .collect();
+                let groups_desc = if labels.is_empty() {
+                    format!("{} groups", self.groups.len())
+                } else {
+                    format!("{} groups ({})", self.groups.len(), labels.join(", "))
+                };
+                let desc = if max_val.is_finite() {
+                    format!("{groups_desc}, max {max_val:.2}")
+                } else {
+                    groups_desc
+                };
+                frame.push_a11y(
+                    A11yNodeInfo::new(
+                        A11yNodeInfo::stable_id_for(A11yRole::Group, area),
+                        A11yRole::Group,
+                        bounds,
+                    )
+                    .with_name("Bar chart")
+                    .with_description(desc),
+                );
+            }
         }
     }
 }
 
 impl BarChart<'_> {
-    fn render_vertical(&self, area: Rect, frame: &mut Frame, max_val: f64) {
+    fn render_vertical(&self, area: Rect, frame: &mut Frame, max_val: f64) -> bool {
         // Reserve 1 row at bottom for labels.
         let chart_height = area.height.saturating_sub(1) as f64;
         if chart_height <= 0.0 {
-            return;
+            return false;
         }
 
         let label_y = area.bottom().saturating_sub(1);
@@ -490,9 +562,10 @@ impl BarChart<'_> {
                 }
             }
         }
+        true
     }
 
-    fn render_horizontal(&self, area: Rect, frame: &mut Frame, max_val: f64) {
+    fn render_horizontal(&self, area: Rect, frame: &mut Frame, max_val: f64) -> bool {
         // Reserve columns at left for labels based on longest label.
         let label_width = self
             .groups
@@ -509,7 +582,7 @@ impl BarChart<'_> {
             .saturating_add(1); // 1 col gap between label and bars
         let chart_width = area.width.saturating_sub(label_width) as f64;
         if chart_width <= 0.0 {
-            return;
+            return false;
         }
 
         // Saturating, as in the vertical layout above.
@@ -617,6 +690,7 @@ impl BarChart<'_> {
                 }
             }
         }
+        true
     }
 }
 
@@ -981,6 +1055,38 @@ impl Widget for LineChart<'_> {
                     frame.buffer.set_fast(x, y, cell);
                     col = col.saturating_add(u16::try_from(g_width).unwrap_or(u16::MAX));
                 }
+            }
+        }
+
+        if frame.a11y_enabled() {
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let total_points: usize = self.series.iter().map(|s| s.data.len()).sum();
+                let names: Vec<&str> = self
+                    .series
+                    .iter()
+                    .map(|s| s.name)
+                    .filter(|n| !n.is_empty())
+                    .take(6)
+                    .collect();
+                let desc = if names.is_empty() {
+                    format!("{} series, {total_points} points", self.series.len())
+                } else {
+                    format!(
+                        "{} series ({}), {total_points} points",
+                        self.series.len(),
+                        names.join(", ")
+                    )
+                };
+                frame.push_a11y(
+                    A11yNodeInfo::new(
+                        A11yNodeInfo::stable_id_for(A11yRole::Group, area),
+                        A11yRole::Group,
+                        bounds,
+                    )
+                    .with_name("Line chart")
+                    .with_description(desc),
+                );
             }
         }
     }
@@ -1872,6 +1978,81 @@ mod tests {
         assert_eq!(
             cell.fg, orig_fg,
             "fg should be unchanged when style has no fg"
+        );
+    }
+
+    #[test]
+    fn chart_widgets_emit_accessibility_nodes() {
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let spark_data = [2.0, 6.0, 4.0];
+        let spark = Sparkline::new(&spark_data);
+        let bars = BarChart::new(vec![
+            BarGroup::new("CPU", vec![42.0]),
+            BarGroup::new("MEM", vec![68.0]),
+        ]);
+        let series_data = [(0.0, 1.0), (1.0, 3.0), (2.0, 2.0)];
+        let lines = LineChart::new(vec![Series::new(
+            "latency",
+            &series_data,
+            PackedRgba::rgb(0, 200, 255),
+        )]);
+
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(60, 20, &mut pool);
+        frame.set_a11y(&mut builder);
+        spark.render(Rect::new(0, 0, 20, 1), &mut frame);
+        bars.render(Rect::new(0, 2, 24, 8), &mut frame);
+        lines.render(Rect::new(26, 2, 30, 10), &mut frame);
+        frame.finish_a11y();
+        let tree = builder.build();
+
+        let spark_node = tree
+            .nodes()
+            .find(|n| n.role == A11yRole::Label && n.name.as_deref() == Some("Sparkline"))
+            .expect("charts::Sparkline should emit Label");
+        assert!(
+            spark_node
+                .description
+                .as_deref()
+                .unwrap_or("")
+                .contains("3 samples")
+        );
+
+        let bar_node = tree
+            .nodes()
+            .find(|n| n.role == A11yRole::Group && n.name.as_deref() == Some("Bar chart"))
+            .expect("BarChart should emit Group");
+        assert!(
+            bar_node
+                .description
+                .as_deref()
+                .unwrap_or("")
+                .contains("CPU, MEM")
+        );
+
+        let line_node = tree
+            .nodes()
+            .find(|n| n.role == A11yRole::Group && n.name.as_deref() == Some("Line chart"))
+            .expect("LineChart should emit Group");
+        let line_desc = line_node.description.as_deref().unwrap_or("");
+        assert!(line_desc.contains("latency") && line_desc.contains("3 points"));
+
+        // A horizontal BarChart in a 1-column area draws nothing and must not emit a ghost node.
+        let mut narrow_builder = A11yTreeBuilder::new();
+        let mut narrow_frame = Frame::new(10, 6, &mut pool);
+        narrow_frame.set_a11y(&mut narrow_builder);
+        bars.clone()
+            .direction(BarDirection::Horizontal)
+            .render(Rect::new(0, 0, 1, 6), &mut narrow_frame);
+        narrow_frame.finish_a11y();
+        let narrow_tree = narrow_builder.build();
+        assert!(
+            !narrow_tree
+                .nodes()
+                .any(|n| n.name.as_deref() == Some("Bar chart")),
+            "1-column horizontal BarChart should not emit an a11y node"
         );
     }
 }

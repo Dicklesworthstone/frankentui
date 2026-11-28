@@ -417,7 +417,9 @@ impl<'a> Tabs<'a> {
                     ftui_a11y::node::A11yRole::TabPanel,
                     bounds,
                 );
-                if let Some(tab) = self.tabs.get(active_tab) {
+                if let Some(tab) = self.tabs.get(active_tab)
+                    && !tab.title().is_empty()
+                {
                     panel = panel.with_name(tab.title());
                 }
                 frame.with_a11y_scope(panel, |frame| render_content(panel_area, frame));
